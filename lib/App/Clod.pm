@@ -121,6 +121,16 @@ If the best fix is upstream, the bot changes nothing.  It assigns the issue to
 the owner of the affected path in CODEOWNERS, or to the repository owner, and
 explains why.
 
+If triage or a spoke cannot go on without an answer from a person, the bot
+changes nothing and does not guess.  It asks the question in a comment, assigns
+the issue to the same person, and removes itself, so that the question reaches
+that person's inbox.  On a pull request, that person is the author, or the
+reviewer if the bot is the author.  The comment also mentions every team that
+owns the path.  To go on, the person answers with a mention of the bot, or
+assigns the bot again.  Only a person in C<authorized_users> can restart the
+work.  A review or a reply to review comments asks its questions in the review
+or the reply itself.
+
 All state is in Minion.  A job's notes and result hold what it did, and
 Minion::Admin under F</minion> shows them.
 

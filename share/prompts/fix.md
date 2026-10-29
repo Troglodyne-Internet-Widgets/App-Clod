@@ -12,6 +12,11 @@ message in the style of this repository. Do not push and do not open a pull
 request: the hub does both. If the change needs nothing in this repository,
 make no commit and say why in `summary`.
 
+If you cannot do the change without an answer from a person, because the task
+is ambiguous or needs a decision that is not yours to make, make no commit.
+Put the question in `question`, written to the person who must answer it, and
+the path that it concerns in `path`. Do not guess instead.
+
 Answer with `title`, a pull request title, and `summary`, a pull request
 description in Markdown that says what changed and why.
 

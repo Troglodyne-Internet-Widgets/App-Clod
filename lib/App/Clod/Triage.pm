@@ -8,13 +8,14 @@ use re '/aasx';
 
 use Carp ();
 
-my %SCOPES = map { $_ => 1 } qw{single multi upstream};
+my @SCOPES = qw{single multi upstream clarify};
+my %SCOPES = map { $_ => 1 } @SCOPES;
 
 our %SCHEMA = (
     type       => 'object',
     required   => [qw{scope reason repos}],
     properties => {
-        scope  => { type => 'string', enum => [qw{single multi upstream}] },
+        scope  => { type => 'string', enum => \@SCOPES },
         reason => { type => 'string' },
         repos  => {
             type  => 'array',
@@ -28,12 +29,16 @@ our %SCHEMA = (
             type       => 'object',
             properties => { project => { type => 'string' }, path => { type => 'string' }, explanation => { type => 'string' } },
         },
+        question => {
+            type       => 'object',
+            properties => { text => { type => 'string' }, path => { type => 'string' } },
+        },
     },
 );
 
 =func validate
 
-C<($answer, \@spokes)>.  Returns the answer with C<repos> sorted by C<order>, and empty for C<upstream>.  Dies with a message that can go back to the model as it is.
+C<($answer, \@spokes)>.  Returns the answer with C<repos> sorted by C<order>, and empty for C<upstream> and C<clarify>.  Dies with a message that can go back to the model as it is.
 
 =cut
 
@@ -42,13 +47,17 @@ C<($answer, \@spokes)>.  Returns the answer with C<repos> sorted by C<order>, an
 sub validate ( $answer, $spokes ) {
     Carp::croak('The answer is not a JSON object') if ref $answer ne 'HASH';
     my $scope = $answer->{scope} // q{};
-    Carp::croak("scope must be single, multi or upstream, not '$scope'") if !$SCOPES{$scope};
-    Carp::croak('reason is empty')                                       if ( $answer->{reason} // q{} ) eq q{};
+    Carp::croak("scope must be one of @SCOPES, not '$scope'") if !$SCOPES{$scope};
+    Carp::croak('reason is empty')                            if ( $answer->{reason} // q{} ) eq q{};
 
     if ( $scope eq 'upstream' ) {
         my $up = $answer->{upstream};
         Carp::croak('scope upstream needs upstream.project and upstream.explanation')
           if ref $up ne 'HASH' || !$up->{project} || !$up->{explanation};
+        return { %$answer, repos => [] };
+    }
+    if ( $scope eq 'clarify' ) {
+        Carp::croak('scope clarify needs question.text') if ref $answer->{question} ne 'HASH' || ( $answer->{question}{text} // q{} ) eq q{};
         return { %$answer, repos => [] };
     }
 
@@ -115,7 +124,8 @@ sub intro ($claude_md) {
 
 Triage runs before every fix, review and review answer.  It asks one question:
 is this change best made in one repository, in several, or upstream in a
-project that we do not own?  The answer must follow C<%SCHEMA>, and
+project that we do not own?  A fourth answer, C<clarify>, says that the request
+cannot be planned without a person's answer to C<question.text>.  The answer must follow C<%SCHEMA>, and
 C<validate> checks the things that a schema cannot: that each repository is a
 spoke, that none is named twice, and that the count fits the scope.
 

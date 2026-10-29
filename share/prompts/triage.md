@@ -14,6 +14,11 @@ is this better handled across several spokes than in {{repo}} alone?
 - `upstream`: the best fix is in a project that none of these owners own:
   {{owners}}. Do not plan a workaround. Fill `upstream.project`, the path in
   {{repo}} that is affected as `upstream.path`, and `upstream.explanation`.
+- `clarify`: you cannot plan the change without an answer from a person,
+  because the request is ambiguous, contradicts itself or the code, or needs
+  a decision that is not yours to make. Put the question in `question.text`,
+  written to the person who must answer it, and the path in {{repo}} that it
+  concerns, if there is one, in `question.path`. Do not guess instead.
 
 For a review, `repos` names {{repo}} first, then any spoke whose code the
 reviewer must read to judge the change.

@@ -19,17 +19,23 @@ subtest validate => sub {
     my $up = App::Clod::Triage::validate( { scope => 'upstream', reason => 'theirs', repos => [ entry( 'Test-Org/one', 1 ) ], upstream => { project => 'Other/lib', explanation => 'bug there' } }, \@spokes );
     is( $up->{repos}, [], 'an upstream answer plans no spoke work, whatever repos it named' );
 
+    my $ask = App::Clod::Triage::validate( { scope => 'clarify', reason => 'unclear', repos => [ entry( 'Test-Org/one', 1 ) ], question => { text => 'Which one?' } }, \@spokes );
+    is( $ask->{repos},          [],           'a clarify answer plans no spoke work either' );
+    is( $ask->{question}{text}, 'Which one?', 'and keeps its question' );
+
     my %bad = (
-        'not a hash'          => [ [],                                                                                                        qr/not\ a\ JSON\ object/ ],
-        'unknown scope'       => [ { scope => 'some', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                               qr/scope\ must\ be/ ],
-        'empty reason'        => [ { scope => 'single', reason => q{}, repos => [ entry( 'Test-Org/one', 1 ) ] },                             qr/reason\ is\ empty/ ],
-        'no repos'            => [ { scope => 'single', reason => 'r', repos => [] },                                                         qr/non-empty\ list/ ],
-        'not a spoke'         => [ { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] },                               qr/not\ a\ spoke/ ],
-        'twice'               => [ { scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/one', 2 ) ] },  qr/listed\ twice/ ],
-        'single with two'     => [ { scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/two', 2 ) ] }, qr/single\ names\ 2/ ],
-        'multi with one'      => [ { scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                              qr/multi\ names\ one/ ],
-        'no instructions'     => [ { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1 } ] },                 qr/needs\ repo,\ order\ and\ instructions/ ],
-        'upstream, no detail' => [ { scope => 'upstream', reason => 'r', repos => [] },                                                       qr/needs\ upstream.project/ ],
+        'not a hash'           => [ [],                                                                                                        qr/not\ a\ JSON\ object/ ],
+        'unknown scope'        => [ { scope => 'some', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                               qr/scope\ must\ be/ ],
+        'empty reason'         => [ { scope => 'single', reason => q{}, repos => [ entry( 'Test-Org/one', 1 ) ] },                             qr/reason\ is\ empty/ ],
+        'no repos'             => [ { scope => 'single', reason => 'r', repos => [] },                                                         qr/non-empty\ list/ ],
+        'not a spoke'          => [ { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] },                               qr/not\ a\ spoke/ ],
+        'twice'                => [ { scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/one', 2 ) ] },  qr/listed\ twice/ ],
+        'single with two'      => [ { scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/two', 2 ) ] }, qr/single\ names\ 2/ ],
+        'multi with one'       => [ { scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                              qr/multi\ names\ one/ ],
+        'no instructions'      => [ { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1 } ] },                 qr/needs\ repo,\ order\ and\ instructions/ ],
+        'clarify, no question' => [ { scope => 'clarify', reason => 'r', repos => [] },                                                        qr/needs\ question\.text/ ],
+        'clarify, empty text'  => [ { scope => 'clarify', reason => 'r', repos => [], question => { text => q{} } },                           qr/needs\ question\.text/ ],
+        'upstream, no detail'  => [ { scope => 'upstream', reason => 'r', repos => [] },                                                       qr/needs\ upstream.project/ ],
     );
     for my $case ( sort keys %bad ) {
         my ( $answer, $error ) = @{ $bad{$case} };

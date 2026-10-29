@@ -426,7 +426,7 @@ sub prepare_hub ( $config, $gh ) {
 Refreshes a reference worktree of every spoke, writes the hub CLAUDE.md, and
 asks the triage question with read-only tools.  An answer that does not pass
 L<App::Clod::Triage/validate> gets one more try, with the error.  Then it
-enqueues the work: C<kickback> for upstream, one C<spoke_review> for a review,
+enqueues the work: C<kickback> for upstream or clarify, one C<spoke_review> for a review,
 and otherwise a chain of C<spoke_fix> or C<spoke_address> jobs, each the parent
 of the next, and a C<report> after them all.
 
@@ -478,7 +478,7 @@ C<($job, $item, $answer)>.  Enqueues the jobs that the triage answer calls for, 
 sub plan_children ( $job, $item, $answer ) {
     my $minion = $job->minion;
     my %notes  = ( origin => origin_of($item), triage_job => $job->id );
-    if ( $answer->{scope} eq 'upstream' ) {
+    if ( $answer->{scope} eq 'upstream' || $answer->{scope} eq 'clarify' ) {
         return $minion->enqueue( kickback => [ { item => $item, triage => $answer } ], { notes => \%notes } );
     }
 
@@ -568,17 +568,22 @@ sub slug ($text) {
 =func spoke_fix
 
 Works on a new branch in a worktree of one spoke.  The spoke commits, and the
-job pushes and opens the pull request.
+job pushes and opens the pull request.  If the spoke asks a question instead,
+the job gives the origin to a person through C<hand_back>.  A job whose parent
+asked a question, or waits for one, does not run the spoke, and waits too.
 
 =cut
 
 sub spoke_fix ( $job, $config, $args ) {
-    my $item   = $args->{item};
-    my $repo   = $args->{repo};
+    my $item      = $args->{item};
+    my $repo      = $args->{repo};
+    my @prior     = parent_results($job);
+    my ($waiting) = grep { $_->{question} || $_->{waiting} } @prior;
+    return $job->finish( { repo => $repo, waiting => 1, summary => "Waits for the answer to the question from $waiting->{repo}." } ) if $waiting;
+
     my $gh     = github($config);
     my $base   = default_branch( $gh, $repo );
     my $branch = 'clod/' . $job->id . q{-} . slug( $item->{title} );
-    my @prior  = parent_results($job);
     my $prior  = @prior ? join( "\n", 'Earlier spokes in this change:', map { "- $_->{repo}: branch $_->{branch}" . ( $_->{pr_url} ? ", $_->{pr_url}" : q{} ) . "\n  $_->{summary}" } @prior ) : q{};
 
     return in_worktree(
@@ -589,12 +594,25 @@ sub spoke_fix ( $job, $config, $args ) {
                 $job, $config,
                 dir    => $tree,
                 prompt => prompt( fix => repo => $repo, branch => $branch, origin => origin_url( $config, $item ), instructions => $args->{instructions}, prior => $prior, context => context( $config, $gh, $item ) ),
-                schema => { type => 'object', required => [qw{title summary}], properties => { title => { type => 'string' }, summary => { type => 'string' } } },
+                schema => {
+                    type       => 'object',
+                    required   => [qw{title summary}],
+                    properties => { title => { type => 'string' }, summary => { type => 'string' }, question => { type => 'string' }, path => { type => 'string' } },
+                },
             ) // return;
             my %usage   = usage_of($outcome);
             my $answer  = $outcome->{structured} // {};
             my $commits = $spoke->commits_since( $tree, "origin/$base" );
-            return $job->fail( { repo => $repo, error => "the run failed: $outcome->{stderr}", %usage } )   if !$outcome->{ok} && !$commits;
+            return $job->fail( { repo => $repo, error => "the run failed: $outcome->{stderr}", %usage } ) if !$outcome->{ok} && !$commits;
+
+            if ( !$commits && ( $answer->{question} // q{} ) ne q{} ) {
+                my $asked = hand_back(
+                    $job, $config, $gh, $item, $answer->{path},
+                    "I need an answer before I can change $repo. I changed nothing.",
+                    $answer->{question}, ( $answer->{path} ? "This concerns `$answer->{path}` in $repo." : () ), how_to_resume($config),
+                );
+                return $job->finish( { repo => $repo, question => $answer->{question}, summary => $answer->{question}, %$asked, %usage } );
+            }
             return $job->finish( { repo => $repo, no_change => 1, summary => $answer->{summary}, %usage } ) if !$commits;
 
             $spoke->push_branch( $tree, $branch );
@@ -773,17 +791,24 @@ sub reply ( $job, $config, $item ) {
 =func report
 
 Comments on the origin with every pull request of the change, and links the
-pull requests to each other.  It runs even if a spoke failed.
+pull requests to each other.  It runs even if a spoke failed.  If a spoke asked
+a question and none opened a pull request, the question is the last word, and
+it posts nothing.
 
 =cut
 
 sub report ( $job, $config, $args ) {
-    my $item  = $args->{item};
-    my $gh    = github($config);
-    my @done  = grep { $_->{pr_url} } parent_results($job);
-    my @lines = map  { "- $_->{repo}: $_->{pr_url}" } @done;
-    my $total = scalar @{ $job->info->{parents} // [] };
-    my $note  = @done < $total ? sprintf( "\n\n%d of %d spokes opened a pull request; see the jobs for the rest.", scalar @done, $total ) : q{};
+    my $item    = $args->{item};
+    my $gh      = github($config);
+    my @results = parent_results($job);
+    my @done    = grep { $_->{pr_url} } @results;
+    my $asked   = grep { $_->{question} } @results;
+    my $total   = scalar @{ $job->info->{parents} // [] };
+    return $job->finish( { prs => [], of => $total, waiting => 1 } ) if $asked && !@done;
+
+    my @lines = map { "- $_->{repo}: $_->{pr_url}" } @done;
+    my $rest  = $asked         ? 'the rest wait for the answer to the question above'                                     : 'see the jobs for the rest';
+    my $note  = @done < $total ? sprintf( "\n\n%d of %d spokes opened a pull request; %s.", scalar @done, $total, $rest ) : q{};
     $gh->comment( $item->{repo}, $item->{number}, @lines ? join( "\n", 'The change is in these pull requests:', @lines ) . $note : "No pull request came of this.$note" );
 
     if ( @done > 1 ) {
@@ -796,34 +821,90 @@ sub report ( $job, $config, $args ) {
     return $job->finish( { prs => [ map { $_->{pr_url} } @done ], of => $total } );
 }
 
-=func kickback
+=func hand_back
 
-Assigns the origin to the owner of the affected path in CODEOWNERS, or to the
-repository owner, removes the bot, and explains why the fix is upstream.
+C<($job, $config, $gh, $item, $path, @paragraphs)>.  Gives the origin to a
+person, assigns it to them, and removes the bot.  Then it posts the paragraphs
+as one comment that mentions that person and every team that owns C<$path>.
+
+The person is the author of a pull request, unless that is the bot.  Otherwise
+it is the requester on a pull request.  On an issue, it is the first user who
+owns C<$path> in CODEOWNERS, then the repository owner if that owner is a user,
+then the requester.
+
+Returns C<{person, assigned, teams}>.  C<assigned> is false when GitHub dropped
+the assignment.  It drops it without an error for a user who cannot be
+assigned, and the mention still reaches that user.
 
 =cut
 
-sub kickback ( $job, $config, $args ) {
-    my ( $item, $triage ) = @{$args}{qw{item triage}};
-    my $gh   = github($config);
-    my $repo = $item->{repo};
-    my $up   = $triage->{upstream};
+sub hand_back ( $job, $config, $gh, $item, $path, @paragraphs ) {
+    my ( $repo, $number ) = @{$item}{qw{repo number}};
+    my $owners = [];
+    if ( ( $path // q{} ) ne q{} ) {
+        my ($text) = grep { defined } map { $gh->file( $repo, $_ ) } @App::Clod::CodeOwners::LOCATIONS;
+        $owners = App::Clod::CodeOwners::owners( App::Clod::CodeOwners::parse($text), $path ) if defined $text;
+    }
+    my @teams = grep { m{/} } @$owners;
 
-    my ($text)   = grep { defined } map { $gh->file( $repo, $_ ) } @App::Clod::CodeOwners::LOCATIONS;
-    my $owners   = $text && $up->{path} ? App::Clod::CodeOwners::owners( App::Clod::CodeOwners::parse($text), $up->{path} ) : [];
-    my ($person) = grep { !m{/} } @$owners;
+    my $person;
+    if ( $item->{is_pr} ) {
+        my $author = $gh->pull( $repo, $number )->{user}{login} // q{};
+        $person = $author ne q{} && $author ne $config->{bot} ? $author : $item->{requester};
+    }
+    ($person) = grep { !m{/} } @$owners if !$person;
     if ( !$person ) {
         my $info = $gh->repo($repo);
         $person = $info->{owner}{type} eq 'User' ? $info->{owner}{login} : $item->{requester};
     }
 
-    $gh->assign( $repo, $item->{number}, $person );
-    $gh->unassign( $repo, $item->{number}, $config->{bot} );
-    my $body = join "\n\n", "\@$person: triage found that the best fix for this is upstream, in $up->{project}, which we do not own. I changed nothing.",
-      $up->{explanation}, ( $up->{path} ? "The affected path here is `$up->{path}`." : () ), "Why not here: $triage->{reason}";
-    $gh->comment( $repo, $item->{number}, $body );
-    log_note( $job, "gave $repo#$item->{number} back to $person" );
-    return $job->finish( { assigned => $person, project => $up->{project} } );
+    my $issue    = $gh->assign( $repo, $number, $person );
+    my $assigned = List::Util::any { ( $_->{login} // q{} ) eq $person } @{ $issue->{assignees} // [] };
+    $gh->unassign( $repo, $number, $config->{bot} );
+    $gh->comment( $repo, $number, join( q{ }, map { "\@$_" } $person, @teams ) . q{: } . join( "\n\n", @paragraphs ) );
+    log_note( $job, "gave $repo#$number to $person" . ( $assigned ? q{} : ', but GitHub did not assign them; the mention still reaches them' ) );
+    return { person => $person, assigned => $assigned ? 1 : 0, teams => \@teams };
+}
+
+=func how_to_resume
+
+C<($config)>.  The paragraph that tells a person how to give the work back to the bot.
+
+=cut
+
+sub how_to_resume ($config) {
+    return "When you have answered, mention \@$config->{bot} here or assign this to \@$config->{bot} again, and the work starts over.";
+}
+
+=func kickback
+
+Gives the origin back to a person, through C<hand_back>, when triage answered
+C<upstream> or C<clarify>.  For C<upstream> it explains why the fix is
+upstream.  For C<clarify> it asks the question.
+
+=cut
+
+sub kickback ( $job, $config, $args ) {
+    my ( $item, $triage ) = @{$args}{qw{item triage}};
+    my $gh = github($config);
+
+    if ( $triage->{scope} eq 'clarify' ) {
+        my $q     = $triage->{question};
+        my $asked = hand_back(
+            $job, $config, $gh, $item, $q->{path},
+            'I need an answer before I can plan this. I changed nothing.',
+            $q->{text}, ( $q->{path} ? "This concerns `$q->{path}`." : () ), how_to_resume($config),
+        );
+        return $job->finish( { %$asked, scope => 'clarify', question => $q->{text}, summary => $q->{text} } );
+    }
+
+    my $up    = $triage->{upstream};
+    my $asked = hand_back(
+        $job, $config, $gh, $item, $up->{path},
+        "triage found that the best fix for this is upstream, in $up->{project}, which we do not own. I changed nothing.",
+        $up->{explanation}, ( $up->{path} ? "The affected path here is `$up->{path}`." : () ), "Why not here: $triage->{reason}",
+    );
+    return $job->finish( { %$asked, scope => 'upstream', project => $up->{project}, summary => $up->{explanation} } );
 }
 
 =func harness_scan

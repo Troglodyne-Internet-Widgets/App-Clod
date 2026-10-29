@@ -215,6 +215,11 @@ subtest triage => sub {
     answer( { scope => 'upstream', reason => 'theirs', repos => [], upstream => { project => 'Other/lib', path => 'lib/X.pm', explanation => 'X is broken there' } } );
     my $up = run_job( triage => \%item );
     is( $minion->job( $up->{result}{children}[0] )->info->{task}, 'kickback', 'an upstream answer is a kickback' );
+
+    answer( { scope => 'clarify', reason => 'two readings', repos => [], question => { text => 'Which one?' } } );
+    my $ask      = run_job( triage => \%item );
+    my $kickback = $minion->job( $ask->{result}{children}[0] )->info;
+    is( [ $kickback->{task}, scalar @{ $ask->{result}{children} } ], [ 'kickback', 1 ], 'a clarify answer is a kickback, and nothing else' );
     $minion->reset( { all => 1 } );
 };
 
@@ -235,6 +240,23 @@ subtest spoke_fix => sub {
     my $none = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
     is( $none->{result}{no_change},   1, 'a run that commits nothing opens nothing' );
     is( scalar @{ calls_of('pull') }, 1, 'so no second pull request' );
+
+    @calls         = ();
+    $state{files}  = { CODEOWNERS => "lib/  \@lib-owner\n" };
+    $state{assign} = { assignees  => [ { login => 'lib-owner' } ] };
+    answer( { title => 't', summary => 's', question => 'Keep the old name?', path => 'lib/X.pm' } );
+    my $ask = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    like( $ask->{result}, { question => 'Keep the old name?', person => 'lib-owner', assigned => 1 }, 'a spoke that asks a question gives the issue to the owner of the path' );
+    my $resume = qr/mention\ \@$BOT\ here\ or\ assign\ this\ to\ \@$BOT\ again/;
+    my $asks   = qr/Test-Org\/one.*Keep\ the\ old\ name\?/s;
+    like( calls_of('comment')->[0][2]{body}, qr/\A\@lib-owner:\ .*$asks.*$resume/s, 'and asks it there, with how to go on' );
+    is( calls_of('unassign')->[0][2], { assignees => [$BOT] }, 'and the bot lets go of the issue' );
+    is( scalar @{ calls_of('pull') }, 0,                       'and opens no pull request' );
+
+    my $next = run_id( $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/two', instructions => 'x' } ], { parents => [ $ask->{id} ] } ) );
+    like( $next->{result}, { waiting => 1, summary => qr/Test-Org\/one/ }, 'a spoke after one that asked waits, and does not run' );
+    my $after = run_id( $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/two', instructions => 'x' } ], { parents => [ $next->{id} ] } ) );
+    is( $after->{result}{waiting}, 1, 'and so does the one after that' );
     $minion->reset( { all => 1 } );
 };
 
@@ -250,23 +272,45 @@ subtest report => sub {
     is( scalar @{ calls_of('update_pull') }, 2, 'and links each pull request to the others' );
     like( calls_of('update_pull')->[0][2]{body}, qr{\Aold\ body\n},                        'keeping the body it had' );
     like( calls_of('update_pull')->[0][2]{body}, qr{Merge\ together\ with:\n-\ \S+/two/2}, 'by adding the siblings to its body' );
+
+    @calls = ();
+    my @asked = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', question => 'Which?' }, { repo => 'Test-Org/two', waiting => 1 };
+    run_id($_) for @asked;
+    my $quiet = run_id( $minion->enqueue( report => [ { item => \%item } ], { parents => \@asked } ) );
+    is( [ $quiet->{result}{waiting}, scalar @{ calls_of('comment') } ], [ 1, 0 ], 'when a spoke asked and none opened a pull request, the question is the last word' );
+
+    my @some = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 1, pr_url => 'https://test.test/one/1' }, { repo => 'Test-Org/two', question => 'Which?' };
+    run_id($_) for @some;
+    run_id( $minion->enqueue( report => [ { item => \%item } ], { parents => \@some } ) );
+    like( calls_of('comment')->[0][2]{body}, qr{one/1.*1\ of\ 2.*wait\ for\ the\ answer}s, 'otherwise the report says that the rest wait for the answer' );
     $minion->reset( { all => 1 } );
 };
 
 subtest kickback => sub {
-    %state        = ();
-    @calls        = ();
-    $state{files} = { '.github/CODEOWNERS' => "*  \@fallback\nlib/  \@lib-owner \@Test-Org/team\n" };
+    %state         = ();
+    @calls         = ();
+    $state{files}  = { '.github/CODEOWNERS' => "*  \@fallback\nlib/  \@lib-owner \@Test-Org/team\n" };
+    $state{assign} = { assignees            => [ { login => 'lib-owner' } ] };
     my $triage = { scope => 'upstream', reason => 'not ours', upstream => { project => 'Other/lib', path => 'lib/X.pm', explanation => 'X is broken there' } };
     my $info   = run_job( kickback => { item => \%item, triage => $triage } );
-    is( $info->{result}{assigned},    'lib-owner', 'the issue goes to the user who owns the path' );
+    like( $info->{result}, { person => 'lib-owner', assigned => 1, teams => ['Test-Org/team'] }, 'the issue goes to the user who owns the path' );
     is( calls_of('assign')->[0][2],   { assignees => ['lib-owner'] }, 'it is assigned to them' );
     is( calls_of('unassign')->[0][2], { assignees => [$BOT] },        'and the bot lets go of it' );
-    like( calls_of('comment')->[0][2]{body}, qr/\A\@lib-owner:\ .*Other\/lib.*X\ is\ broken\ there/s, 'and says why' );
+    my $to = qr/\A\@lib-owner\ \@Test-Org\/team:\ /;
+    like( calls_of('comment')->[0][2]{body}, qr/$to.*Other\/lib.*X\ is\ broken\ there/s, 'and says why, to them and to the team that owns the path' );
 
     @calls = ();
     $state{files} = {};
-    is( run_job( kickback => { item => \%item, triage => $triage } )->{result}{assigned}, 'trusted', 'with no CODEOWNERS and an organization owner, it goes back to the requester' );
+    my $ask = run_job( kickback => { item => \%item, triage => { scope => 'clarify', reason => 'two readings', question => { text => 'Which one do you mean?' } } } );
+    like( $ask->{result}, { person => 'trusted', assigned => 0, question => 'Which one do you mean?' }, 'with no CODEOWNERS and an organization owner, a question goes back to the requester' );
+    my $resume = qr/mention\ \@$BOT\ here\ or\ assign\ this\ to\ \@$BOT\ again/;
+    like( calls_of('comment')->[0][2]{body}, qr/\A\@trusted:\ .*Which\ one\ do\ you\ mean\?.*$resume/s, 'it asks the question, and says how to go on' );
+
+    @calls = ();
+    $state{pull} = { user => { login => 'pr-author' } };
+    is( run_job( kickback => { item => { %item, is_pr => 1 }, triage => { scope => 'clarify', reason => 'r', question => { text => 'Why?' } } } )->{result}{person}, 'pr-author', 'on a pull request, it goes to the author' );
+    $state{pull} = { user => { login => $BOT } };
+    is( run_job( kickback => { item => { %item, is_pr => 1 }, triage => { scope => 'clarify', reason => 'r', question => { text => 'Why?' } } } )->{result}{person}, 'trusted', 'or to the reviewer, when the bot is the author' );
     $minion->reset( { all => 1 } );
 };
 
