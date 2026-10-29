@@ -1,0 +1,75 @@
+#!/usr/bin/env perl
+use 5.040;
+use warnings FATAL => 'all';
+use re '/aasx';
+use Test2::V0;
+use Test2::Plugin::NoWarnings;
+use FindBin::libs;
+use File::Temp ();
+use IPC::Run   ();
+use Mojo::File ();
+
+use App::Clod::Spoke();
+
+my $tmp = Mojo::File->new( File::Temp->newdir( CLEANUP => 1 )->dirname )->child("clod-spoke-$$")->make_path;
+END { $tmp->remove_tree if $tmp }
+
+sub git (@args) {
+    my ( $out, $err );
+    IPC::Run::run( [ 'git', @args ], '>', \$out, '2>', \$err ) or die "git @args: $err";
+    chomp $out;
+    return $out;
+}
+
+# A spoke on disk that has its own hooks, as the scaffold gives it.
+my $bare = $tmp->child(qw{remote Test-Org one.git});
+$bare->dirname->make_path;
+git( qw{init --quiet --bare --initial-branch=main}, "$bare" );
+my $seed = $tmp->child('seed')->make_path;
+git( q{-C}, "$seed", qw{init --quiet --initial-branch=main} );
+$seed->child( 'git-hooks', 'pre-commit' )->dirname->make_path;
+my $hook = $seed->child(qw{git-hooks pre-commit})->spew("#!/bin/sh\ntouch hook-ran\n");
+chmod 0755, $hook or die "chmod $hook: $!";
+git( '-C',  "$seed", 'add', q{.} );
+git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet --no-verify -m seed} );
+git( '-C',  "$seed", 'push', '--quiet', "$bare", 'main' );
+
+my $spoke = App::Clod::Spoke->new( repo => 'Test-Org/one', workspace => "$tmp/ws", github_web => "file://$tmp/remote", token => 'test-token', author_name => 'test-bot', author_email => 'bot@test.test' );
+
+subtest refresh_reference => sub {
+    my $ref = $spoke->refresh_reference('main');
+    ok( -e $ref->child( 'git-hooks', 'pre-commit' ), 'the reference worktree has the default branch' );
+    $seed->child('new')->spew('x');
+    git( '-C',  "$seed", 'add', 'new' );
+    git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet --no-verify -m more} );
+    git( '-C',  "$seed", 'push', '--quiet', "$bare", 'main' );
+    ok( -e $spoke->refresh_reference('main')->child('new'), 'and follows it on the next refresh' );
+};
+
+subtest worktree => sub {
+    my $dir  = $tmp->child( 'ws', 'work', 1, 'Test-Org', 'one' );
+    my $tree = $spoke->worktree( $dir, branch => 'clod/1-test', base => 'main' );
+    is( git( q{-C}, "$tree", qw{rev-parse --abbrev-ref HEAD} ), 'clod/1-test',   'a new branch, checked out' );
+    is( git( '-C', "$tree", 'config', 'user.email' ),           'bot@test.test', 'with the bot as the author' );
+    is( $spoke->commits_since( $tree, 'origin/main' ),          0,               'and no commits of its own yet' );
+
+    git( q{-C}, "$tree", qw{commit --quiet --allow-empty -m work} );
+    ok( -e $tree->child('hook-ran'), 'a commit in the worktree runs the repository\'s own pre-commit hook' );
+    is( $spoke->commits_since( $tree, 'origin/main' ), 1, 'the commit counts' );
+
+    my $sha = $spoke->push_branch( $tree, 'clod/1-test' );
+    is( git( '--git-dir', "$bare", 'rev-parse', 'clod/1-test' ), $sha, 'the push puts the commit on the remote branch' );
+
+    $spoke->remove_worktree($tree);
+    ok( !-d $tree, 'the worktree can be removed' );
+    my $again = $spoke->worktree( $dir, existing => 'clod/1-test' );
+    is( git( '-C', "$again", 'rev-parse', 'HEAD' ), $sha, 'and made again from the pushed branch' );
+    $spoke->remove_worktree($again);
+};
+
+subtest git => sub {
+    like( dies { $spoke->git(qw{rev-parse --verify no-such-ref}) }, qr/git\ rev-parse\ --verify\ no-such-ref:\ fatal/, 'a failing git command dies with its error' );
+    ok( !( grep { m{test-token} } git( '--git-dir', $spoke->mirror->to_string, 'config', '--list' ) ), 'the token is not in the clone\'s configuration' );
+};
+
+done_testing;

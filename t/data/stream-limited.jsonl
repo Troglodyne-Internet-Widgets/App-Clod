@@ -1,0 +1,2 @@
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1793233200,"unifiedWindows":{"five_hour":{"utilization":1,"status":"rejected","resetsAt":1793233200}}}}
+{"type":"result","subtype":"error","is_error":true,"result":"Claude AI usage limit reached","total_cost_usd":0}

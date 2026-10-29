@@ -1,0 +1,24 @@
+#!/usr/bin/env perl
+use 5.040;
+use warnings FATAL => 'all';
+use re '/aasx';
+
+# PODNAME: clod
+# ABSTRACT: Run the App::Clod web page or its Minion worker
+
+use Mojolicious::Commands();
+
+Mojolicious::Commands->start_app('App::Clod');
+
+__END__
+
+=head1 SYNOPSIS
+
+    CLOD_CONFIG=clod.conf clod daemon -l http://127.0.0.1:3000
+    CLOD_CONFIG=clod.conf clod minion worker -j 2
+
+=head1 DESCRIPTION
+
+See L<App::Clod>.
+
+=cut

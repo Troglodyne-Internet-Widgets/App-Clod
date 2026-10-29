@@ -1,0 +1,391 @@
+#!/usr/bin/env perl
+use 5.040;
+use warnings FATAL => 'all';
+use re '/aasx';
+use Test2::V0;
+use Test2::Plugin::NoWarnings;
+use FindBin::libs;
+use File::Temp       ();
+use IPC::Run         ();
+use Mojo::File       ();
+use Mojo::JSON       ();
+use Mojo::UserAgent  ();
+use Mojolicious      ();
+use Test::MockModule ();
+use Time::HiRes      qw{time};
+
+use App::Clod();
+use App::Clod::Tasks();
+
+my $here = Mojo::File->new(__FILE__)->dirname->to_abs;
+my $tmp  = Mojo::File->new( File::Temp->newdir->dirname )->child( 'clod-tasks-' . $$ )->make_path;
+END { $tmp->remove_tree if $tmp }
+
+my $BOT    = 'test-bot';
+my @SPOKES = qw{Test-Org/one Test-Org/two};
+
+sub git (@args) {
+    my ( $out, $err );
+    IPC::Run::run( [ "git", @args ], ">", \$out, "2>", \$err ) or die "git @args: $err";
+    chomp $out;
+    return $out;
+}
+
+# Each spoke is a bare repository on disk, standing in for GitHub's git side.
+my $remote = $tmp->child('remote');
+for my $repo (@SPOKES) {
+    my $bare = $remote->child("$repo.git");
+    $bare->dirname->make_path;
+    git( qw{init --quiet --bare --initial-branch=main}, "$bare" );
+    my $seed = $tmp->child( 'seed', $repo )->make_path;
+    git( q{-C}, "$seed", qw{init --quiet --initial-branch=main} );
+    $seed->child('CLAUDE.md')->spew("# CLAUDE.md\n\n$repo is a test spoke.\n");
+    git( '-C',  "$seed", 'add', q{.} );
+    git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet -m seed} );
+    git( '-C',  "$seed", 'push', '--quiet', "$bare", 'main' );
+}
+
+sub path_of ($c) {
+    my $url = $c->req->url;
+    return $url->path->to_string;
+}
+
+# The REST side of GitHub, recording each call that changes something.
+my ( @calls, %state );
+my $fake = Mojolicious->new;
+$fake->log->level('fatal');
+my $r      = $fake->routes;
+my $record = sub ($what) {
+    return sub ($c) { push @calls, [ $what, path_of($c), $c->req->json ]; $c->render( json => $state{$what} // {}, status => 201 ) };
+};
+$r->get('/notifications')->to( cb => sub ($c) { $c->render( json => $state{threads} // [] ) } );
+$r->patch('/notifications/threads/:id')->to( cb => $record->('read') );
+$r->get('/repos/:o/:n/issues/:num/events')->to( cb => sub ($c) { $c->render( json => $state{events} // [] ) } );
+$r->get('/repos/:o/:n/issues/:num/comments')->to( cb => sub ($c) { $c->render( json => [ { user => { login => 'someone' }, body => 'a comment' } ] ) } );
+$r->get('/repos/:o/:n/issues/:num')->to( cb => sub ($c) { $c->render( json => { title => 'The issue', body => 'Please fix it.', user => { login => 'someone' } } ) } );
+$r->post('/repos/:o/:n/issues/:num/reactions')->to( cb => $record->('react') );
+$r->post('/repos/:o/:n/issues/:num/comments')->to( cb => $record->('comment') );
+$r->post('/repos/:o/:n/issues/:num/assignees')->to( cb => $record->('assign') );
+$r->delete('/repos/:o/:n/issues/:num/assignees')->to( cb => $record->('unassign') );
+$r->get('/repos/:o/:n/pulls/:num/comments')->to( cb => sub ($c) { $c->render( json => $state{review_comments} // [] ) } );
+$r->post('/repos/:o/:n/pulls/:num/comments/:id/replies')->to( cb => $record->('reply') );
+$r->post('/repos/:o/:n/pulls/:num/reviews')->to(
+    cb => sub ($c) {
+        push @calls, [ 'review', path_of($c), $c->req->json ];
+        return $c->render( json => { message  => 'Unprocessable' }, status => 422 ) if $state{refuse_comments} && @{ $c->req->json->{comments} // [] };
+        return $c->render( json => { html_url => 'https://test.test/review' } );
+    }
+);
+$r->get('/repos/:o/:n/pulls/:num')->to( cb => sub ($c) { $c->render( json => $state{pull} // { body => 'old body', base => { ref => 'main' }, head => { sha => 'abc' } } ) } );
+$r->patch('/repos/:o/:n/pulls/:num')->to( cb => $record->('update_pull') );
+$r->post('/repos/:o/:n/pulls')->to(
+    cb => sub ($c) {
+        push @calls, [ 'pull', path_of($c), $c->req->json ];
+        my $n = 100 + scalar grep { $_->[0] eq 'pull' } @calls;
+        $c->render( json => { number => $n, html_url => "https://test.test/" . $c->param('o') . q{/} . $c->param('n') . "/pull/$n" }, status => 201 );
+    }
+);
+$r->get('/repos/:o/:n/contents/*file')->to( cb => sub ($c) { my $f = $state{files}{ $c->param('file') }; defined $f ? $c->render( text => $f ) : $c->render( json => {}, status => 404 ) } );
+$r->get('/repos/:o/:n/git/trees/*ref')->to(
+    cb => sub ($c) {
+        $c->render( json => { tree => [ map { { path => $_, sha => "sha-$_" } } sort keys %{ $state{files} // {} } ] } );
+    }
+);
+$r->get('/repos/:o/:n/issues')->to( cb => sub ($c) { $c->render( json => [ { number => 5, title => 'Assigned', html_url => 'https://test.test/5', updated_at => 'today' } ] ) } );
+$r->get('/repos/:o/:n')->to( cb => sub ($c) { $c->render( json => { default_branch => 'main', owner => { type => 'Organization', login => $c->param('o') } } ) } );
+$r->get('/comment')->to( cb => sub ($c) { $c->render( json => { user => { login => $state{commenter} } } ) } );
+
+my $fake_ua = Mojo::UserAgent->new;
+$fake_ua->server->app($fake);
+my $api    = $fake_ua->server->url->to_string =~ s{/\z}{}r;
+my $github = Test::MockModule->new('App::Clod::GitHub');
+$github->redefine( new => sub ( $class, %args ) { $github->original("new")->( $class, %args, api => $api, token => "test-token", ua => $fake_ua ) } );
+
+my $conf = $tmp->child('clod.conf');
+$conf->spew(
+    Mojo::Util::dumper(
+        {
+            bot              => $BOT,
+            workspace        => $tmp->child('workspace')->to_string,
+            github_web       => "file://$remote",
+            spokes           => \@SPOKES,
+            authorized_users => ['trusted'],
+            owners           => ['Test-Org'],
+            auth             => { trusted_header => 'X-Test-User' },
+            poll_interval    => 0,
+            claude           => { bin => $here->child( 'bin', 'fake-claude' )->to_string, timeout => 60 },
+        }
+    )
+);
+local $ENV{CLOD_CONFIG} = "$conf";
+local $ENV{GH_TOKEN}    = 'test-token';
+my $app = App::Clod->new;
+$app->log->level('fatal');
+my $minion = $app->minion;
+
+# The fake claude prints these events, ending with this structured answer.
+# run_id gives %fake to its environment.
+my $STREAMS = 0;
+my %fake;
+
+sub answer ( $structured, %env ) {
+    my $stream = $tmp->child( 'stream-' . ++$STREAMS . '.jsonl' );
+    $stream->spew( Mojo::JSON::encode_json( { type => 'result', is_error => Mojo::JSON::false, structured_output => $structured, total_cost_usd => 0.5, usage => {} } ) . "\n" );
+    %fake = ( FAKE_CLAUDE_STREAM => "$stream", FAKE_CLAUDE_COMMIT => $env{commit} ? 1 : 0 );
+    return;
+}
+
+sub run_job ( $task, @args ) { return run_id( $minion->enqueue( $task => \@args ) ) }
+
+# Runs the job in this process, where the fake GitHub is listening.
+sub run_id ($id) {
+    local @ENV{ keys %fake } = values %fake;
+    my $job = $minion->worker->register->dequeue( 0, { id => $id } );
+    my $err = $job->execute;
+    $job->fail($err) if defined $err;
+    $minion->worker->unregister;
+    return $minion->job($id)->info;
+}
+
+sub calls_of ($what) {
+    return [ grep { $_->[0] eq $what } @calls ];
+}
+
+my %item = ( repo => 'Test-Org/one', number => 7, kind => 'fix', is_pr => 0, title => 'Fix the thing!', requester => 'trusted' );
+
+subtest inbox_poll => sub {
+    %state = ();
+    @calls = ();
+    my %thread = ( reason => 'assign', updated_at => 't1', subject => { type => 'Issue', url => "$api/repos/Test-Org/one/issues/7", title => 'Fix the thing!' } );
+    $state{threads} = [
+        +{ %thread, id => 1, repository => { full_name => 'Test-Org/one' } },
+        +{ %thread, id => 2, repository => { full_name => 'Elsewhere/repo' } },
+        +{ %thread, id => 3, repository => { full_name => 'Test-Org/two' }, reason => 'subscribed' },
+    ];
+    $state{events} = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'trusted' } } ];
+
+    my $info = run_job('inbox_poll');
+    is( $info->{state},                        'finished', 'the poll finishes' ) or diag Mojo::Util::dumper $info->{result};
+    is( scalar @{ $info->{result}{enqueued} }, 1,          'one thread becomes work' );
+    my $triage = $minion->job( $info->{result}{enqueued}[0] )->info;
+    is( $triage->{task}, 'triage', 'an assignment goes to triage' );
+    like( $triage->{args}[0], { repo => 'Test-Org/one', number => 7, kind => 'fix', requester => 'trusted' }, 'with the item' );
+    is( $triage->{notes}{origin},      'Test-Org/one#7', 'noted with its origin' );
+    is( scalar @{ calls_of('react') }, 1,                'the bot reacts to what it takes' );
+    is( scalar @{ calls_of('read') },  3,                'and marks every thread read, taken or not' );
+    like( $info->{result}{ignored}, [ qr/Elsewhere\/repo\ is\ not\ a\ spoke/, qr/nothing\ to\ do\ for\ reason\ 'subscribed'/ ], 'and says why it left the rest' );
+
+    my $again = run_job('inbox_poll');
+    is( $again->{result}{enqueued}, [], 'a thread seen before at the same update is not enqueued twice' );
+
+    $state{threads} = [ +{ %thread, id => 4, updated_at => 't2', repository => { full_name => 'Test-Org/one' } } ];
+    $state{events}  = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'stranger' } } ];
+    my $stranger = run_job('inbox_poll');
+    like( $stranger->{result}{ignored}, [qr/requested\ by\ stranger,\ who\ is\ not\ authorized/], 'an assignment by someone not authorized is left alone' );
+
+    $state{threads}   = [ { id => 5, reason => 'mention', updated_at => 't3', repository => { full_name => 'Test-Org/one' }, subject => { type => 'Issue', url => "$api/repos/Test-Org/one/issues/8", latest_comment_url => "$api/comment" } } ];
+    $state{commenter} = 'trusted';
+    my $mention = run_job('inbox_poll');
+    is( $minion->job( $mention->{result}{enqueued}[0] )->info->{task}, 'reply', 'a mention goes straight to a reply' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest triage => sub {
+    %state = ();
+    answer( { scope => 'multi', reason => 'both need it', repos => [ { repo => 'Test-Org/two', order => 2, instructions => 'then two' }, { repo => 'Test-Org/one', order => 1, instructions => 'first one' } ] } );
+    my $info = run_job( triage => \%item );
+    is( $info->{state}, 'finished', 'triage finishes' ) or diag Mojo::Util::dumper $info->{result};
+    my @children = map { $minion->job($_)->info } @{ $info->{result}{children} };
+    is( [ map { $_->{task} } @children ],                [qw{spoke_fix spoke_fix report}],       'a multi fix is a spoke job per repo, then a report' );
+    is( [ map { $_->{args}[0]{repo} // () } @children ], [qw{Test-Org/one Test-Org/two}],        'in the order triage gave' );
+    is( $children[1]{parents},                           [ $children[0]{id} ],                   'each spoke waits for the one before it' );
+    is( $children[2]{parents},                           [ map { $_->{id} } @children[ 0, 1 ] ], 'the report waits for them all' );
+    ok( $children[2]{lax}, 'and runs even if one failed' );
+    is( $info->{notes}{scope}, 'multi', 'the scope is noted for the page' );
+    ok( -e $tmp->child(qw{workspace hub CLAUDE.md}), 'the hub workspace has its CLAUDE.md' );
+    like( $tmp->child(qw{workspace hub CLAUDE.md})->slurp, qr/Test-Org\/two\ is\ a\ test\ spoke/, 'which describes each spoke from its own' );
+    $minion->reset( { all => 1 } );
+
+    answer( { scope => 'single', reason => 'r', repos => [ { repo => 'Not/aspoke', order => 1, instructions => 'x' } ] } );
+    my $bad = run_job( triage => \%item );
+    is( $bad->{state}, 'failed', 'an answer that names a repo that is not a spoke fails, after its retry' );
+    like( $bad->{result}{error}, qr/not\ a\ spoke/, 'and says why' );
+    is( $bad->{result}{cost}, 1, 'and counts the cost of both tries' );
+
+    answer( { scope => 'upstream', reason => 'theirs', repos => [], upstream => { project => 'Other/lib', path => 'lib/X.pm', explanation => 'X is broken there' } } );
+    my $up = run_job( triage => \%item );
+    is( $minion->job( $up->{result}{children}[0] )->info->{task}, 'kickback', 'an upstream answer is a kickback' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest spoke_fix => sub {
+    %state = ();
+    @calls = ();
+    answer( { title => 'A title', summary => 'What changed.' }, commit => 1 );
+    my $info = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'do it' } );
+    is( $info->{state}, 'finished', 'the fix finishes' ) or diag Mojo::Util::dumper $info->{result};
+    like( $info->{result}, { repo => 'Test-Org/one', commits => 1, pr => 101, branch => qr{\Aclod/\d+-fix-the-thing\z} }, 'it reports the branch, the commit and the pull request' );
+    ok( git( '--git-dir', $remote->child('Test-Org/one.git')->to_string, 'rev-parse', '--verify', $info->{result}{branch} ), 'the branch was pushed' );
+    my $pull = calls_of('pull')->[0][2];
+    is( [ @$pull{qw{title head base}} ], [ 'A title', $info->{result}{branch}, 'main' ], 'the pull request has the title, the branch and the base' );
+    like( $pull->{body}, qr/What\ changed\..*issues\/7/s, 'and a body with the summary and the origin' );
+    ok( !-e $tmp->child( "workspace", "work", $info->{id} ), "the worktree and its directory are gone afterwards" );
+
+    answer( { title => 't', summary => 'Nothing to do here.' } );
+    my $none = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( $none->{result}{no_change},   1, 'a run that commits nothing opens nothing' );
+    is( scalar @{ calls_of('pull') }, 1, 'so no second pull request' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest report => sub {
+    %state = ();
+    @calls = ();
+    $minion->add_task( fake_spoke => sub ( $job, $r ) { $job->finish($r) } );
+    my @parents = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 1, pr_url => 'https://test.test/one/1' }, { repo => 'Test-Org/two', pr => 2, pr_url => 'https://test.test/two/2' };
+    run_id($_) for @parents;
+    my $info = run_id( $minion->enqueue( report => [ { item => \%item } ], { parents => \@parents } ) );
+    is( $info->{result}{prs}, [ 'https://test.test/one/1', 'https://test.test/two/2' ], 'the report lists every pull request' );
+    like( calls_of('comment')->[0][2]{body}, qr{one/1.*two/2}s, 'on the origin' );
+    is( scalar @{ calls_of('update_pull') }, 2, 'and links each pull request to the others' );
+    like( calls_of('update_pull')->[0][2]{body}, qr{\Aold\ body\n},                        'keeping the body it had' );
+    like( calls_of('update_pull')->[0][2]{body}, qr{Merge\ together\ with:\n-\ \S+/two/2}, 'by adding the siblings to its body' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest kickback => sub {
+    %state        = ();
+    @calls        = ();
+    $state{files} = { '.github/CODEOWNERS' => "*  \@fallback\nlib/  \@lib-owner \@Test-Org/team\n" };
+    my $triage = { scope => 'upstream', reason => 'not ours', upstream => { project => 'Other/lib', path => 'lib/X.pm', explanation => 'X is broken there' } };
+    my $info   = run_job( kickback => { item => \%item, triage => $triage } );
+    is( $info->{result}{assigned},    'lib-owner', 'the issue goes to the user who owns the path' );
+    is( calls_of('assign')->[0][2],   { assignees => ['lib-owner'] }, 'it is assigned to them' );
+    is( calls_of('unassign')->[0][2], { assignees => [$BOT] },        'and the bot lets go of it' );
+    like( calls_of('comment')->[0][2]{body}, qr/\A\@lib-owner:\ .*Other\/lib.*X\ is\ broken\ there/s, 'and says why' );
+
+    @calls = ();
+    $state{files} = {};
+    is( run_job( kickback => { item => \%item, triage => $triage } )->{result}{assigned}, 'trusted', 'with no CODEOWNERS and an organization owner, it goes back to the requester' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest spoke_review => sub {
+    %state = ();
+    @calls = ();
+    answer( { event => 'COMMENT', body => 'Looks fine.', comments => [ { path => 'CLAUDE.md', line => 3, body => 'nit' } ] } );
+    my $pr   = { %item, kind => 'review', is_pr => 1, number => 9 };
+    my $head = git( '--git-dir', $remote->child('Test-Org/one.git')->to_string, 'rev-parse', 'main' );
+    git( '--git-dir', $remote->child('Test-Org/one.git')->to_string, 'update-ref', 'refs/pull/9/head', $head );
+    my $info = run_job( spoke_review => { item => $pr, repo => 'Test-Org/one', instructions => 'review it', related => ['Test-Org/two'] } );
+    is( $info->{state},                       'finished',                                                             'the review finishes' ) or diag Mojo::Util::dumper $info->{result};
+    is( calls_of('review')->[0][2]{comments}, [ { path => 'CLAUDE.md', line => 3, side => 'RIGHT', body => 'nit' } ], 'the line comments go with the review' );
+
+    @calls = ();
+    $state{refuse_comments} = 1;
+    run_job( spoke_review => { item => $pr, repo => 'Test-Org/one', instructions => 'review it' } );
+    my $reviews = calls_of('review');
+    is( scalar @$reviews, 2, 'a review that GitHub refuses for its line comments is sent again' );
+    like( $reviews->[1][2]{body}, qr/Looks\ fine\.\n\n`CLAUDE\.md:3`:\ nit/, 'with the comments in its body' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest spoke_address => sub {
+    %state = ();
+    @calls = ();
+    my $bare = $remote->child('Test-Org/one.git')->to_string;
+    git( q{--git-dir}, $bare, qw{branch clod/1-ours main} );
+    $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/1-ours', repo => { full_name => 'Test-Org/one' } }, html_url => 'https://test.test/pull/11' };
+    $state{review_comments} = [ { id => 21, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'rename this' } ];
+    answer( { summary => 'Renamed.', replies => [ { id => 21, body => 'Done.' }, { id => 99, body => 'not a thread' } ] }, commit => 1 );
+    my $pr   = { %item, kind => 'address_review', is_pr => 1, number => 11 };
+    my $info = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'answer them' } );
+    is( $info->{state},           'finished', 'the answer to the review finishes' ) or diag Mojo::Util::dumper $info->{result};
+    is( $info->{result}{commits}, 1,          'the fix is committed' );
+    isnt( git( '--git-dir', $bare, 'rev-parse', 'clod/1-ours' ), git( '--git-dir', $bare, 'rev-parse', 'main' ), 'and pushed to the pull request branch' );
+    is( [ map { $_->[1] } @{ calls_of('reply') } ], ['/repos/Test-Org/one/pulls/11/comments/21/replies'], 'only the open thread gets a reply' );
+
+    $state{pull} = { %{ $state{pull} }, user => { login => 'someone' } };
+    is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{state}, 'failed', 'a pull request that is not the bot\'s own is refused' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest reply => sub {
+    %state = ();
+    @calls = ();
+    answer( { action => 'reply', body => 'It works like this.' } );
+    my $info = run_job( reply => { %item, kind => 'reply' } );
+    is( calls_of('comment')->[0][2]{body}, 'It works like this.', 'a reply is posted as a comment' );
+    ok( !$info->{result}{triage_job}, 'and starts nothing else' );
+
+    answer( { action => 'fix', body => 'I will fix it.' } );
+    my $fix    = run_job( reply => { %item, kind => 'reply' } );
+    my $triage = $minion->job( $fix->{result}{triage_job} )->info;
+    is( [ $triage->{task}, $triage->{args}[0]{kind} ], [ 'triage', 'fix' ], 'a request for a change starts triage for a fix' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest 'the quota' => sub {
+    App::Clod::Budget::pause( $minion, time + 600 );
+    my $info = run_job( reply => { %item, kind => 'reply' } );
+    is( $info->{state}, 'inactive', 'a job that needs Claude while the quota is out goes back in the queue' );
+    ok( $info->{delayed} > time + 60, 'for later' );
+    $minion->unlock($App::Clod::Budget::LOCK);
+    $minion->reset( { all => 1 } );
+
+    my $stream = $tmp->child('limited.jsonl');
+    $stream->spew( join "\n", '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":' . ( time + 900 ) . '}}', '{"type":"result","is_error":true,"result":"usage limit reached"}', q{} );
+    %fake = ( FAKE_CLAUDE_STREAM => "$stream" );
+    my $limited = run_job( reply => { %item, kind => 'reply' } );
+    is( $limited->{state}, 'inactive', 'a run that hits the limit retries' );
+    ok( App::Clod::Budget::paused($minion), 'and pauses the rest' );
+    $minion->unlock($App::Clod::Budget::LOCK);
+    $minion->reset( { all => 1 } );
+};
+
+subtest pending_threads => sub {
+    %state = ();
+    my $config   = $app->clod_config;
+    my @comments = (
+        { id => 1, user => { login => 'trusted' },  path           => 'a', line => 1, body => 'fix this' },
+        { id => 2, user => { login => $BOT },       in_reply_to_id => 1,   body => 'done' },
+        { id => 3, user => { login => 'trusted' },  path           => 'b', line => 2, body => 'and this' },
+        { id => 4, user => { login => 'stranger' }, path           => 'c', line => 3, body => 'ignore me' },
+        { id => 5, user => { login => 'trusted' },  path           => 'a', line => 1, in_reply_to_id => 1, body => 'not quite' },
+    );
+    my $pending = App::Clod::Tasks::pending_threads( $config, \@comments );
+    is( [ map { $_->{id} } @$pending ], [ 1, 3 ], 'a thread is pending when an authorized user has the last word' );
+    is( [ map { $_->{by} } @{ $pending->[0]{messages} } ], [ 'trusted', $BOT, 'trusted' ], 'with its whole history' );
+};
+
+subtest harness_scan => sub {
+    %state = ();
+    $state{files} = { 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.10.0"}]}' };
+    my $info = run_job('harness_scan');
+    is( [ sort keys %{ $info->{result}{repos} } ], \@SPOKES,                                        'every spoke is scanned' );
+    is( $info->{result}{marketplace}{status},      'fail',                                          'and the marketplace pin is checked' );
+    is( $info->{result}{checks},                   [ map { $_->[0] } @App::Clod::Harness::CHECKS ], 'the result names the checks, for the page' );
+};
+
+subtest assigned_sweep => sub {
+    %state = ();
+    my $info = run_job('assigned_sweep');
+    is( scalar @{ $info->{result}{issues} }, 2,              'the assigned issues of each spoke are listed' );
+    is( $info->{result}{issues}[0]{repo},    'Test-Org/one', 'with their repo' );
+};
+
+subtest slug => sub {
+    %state = ();
+    is( App::Clod::Tasks::slug('Fix the thing!'),      'fix-the-thing', 'a title becomes a branch name' );
+    is( App::Clod::Tasks::slug('!!!'),                 'change',        'a title with nothing usable becomes change' );
+    is( App::Clod::Tasks::slug(undef),                 'change',        'so does no title' );
+    is( length App::Clod::Tasks::slug( 'word ' x 30 ), 39,              'a long title is cut, and loses its trailing dash' );
+};
+
+subtest prompt => sub {
+    %state = ();
+    like( App::Clod::Tasks::prompt( triage => repo => 'Test-Org/one', kind => 'fix' ), qr/than\ in\ Test-Org\/one\ alone/, 'placeholders are filled' );
+    unlike( App::Clod::Tasks::prompt( triage => () ), qr/\{\{/, 'and a missing one is left empty, not as a placeholder' );
+};
+
+done_testing;

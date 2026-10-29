@@ -1,0 +1,77 @@
+#!/usr/bin/env perl
+use 5.040;
+use warnings FATAL => 'all';
+use re '/aasx';
+use Test2::V0;
+use Test2::Plugin::NoWarnings;
+use FindBin::libs;
+use File::Temp ();
+use Mojo::File ();
+
+use App::Clod::Claude();
+
+my $here   = Mojo::File->new(__FILE__)->dirname->to_abs;
+my $fake   = $here->child( 'bin', 'fake-claude' )->to_string;
+my $tmp    = File::Temp->newdir;
+my $record = "$tmp/record";
+
+sub recorded () { return split /\0/, Mojo::File->new($record)->slurp }
+
+subtest command => sub {
+    my $claude = App::Clod::Claude->new( bin => 'test-claude', model => 'test-model', allowed_tools => [ 'Read', 'Bash(git log:*)' ] );
+    my $cmd    = $claude->command( add_dirs => [ '/bogus/a', '/bogus/b' ], schema => { type => 'object' }, permission_mode => 'default' );
+    is(
+        $cmd,
+        [
+            qw{test-claude -p --output-format stream-json --verbose --model test-model --permission-mode default},
+            '--allowedTools', 'Read,Bash(git log:*)',
+            qw{--add-dir /bogus/a --add-dir /bogus/b},
+            '--json-schema', '{"type":"object"}',
+        ],
+        'the arguments follow the run, one list element each'
+    );
+    my $plain = App::Clod::Claude->new( bin => 'test-claude' )->command( tools => [] );
+    ok( !( grep { $_ eq '--allowedTools' || $_ eq '--model' } @$plain ), 'no tools and no model add no flags' );
+    is( ( grep { $_ eq 'acceptEdits' } @$plain )[0], 'acceptEdits', 'the permission mode defaults to acceptEdits' );
+};
+
+subtest run => sub {
+    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_RECORD => $record, FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string } );
+    my @seen;
+    my $outcome = $claude->run( dir => "$tmp", prompt => 'the prompt', on_event => sub ($e) { push @seen, $e->{type} } );
+
+    is( $outcome->{ok},                                                 1,               'a clean exit with a good result is ok' ) or diag $outcome->{stderr};
+    is( $outcome->{structured},                                         { answer => 4 }, 'the structured answer comes back' );
+    is( $outcome->{cost},                                               0.25,            'and the cost' );
+    is( $outcome->{usage}{output_tokens},                               381,             'and the usage' );
+    is( $outcome->{session_id},                                         'test-session',  'and the session' );
+    is( $outcome->{rate_limit}{unifiedWindows}{five_hour}{utilization}, 0.13,            'and the quota windows' );
+    ok( !exists $outcome->{quota_reset}, 'an allowed quota sets no reset' );
+    is( \@seen, [qw{system assistant rate_limit_event result}], 'each JSON line is an event, and other lines are not' );
+
+    my ( $cwd, $prompt ) = recorded();
+    is( $cwd,    "$tmp",       'it runs in the directory it was given' );
+    is( $prompt, 'the prompt', 'with the prompt on standard input' );
+
+    like( dies { $claude->run( dir => '/bogus/nowhere', prompt => 'x' ) }, qr/not\ a\ directory/, 'a missing directory dies before anything runs' );
+    like( dies { $claude->run( dir => "$tmp" ) },                          qr/needs\ a\ prompt/,  'so does a missing prompt' );
+};
+
+subtest 'run, at the limit' => sub {
+    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-limited.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } );
+    my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );
+    is( $outcome->{ok},          0,          'a run at the limit is not ok' );
+    is( $outcome->{exit},        1,          'and keeps its exit code' );
+    is( $outcome->{quota_reset}, 1793233200, 'and reports when the quota resets' );
+};
+
+subtest 'run, past the timeout' => sub {
+    my $slow = "$tmp/slow";
+    Mojo::File->new($slow)->spew("#!/bin/sh\nsleep 5\n");
+    chmod 0755, $slow or die "chmod $slow: $!";
+    my $outcome = App::Clod::Claude->new( bin => $slow, timeout => 1 )->run( dir => "$tmp", prompt => 'x' );
+    is( $outcome->{timed_out}, 1, 'a run past the timeout is killed and says so' );
+    is( $outcome->{ok},        0, 'and is not ok' );
+};
+
+done_testing;

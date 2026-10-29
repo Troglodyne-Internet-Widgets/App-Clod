@@ -1,0 +1,11 @@
+# Read by [PrereqsFile] in dist.ini, for prerequisites [AutoPrereqs] cannot find
+# in the code.  The perl floor is here as well as on the use line of every file,
+# so the metadata states it even where one file leaves that line out.
+runtime:
+  requires:
+    perl: '5.040'
+    # Minion schedules arrived in 12.
+    Minion: '12.0'
+    Minion::Backend::SQLite: '6.0.0'
+    # Mojo::IOLoop picks EV when it is installed.
+    EV: '4.0'

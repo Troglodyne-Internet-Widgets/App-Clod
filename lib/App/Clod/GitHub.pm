@@ -1,0 +1,343 @@
+package App::Clod::GitHub;
+
+# ABSTRACT: The GitHub REST calls that the bot makes
+
+use 5.040;
+use warnings FATAL => 'all';
+use re '/aasx';
+use Mojo::Base -base, -signatures;
+
+use Carp ();
+use Mojo::UserAgent();
+use Mojo::URL  ();
+use Mojo::Util ();
+
+=attr api
+
+The API base URL.
+
+=cut
+
+has api => 'https://api.github.com';
+
+=attr token
+
+The bot's token.  Default C<GH_TOKEN>.
+
+=cut
+
+has token => sub { $ENV{GH_TOKEN} // Carp::croak('GH_TOKEN is not set') };
+
+=attr timeout
+
+Seconds for each request.
+
+=cut
+
+has timeout => 30;
+
+=attr ua
+
+The L<Mojo::UserAgent>.
+
+=cut
+
+has ua => sub ($self) {
+    my $ua = Mojo::UserAgent->new( max_redirects => 3 );
+    $ua->connect_timeout(10)->request_timeout( $self->timeout )->inactivity_timeout( $self->timeout );
+    return $ua;
+};
+
+my sub next_link ($link) {
+    my ($next) = ( $link // q{} ) =~ m{<([^>]+)>;\s*rel="next"};
+    return $next;
+}
+
+=method request
+
+C<< ($method, $path_or_url, %opt) >>, where C<%opt> takes C<query>, C<json>,
+C<headers>, C<accept> and C<ok>.  Returns the L<Mojo::Message::Response>.
+
+=cut
+
+sub request ( $self, $method, $path, %opt ) {
+    my $url = $path =~ m{\Ahttps?://} ? Mojo::URL->new($path) : Mojo::URL->new( $self->api . $path );
+    $url->query( $opt{query} ) if $opt{query};
+    my %headers = (
+        Authorization          => 'Bearer ' . $self->token,
+        Accept                 => $opt{accept} // 'application/vnd.github+json',
+        'X-GitHub-Api-Version' => '2022-11-28',
+        %{ $opt{headers} // {} },
+    );
+    my $tx = $self->ua->build_tx( $method => $url => \%headers, exists $opt{json} ? ( json => $opt{json} ) : () );
+    $tx = $self->ua->start($tx);
+
+    my $res = $tx->res;
+
+    # No code means that no answer came back: DNS, connect, TLS or the timeout.
+    Carp::croak( "GitHub $method $url: no response: " . ( $tx->error->{message} // 'unknown' ) ) if !$res->code;
+
+    my %ok = map { $_ => 1 } @{ $opt{ok} // [] };
+    if ( $res->code >= 400 && !$ok{ $res->code } ) {
+        my $message = eval { $res->json->{message} } // $res->body;
+        Carp::croak( sprintf 'GitHub %s %s: %d %s', $method, $url->path, $res->code, $message // q{} );
+    }
+    return $res;
+}
+
+=method get
+
+Returns the decoded JSON, or the body for a raw C<accept>.
+
+=cut
+
+sub get ( $self, $path, %opt ) {
+    my $res = $self->request( GET => $path, %opt );
+    return index( $opt{accept} // q{}, q{raw} ) >= 0 ? $res->body : $res->json;
+}
+
+=method paginate
+
+Follows C<Link: rel="next"> and returns every item.
+
+=cut
+
+sub paginate ( $self, $path, %opt ) {
+    my @items;
+    my $next  = $path;
+    my %query = ( per_page => 100, %{ $opt{query} // {} } );
+    while ($next) {
+        my $res  = $self->request( GET => $next, %opt, query => ( $next eq $path ? \%query : undef ) );
+        my $page = $res->json;
+        push @items, ref $page eq 'ARRAY' ? @$page : @{ $page->{items} // [] };
+        $next = next_link( $res->headers->header('Link') );
+    }
+    return \@items;
+}
+
+=method post
+
+C<($path, $json, %opt)>.  Returns the decoded JSON.
+
+=cut
+
+sub post ( $self, $path, $json, %opt ) { return $self->request( POST => $path, json => $json, %opt )->json }
+
+=method patch
+
+C<($path, $json)>.  Returns the decoded JSON.
+
+=cut
+
+sub patch ( $self, $path, $json ) { return $self->request( PATCH => $path, json => $json )->json }
+
+=method notifications
+
+C<($if_modified_since)>.  Returns the threads and a hash of C<last_modified>,
+C<poll_interval> and C<scopes>.  A 304 returns no threads.
+
+=cut
+
+sub notifications ( $self, $if_modified_since = undef ) {
+    my %headers = $if_modified_since ? ( 'If-Modified-Since' => $if_modified_since ) : ();
+    my $res     = $self->request( GET => '/notifications', headers => \%headers, ok => [304] );
+    my %meta    = (
+        last_modified => $res->headers->header('Last-Modified'),
+        poll_interval => $res->headers->header('X-Poll-Interval'),
+        scopes        => $res->headers->header('X-OAuth-Scopes'),
+    );
+    return ( [], \%meta ) if $res->code == 304;
+    my $threads = $res->json;
+    my $next    = next_link( $res->headers->header('Link') );
+    push @$threads, @{ $self->paginate($next) } if $next;
+    return ( $threads, \%meta );
+}
+
+=method mark_read
+
+C<($thread_id)>.  Marks a notification thread read.
+
+=cut
+
+sub mark_read ( $self, $thread_id ) { return $self->request( PATCH => "/notifications/threads/$thread_id", ok => [304] ) }
+
+=method repo
+
+C<($repo)>.  The repository, as C<Owner/Name>.
+
+=cut
+
+sub repo ( $self, $repo ) { return $self->get("/repos/$repo") }
+
+=method issue
+
+C<($repo, $number)>.
+
+=cut
+
+sub issue ( $self, $repo, $number ) { return $self->get("/repos/$repo/issues/$number") }
+
+=method pull
+
+C<($repo, $number)>.
+
+=cut
+
+sub pull ( $self, $repo, $number ) { return $self->get("/repos/$repo/pulls/$number") }
+
+=method issue_comments
+
+C<($repo, $number)>.  Every comment on the issue or pull request.
+
+=cut
+
+sub issue_comments ( $self, $repo, $number ) { return $self->paginate("/repos/$repo/issues/$number/comments") }
+
+=method issue_events
+
+C<($repo, $number)>.  Every event, such as an assignment.
+
+=cut
+
+sub issue_events ( $self, $repo, $number ) { return $self->paginate("/repos/$repo/issues/$number/events") }
+
+=method review_comments
+
+C<($repo, $number)>.  Every line comment of every review.
+
+=cut
+
+sub review_comments ( $self, $repo, $number ) { return $self->paginate("/repos/$repo/pulls/$number/comments") }
+
+=method react
+
+C<($repo, $number, $content)>.  Adds a reaction, C<eyes> by default.
+
+=cut
+
+sub react ( $self, $repo, $number, $content = 'eyes' ) {
+    return $self->post( "/repos/$repo/issues/$number/reactions", { content => $content } );
+}
+
+=method comment
+
+C<($repo, $number, $body)>.
+
+=cut
+
+sub comment ( $self, $repo, $number, $body ) { return $self->post( "/repos/$repo/issues/$number/comments", { body => $body } ) }
+
+=method reply_review_comment
+
+C<($repo, $number, $comment_id, $body)>.  Replies in the thread of a line comment.
+
+=cut
+
+sub reply_review_comment ( $self, $repo, $number, $comment_id, $body ) {
+    return $self->post( "/repos/$repo/pulls/$number/comments/$comment_id/replies", { body => $body } );
+}
+
+=method create_pull
+
+C<($repo, \%pull)>, where C<%pull> has C<title>, C<head>, C<base> and C<body>.
+
+=cut
+
+sub create_pull ( $self, $repo, $pull ) { return $self->post( "/repos/$repo/pulls", $pull ) }
+
+=method update_pull
+
+C<($repo, $number, \%fields)>.
+
+=cut
+
+sub update_pull ( $self, $repo, $number, $fields ) { return $self->patch( "/repos/$repo/pulls/$number", $fields ) }
+
+=method review
+
+C<($repo, $number, \%review)>, where C<%review> has C<event>, C<body>, C<commit_id> and optionally C<comments>.
+
+=cut
+
+sub review ( $self, $repo, $number, $review ) { return $self->post( "/repos/$repo/pulls/$number/reviews", $review ) }
+
+=method assign
+
+C<($repo, $number, @logins)>.
+
+=cut
+
+sub assign ( $self, $repo, $number, @logins ) {
+    return $self->post( "/repos/$repo/issues/$number/assignees", { assignees => \@logins } );
+}
+
+=method unassign
+
+C<($repo, $number, @logins)>.
+
+=cut
+
+sub unassign ( $self, $repo, $number, @logins ) {
+    return $self->request( DELETE => "/repos/$repo/issues/$number/assignees", json => { assignees => \@logins } );
+}
+
+=method assigned_issues
+
+C<($repo, $login)>.  The open issues and pull requests assigned to C<$login>.
+
+=cut
+
+sub assigned_issues ( $self, $repo, $login ) {
+    return $self->paginate( "/repos/$repo/issues", query => { assignee => $login, state => 'open' } );
+}
+
+=method tree
+
+C<($repo, $ref)>.  The recursive tree as a hash of path to entry.
+
+=cut
+
+sub tree ( $self, $repo, $ref ) {
+    my $tree = $self->get( "/repos/$repo/git/trees/" . Mojo::Util::url_escape($ref), query => { recursive => 1 } );
+    return { map { $_->{path} => $_ } @{ $tree->{tree} } };
+}
+
+=method file
+
+C<($repo, $path, $ref)>.  The raw content, or undef when the file is not there.
+
+=cut
+
+# Undef for a file that is not there, so a caller can tell absence from failure.
+sub file ( $self, $repo, $path, $ref = undef ) {
+    my $res = $self->request(
+        GET    => "/repos/$repo/contents/$path",
+        accept => 'application/vnd.github.raw+json',
+        ok     => [404],
+        $ref ? ( query => { ref => $ref } ) : (),
+    );
+    return if $res->code == 404;
+    return $res->body;
+}
+
+=head1 SYNOPSIS
+
+    use 5.040;
+    use App::Clod::GitHub;
+
+    my $gh = App::Clod::GitHub->new( timeout => 30 );
+    my ( $threads, $meta ) = $gh->notifications;
+    ( $threads, $meta ) = $gh->notifications( $meta->{last_modified} );
+    $gh->comment( 'Owner/Name', 12, 'On it.' );
+
+=head1 DESCRIPTION
+
+A blocking client, for use inside a Minion job, over L<Mojo::UserAgent>.  The
+token comes from C<GH_TOKEN>.
+
+A request that got no answer dies with "no response" and the transport error.
+A request that got an answer of 400 or more dies with the status and GitHub's
+message, unless the caller named that status in C<ok>.  So the two failures
+read differently in a job's result.
+
+=cut
