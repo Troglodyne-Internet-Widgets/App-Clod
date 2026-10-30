@@ -31,10 +31,12 @@ subtest validate => sub {
         delete $without{$key};
         like( dies { App::Clod::Config::validate( \%without ) }, qr/no\ value\ for:\ $key/, "a configuration without $key dies" );
     }
-    like( dies { App::Clod::Config::validate( { %minimal, spokes => [] } ) },              qr/names\ no\ spokes/,     'no spokes dies' );
-    like( dies { App::Clod::Config::validate( { %minimal, spokes => ['nope'] } ) },        qr/must\ be\ Owner\/Name/, 'a spoke that is not Owner/Name dies' );
-    like( dies { App::Clod::Config::validate( { %minimal, spokes => 'Test-Org/one' } ) },  qr/must\ be\ a\ list/,     'spokes that are not a list die' );
-    like( dies { App::Clod::Config::validate( { %minimal, auth   => { user => 'u' } } ) }, qr/auth\ needs/,           'basic auth without a password hash dies' );
+    like( dies { App::Clod::Config::validate( { %minimal, spokes => [] } ) }, qr/names\ no\ spokes\ and\ no\ spoke_orgs/, 'no spokes and no organizations dies' );
+    ok( lives { App::Clod::Config::validate( { %minimal, spokes => [], spoke_orgs => ['Test-Org'] } ) }, 'an organization alone lives' );
+    like( dies { App::Clod::Config::validate( { %minimal, spoke_orgs => ['Test-Org/one'] } ) }, qr/must\ be\ a\ login/,    'an organization that is a repository dies' );
+    like( dies { App::Clod::Config::validate( { %minimal, spokes     => ['nope'] } ) },         qr/must\ be\ Owner\/Name/, 'a spoke that is not Owner/Name dies' );
+    like( dies { App::Clod::Config::validate( { %minimal, spokes     => 'Test-Org/one' } ) },   qr/must\ be\ a\ list/,     'spokes that are not a list die' );
+    like( dies { App::Clod::Config::validate( { %minimal, auth       => { user => 'u' } } ) },  qr/auth\ needs/,           'basic auth without a password hash dies' );
     ok( lives { App::Clod::Config::validate( { %minimal, auth => { user => 'u', password_sha256 => 'x' } } ) }, 'basic auth with both parts lives' );
 };
 

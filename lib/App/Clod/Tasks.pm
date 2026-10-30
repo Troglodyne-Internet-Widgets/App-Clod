@@ -38,6 +38,7 @@ our %TASKS = (
     kickback       => \&kickback,
     harness_scan   => \&harness_scan,
     assigned_sweep => \&assigned_sweep,
+    spoke_sweep    => \&spoke_sweep,
 );
 
 my $HOUR          = 3600;
@@ -62,7 +63,7 @@ sub register ( $app, $config ) {
 
 =func schedule
 
-C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>, C<harness_scan> and C<assigned_sweep>.
+C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>, C<harness_scan>, C<assigned_sweep> and C<spoke_sweep>.
 
 =cut
 
@@ -70,6 +71,7 @@ sub schedule ($minion) {
     $minion->schedule( inbox    => '* * * * *',    'inbox_poll' );
     $minion->schedule( harness  => '17 * * * *',   'harness_scan' );
     $minion->schedule( assigned => '*/15 * * * *', 'assigned_sweep' );
+    $minion->schedule( spokes   => '*/15 * * * *', 'spoke_sweep' );
     return;
 }
 
@@ -244,14 +246,27 @@ sub origin_url ( $config, $item ) {
     return "$config->{github_web}/$item->{repo}/" . ( $item->{is_pr} ? 'pull' : 'issues' ) . "/$item->{number}";
 }
 
-=func is_spoke
+=func spokes
 
-C<($config, $repo)>.
+C<($minion, $config)>.  The spokes: C<spokes> from the configuration, and the
+repositories that the last C<spoke_sweep> found in C<spoke_orgs>, sorted and
+each once.  Before the first sweep finishes, only the configured ones.
 
 =cut
 
-sub is_spoke ( $config, $repo ) {
-    return List::Util::any { $_ eq $repo } @{ $config->{spokes} };
+sub spokes ( $minion, $config ) {
+    my $swept = @{ $config->{spoke_orgs} // [] } ? last_result( $minion, 'spoke_sweep' ) // {} : {};
+    return [ sort( List::Util::uniq( @{ $config->{spokes} }, @{ $swept->{repos} // [] } ) ) ];
+}
+
+=func is_spoke
+
+C<($minion, $config, $repo)>.
+
+=cut
+
+sub is_spoke ( $minion, $config, $repo ) {
+    return List::Util::any { $_ eq $repo } @{ spokes( $minion, $config ) };
 }
 
 =func authorized
@@ -315,7 +330,7 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
     my $reason  = $thread->{reason}  // q{};
     my $subject = $thread->{subject} // {};
 
-    if ( !is_spoke( $config, $repo ) ) {
+    if ( !is_spoke( $minion, $config, $repo ) ) {
         $gh->mark_read( $thread->{id} );
         return "$repo is not a spoke";
     }
@@ -399,19 +414,19 @@ sub default_branch ( $gh, $repo ) { return $gh->repo($repo)->{default_branch} }
 
 =func prepare_hub
 
-C<($config, $gh)>.  Refreshes the reference worktree of every spoke and writes the hub CLAUDE.md.  Returns the hub directory and a hash of repository to reference worktree.
+C<($config, $gh, \@spokes)>.  Refreshes the reference worktree of every spoke and writes the hub CLAUDE.md.  Returns the hub directory and a hash of repository to reference worktree.
 
 =cut
 
 # Every spoke at its default branch, and the hub workspace that describes them.
-sub prepare_hub ( $config, $gh ) {
+sub prepare_hub ( $config, $gh, $spokes ) {
     my %ref;
-    for my $repo ( @{ $config->{spokes} } ) {
+    for my $repo (@$spokes) {
         $ref{$repo} = spoke( $config, $repo )->refresh_reference( default_branch( $gh, $repo ) );
     }
     my $hub = Mojo::File->new( $config->{workspace}, 'hub' )->make_path;
     my $md  = App::Clod::Triage::hub_claude_md(
-        $config->{spokes},
+        $spokes,
         sub ($repo) {
             my $file = $ref{$repo}->child('CLAUDE.md');
             return App::Clod::Triage::intro( -e $file ? $file->slurp('UTF-8') : undef );
@@ -433,8 +448,9 @@ of the next, and a C<report> after them all.
 =cut
 
 sub triage ( $job, $config, $item ) {
-    my $gh = github($config);
-    my ( $hub, $ref ) = prepare_hub( $config, $gh );
+    my $gh     = github($config);
+    my $spokes = spokes( $job->minion, $config );
+    my ( $hub, $ref ) = prepare_hub( $config, $gh, $spokes );
     my %vars = (
         kind      => $item->{kind},
         origin    => origin_of($item),
@@ -456,7 +472,7 @@ sub triage ( $job, $config, $item ) {
             schema          => \%App::Clod::Triage::SCHEMA,
         ) // return;
         push @outcomes, $outcome;
-        $answer = eval { App::Clod::Triage::validate( $outcome->{structured}, $config->{spokes} ) };
+        $answer = eval { App::Clod::Triage::validate( $outcome->{structured}, $spokes ) };
         last if $answer;
         $error = $outcome->{ok} ? plain_error($@) : "the run failed: $outcome->{stderr}";
     }
@@ -765,7 +781,7 @@ Answers a mention.  If the person asked for a change, it also enqueues triage.
 
 sub reply ( $job, $config, $item ) {
     my $gh = github($config);
-    my ( $hub, $ref ) = prepare_hub( $config, $gh );
+    my ( $hub, $ref ) = prepare_hub( $config, $gh, spokes( $job->minion, $config ) );
     my $outcome = run_claude(
         $job, $config,
         dir             => $hub,
@@ -924,7 +940,7 @@ sub harness_scan ( $job, $config ) {
     my %templates     = map { $_ => ( $plugin_tree->{"$App::Clod::Harness::TEMPLATES/$_"} // {} )->{sha} } @App::Clod::Harness::HOOKS;
 
     my ( %repos, %errors );
-    for my $repo ( @{ $config->{spokes} } ) {
+    for my $repo ( @{ spokes( $job->minion, $config ) } ) {
         my $ok = eval {
             my $branch   = default_branch( $gh, $repo );
             my %snapshot = ( tree => $gh->tree( $repo, $branch ), templates => \%templates, file => sub ($path) { $gh->file( $repo, $path, $branch ) } );
@@ -952,12 +968,39 @@ sub assigned_sweep ( $job, $config ) {
     prune_history( $job->minion, q{assigned_sweep} );
     my $gh = github($config);
     my ( @issues, %errors );
-    for my $repo ( @{ $config->{spokes} } ) {
+    for my $repo ( @{ spokes( $job->minion, $config ) } ) {
         my $list = eval { $gh->assigned_issues( $repo, $config->{bot} ) };
         if ( !$list ) { $errors{$repo} = plain_error($@); next }
         push @issues, map { { repo => $repo, number => $_->{number}, title => $_->{title}, url => $_->{html_url}, is_pr => $_->{pull_request} ? 1 : 0, updated_at => $_->{updated_at} } } @$list;
     }
     return $job->finish( { checked_at => time, issues => \@issues, errors => \%errors } );
+}
+
+=func spoke_sweep
+
+Every fifteen minutes, when C<spoke_orgs> names any.  Lists the public
+repositories of each one, without forks and archived ones.  If listing an
+organization fails, its repositories from the sweep before stay spokes, so one
+failed request does not drop them.
+
+=cut
+
+sub spoke_sweep ( $job, $config ) {
+    my $minion = $job->minion;
+    my $before = last_result( $minion, 'spoke_sweep' ) // {};
+    prune_history( $minion, q{spoke_sweep} );
+    my $gh = github($config);
+    my ( %by_org, %errors );
+    for my $org ( @{ $config->{spoke_orgs} } ) {
+        my $list = eval { $gh->org_repos($org) };
+        if ( !$list ) {
+            $errors{$org} = plain_error($@);
+            $by_org{$org} = ( $before->{by_org} // {} )->{$org} // [];
+            next;
+        }
+        $by_org{$org} = [ sort map { $_->{full_name} } grep { !$_->{fork} && !$_->{archived} } @$list ];
+    }
+    return $job->finish( { checked_at => time, by_org => \%by_org, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
 }
 
 =head1 SYNOPSIS

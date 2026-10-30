@@ -70,10 +70,15 @@ sub action_items ( $self, $budget ) {
         push @actions, { level => 'danger', text => 'The inbox has not been read in 15 minutes. Is a worker running?' };
     }
     elsif ( defined $inbox->{scopes} ) {
-        my %have    = map  { $_ => 1 } split /,\s*/, $inbox->{scopes};
-        my @missing = grep { !$have{$_} } qw{repo notifications};
+        my %have = map { $_ => 1 } split /,\s*/, $inbox->{scopes};
+
+        # GitHub takes repo in place of notifications for the inbox.
+        my @missing = grep { !$have{$_} } qw{repo};
         push @actions, { level => 'danger', text => "The token lacks the scopes: @missing." } if @missing;
     }
+
+    my $sweep = App::Clod::Tasks::last_result( $minion, 'spoke_sweep' ) // {};
+    push @actions, { level => 'danger', text => "Listing the repositories of $_ failed: $sweep->{errors}{$_}" } for sort keys %{ $sweep->{errors} // {} };
 
     push @actions, { level => 'warning', text => 'Claude work is paused until the quota resets' . ( $budget->{paused_until} ? q{ at } . gmtime( $budget->{paused_until} ) . ' UTC' : q{} ) . q{.} } if $budget->{paused};
 

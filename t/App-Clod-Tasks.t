@@ -91,6 +91,19 @@ $r->get('/repos/:o/:n/git/trees/*ref')->to(
         $c->render( json => { tree => [ map { { path => $_, sha => "sha-$_" } } sort keys %{ $state{files} // {} } ] } );
     }
 );
+$r->get('/orgs/:o/repos')->to(
+    cb => sub ($c) {
+        return $c->render( json => { message => 'Not Found' }, status => 404 ) if $state{org_missing};
+        $c->render(
+            json => [
+                { full_name => 'Test-Org/one',  fork => Mojo::JSON::false, archived => Mojo::JSON::false },
+                { full_name => 'Test-Org/new',  fork => Mojo::JSON::false, archived => Mojo::JSON::false },
+                { full_name => 'Test-Org/fork', fork => Mojo::JSON::true,  archived => Mojo::JSON::false },
+                { full_name => 'Test-Org/old',  fork => Mojo::JSON::false, archived => Mojo::JSON::true },
+            ]
+        );
+    }
+);
 $r->get('/repos/:o/:n/issues')->to( cb => sub ($c) { $c->render( json => [ { number => 5, title => 'Assigned', html_url => 'https://test.test/5', updated_at => 'today' } ] ) } );
 $r->get('/repos/:o/:n')->to( cb => sub ($c) { $c->render( json => { default_branch => 'main', owner => { type => 'Organization', login => $c->param('o') } } ) } );
 $r->get('/comment')->to( cb => sub ($c) { $c->render( json => { user => { login => $state{commenter} } } ) } );
@@ -416,6 +429,25 @@ subtest assigned_sweep => sub {
     my $info = run_job('assigned_sweep');
     is( scalar @{ $info->{result}{issues} }, 2,              'the assigned issues of each spoke are listed' );
     is( $info->{result}{issues}[0]{repo},    'Test-Org/one', 'with their repo' );
+};
+
+subtest spoke_sweep => sub {
+    %state = ();
+    my $config = $app->clod_config;
+    is( App::Clod::Tasks::spokes( $minion, $config ), \@SPOKES, 'without spoke_orgs, the spokes are the configured ones' );
+
+    $config->{spoke_orgs} = ['Test-Org'];
+    my $info = run_job('spoke_sweep');
+    is( $info->{result}{repos},                       [qw{Test-Org/new Test-Org/one}],              'the sweep lists the public repositories, without forks and archived ones' );
+    is( App::Clod::Tasks::spokes( $minion, $config ), [qw{Test-Org/new Test-Org/one Test-Org/two}], 'and they join the configured spokes, each once' );
+    ok( App::Clod::Tasks::is_spoke( $minion, $config, 'Test-Org/new' ), 'so a new repository is a spoke at once' );
+
+    $state{org_missing} = 1;
+    my $failed = run_job('spoke_sweep');
+    like( $failed->{result}{errors}{'Test-Org'}, qr/404/, 'a listing that fails is recorded' );
+    is( $failed->{result}{repos}, [qw{Test-Org/new Test-Org/one}], 'and the repositories of the sweep before stay spokes' );
+    delete $config->{spoke_orgs};
+    $minion->reset( { all => 1 } );
 };
 
 subtest slug => sub {

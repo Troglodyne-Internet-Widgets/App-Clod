@@ -62,7 +62,11 @@ sub validate ($raw) {
     for my $repo ( @{ $config{spokes} } ) {
         Carp::croak("A spoke must be Owner/Name, not '$repo'") if $repo !~ m{\A[\w.-]+/[\w.-]+\z};
     }
-    Carp::croak('The configuration names no spokes') if !@{ $config{spokes} };
+    $config{spoke_orgs} = list_of( \%config, 'spoke_orgs' );
+    for my $org ( @{ $config{spoke_orgs} } ) {
+        Carp::croak("A spoke organization must be a login, not '$org'") if $org !~ m{\A[\w.-]+\z};
+    }
+    Carp::croak('The configuration names no spokes and no spoke_orgs') if !@{ $config{spokes} } && !@{ $config{spoke_orgs} };
 
     my $auth = $config{auth};
     Carp::croak('auth must be a hash') if ref $auth ne 'HASH';
@@ -115,7 +119,15 @@ authentication.  Required.
 
 =item spokes
 
-The repositories that the bot works on, as C<Owner/Name>.  Required.
+The repositories that the bot works on, as C<Owner/Name>.  This list or
+C<spoke_orgs> must name at least one.
+
+=item spoke_orgs
+
+Organizations whose public repositories are spokes too, except forks and
+archived ones.  C<spoke_sweep> lists them every fifteen minutes, so a new
+repository becomes a spoke without a restart.  See
+L<App::Clod::Tasks/spokes>.
 
 =item authorized_users
 

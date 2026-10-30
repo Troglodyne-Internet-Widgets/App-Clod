@@ -134,6 +134,15 @@ Please see those modules/websites for more information related to this module.
 - [App::Clod::Harness](https://metacpan.org/pod/App%3A%3AClod%3A%3AHarness)
 - [Minion](https://metacpan.org/pod/Minion)
 
+# BUGS
+
+Please report any bugs or feature requests on the bugtracker website
+[https://github.com/Troglodyne-Internet-Widgets/App-Clod/issues](https://github.com/Troglodyne-Internet-Widgets/App-Clod/issues)
+
+When submitting a bug or request, please include a test-file or a
+patch to an existing test-file that illustrates the bug or desired
+feature.
+
 # AUTHORS
 
 Current Maintainers:

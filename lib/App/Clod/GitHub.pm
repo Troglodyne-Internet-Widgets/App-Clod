@@ -281,6 +281,14 @@ sub unassign ( $self, $repo, $number, @logins ) {
     return $self->request( DELETE => "/repos/$repo/issues/$number/assignees", json => { assignees => \@logins } );
 }
 
+=method org_repos
+
+C<($org)>.  The public repositories of an organization.
+
+=cut
+
+sub org_repos ( $self, $org ) { return $self->paginate( "/orgs/$org/repos", query => { type => 'public' } ) }
+
 =method assigned_issues
 
 C<($repo, $login)>.  The open issues and pull requests assigned to C<$login>.
