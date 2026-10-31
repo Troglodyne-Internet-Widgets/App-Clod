@@ -100,6 +100,10 @@ window.
 
 The epoch second when the quota opens again, set when a run hit the limit.
 
+=item unauthorized
+
+True when the API refused the token with a 401.
+
 =item exit, timed_out, stderr, events
 
 =back
@@ -157,11 +161,12 @@ sub absorb ( $outcome, $event ) {
         $outcome->{session_id} = $event->{session_id};
     }
     elsif ( $type eq 'result' ) {
-        $outcome->{result}     = $event->{result};
-        $outcome->{structured} = $event->{structured_output};
-        $outcome->{cost}       = $event->{total_cost_usd} // 0;
-        $outcome->{is_error}   = $event->{is_error} ? 1 : 0;
-        $outcome->{turns}      = $event->{num_turns};
+        $outcome->{result}       = $event->{result};
+        $outcome->{structured}   = $event->{structured_output};
+        $outcome->{cost}         = $event->{total_cost_usd} // 0;
+        $outcome->{is_error}     = $event->{is_error} ? 1 : 0;
+        $outcome->{unauthorized} = 1 if $outcome->{is_error} && ( $event->{api_error_status} // 0 ) == 401;
+        $outcome->{turns}        = $event->{num_turns};
         my $usage = $event->{usage} // {};
         $outcome->{usage} = { map { $_ => $usage->{$_} // 0 } qw{input_tokens output_tokens cache_read_input_tokens cache_creation_input_tokens} };
         $outcome->{quota_reset} //= time + $UNKNOWN_RESET

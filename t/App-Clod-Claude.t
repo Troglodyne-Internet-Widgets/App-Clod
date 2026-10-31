@@ -65,6 +65,18 @@ subtest 'run, at the limit' => sub {
     is( $outcome->{quota_reset}, 1793233200, 'and reports when the quota resets' );
 };
 
+subtest 'run, with a refused token' => sub {
+    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-unauthorized.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } );
+    my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );
+    is( $outcome->{ok},           0, 'a run whose token the API refuses is not ok' );
+    is( $outcome->{unauthorized}, 1, 'and says that the token was refused' );
+    like( $outcome->{result}, qr/401\ Invalid\ bearer\ token/, 'with the reason' );
+    ok( !exists $outcome->{quota_reset}, 'and is not taken for the quota' );
+
+    my $limited = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-limited.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } )->run( dir => "$tmp", prompt => 'x' );
+    ok( !$limited->{unauthorized}, 'an error that is not a 401 is not a refused token' );
+};
+
 subtest 'run, past the timeout' => sub {
     my $slow = "$tmp/slow";
     Mojo::File->new($slow)->spew("#!/bin/sh\nsleep 5\n");

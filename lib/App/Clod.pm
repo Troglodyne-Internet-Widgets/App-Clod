@@ -157,6 +157,15 @@ Both read the configuration from C<CLOD_CONFIG>, or F<clod.conf> in the
 application home.  Secrets come only from the environment: C<GH_TOKEN> for
 GitHub and C<CLAUDE_CODE_OAUTH_TOKEN> for Claude Code.
 
+=head1 WHEN A TOKEN STOPS WORKING
+
+If GitHub or Claude refuses its token with a 401, the bot is in an outage.  The
+jobs do not fail one after another.  A GitHub outage holds all work, and a
+Claude outage holds the work that runs C<claude>.  Each held job waits ten
+minutes, and then the next job tries the token again.  The Overview tab names the
+outage first.  After you replace the token in the environment and restart both
+processes, the work starts again within ten minutes.  See L<App::Clod::Outage>.
+
 =head1 WHAT THE HOST NEEDS
 
 =over
@@ -185,8 +194,9 @@ C<repo> and C<notifications> scopes.  The Overview tab names a missing scope.
 =item Overview
 
 Jobs by state, the Claude Code quota used in the five-hour and seven-day
-windows, and the action items: a marketplace pin older than the plugin, failed
-jobs, harness checks that fail, and token scopes that are missing.
+windows, and the action items: an outage, a marketplace pin older than the
+plugin, failed jobs, harness checks that fail, and token scopes that are
+missing.
 
 =item Work
 

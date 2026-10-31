@@ -10,6 +10,7 @@ use Mojo::Base 'Mojolicious::Controller', -signatures;
 use Time::HiRes qw{time};
 
 use App::Clod::Budget();
+use App::Clod::Outage();
 use App::Clod::Tasks();
 
 our @ITEM_TASKS = qw{triage reply};
@@ -27,7 +28,7 @@ sub page ($self) { return $self->render( template => 'dashboard', bot => $self->
 
 =method overview
 
-Item counts by state, the Minion stats, the budget, and the action items.
+Item counts by state, the Minion stats, the budget, the outages, and the action items.
 
 =cut
 
@@ -38,18 +39,31 @@ sub overview ($self) {
     for my $state (qw{inactive active failed}) {
         $counts{$state} = $minion->jobs( { tasks => \@ITEM_TASKS, states => [$state] } )->total;
     }
-    return $self->render( json => { stats => $minion->stats, items => \%counts, budget => $budget, actions => $self->action_items($budget) } );
+    my $outages = App::Clod::Outage::summary($minion);
+    return $self->render( json => { stats => $minion->stats, items => \%counts, budget => $budget, outages => $outages, actions => $self->action_items( $budget, $outages ) } );
 }
 
 =method action_items
 
-The things that need a person, each a C<{level, text}> and sometimes a C<job>.
+C<($budget, $outages)>, from L<App::Clod::Budget/summary> and
+L<App::Clod::Outage/summary>.  The things that need a person, each a
+C<{level, text}> and sometimes a C<job>.  An outage comes first.
 
 =cut
 
-sub action_items ( $self, $budget ) {
+sub action_items ( $self, $budget, $outages = [] ) {
     my $minion = $self->minion;
     my @actions;
+    my %out = map { $_->{service} => $_ } @$outages;
+    for my $o (@$outages) {
+        my $what = $o->{service} eq 'github' ? 'All work waits' : 'Claude work waits';
+        push @actions,
+          {
+            level => 'danger',
+            ( $o->{job} ? ( job => $o->{job} ) : () ),
+            text => "$o->{name} refuses the token" . ( $o->{at} ? q{, last at } . gmtime( $o->{at} ) . ' UTC' : q{} ) . ': ' . ( $o->{error} // 'no reason recorded' ) . ". $what, and a job tries the token again every " . ( $App::Clod::Outage::SECONDS / 60 ) . ' minutes.',
+          };
+    }
 
     my $harness = App::Clod::Tasks::last_result( $minion, 'harness_scan' );
     if ( !$harness ) {
@@ -66,10 +80,12 @@ sub action_items ( $self, $budget ) {
     }
 
     my $inbox = App::Clod::Tasks::last_result( $minion, 'inbox_poll' );
-    if ( !$inbox || time - ( $inbox->{polled_at} // 0 ) > $STALE_INBOX ) {
+
+    # During a GitHub outage, the outage says why the inbox is not read.
+    if ( !$out{github} && ( !$inbox || time - ( $inbox->{polled_at} // 0 ) > $STALE_INBOX ) ) {
         push @actions, { level => 'danger', text => 'The inbox has not been read in 15 minutes. Is a worker running?' };
     }
-    elsif ( defined $inbox->{scopes} ) {
+    elsif ( $inbox && defined $inbox->{scopes} ) {
         my %have = map { $_ => 1 } split /,\s*/, $inbox->{scopes};
 
         # GitHub takes repo in place of notifications for the inbox.

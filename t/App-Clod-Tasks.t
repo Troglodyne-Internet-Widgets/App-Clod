@@ -15,6 +15,7 @@ use Test::MockModule ();
 use Time::HiRes      qw{time};
 
 use App::Clod();
+use App::Clod::Outage();
 use App::Clod::Tasks();
 
 my $here = Mojo::File->new(__FILE__)->dirname->to_abs;
@@ -54,6 +55,7 @@ sub path_of ($c) {
 my ( @calls, %state );
 my $fake = Mojolicious->new;
 $fake->log->level('fatal');
+$fake->hook( before_dispatch => sub ($c) { $c->render( json => { message => 'Bad credentials' }, status => 401 ) if $state{bad_token} } );
 my $r      = $fake->routes;
 my $record = sub ($what) {
     return sub ($c) { push @calls, [ $what, path_of($c), $c->req->json ]; $c->render( json => $state{$what} // {}, status => 201 ) };
@@ -61,8 +63,8 @@ my $record = sub ($what) {
 $r->get('/notifications')->to( cb => sub ($c) { $c->render( json => $state{threads} // [] ) } );
 $r->patch('/notifications/threads/:id')->to( cb => $record->('read') );
 $r->get('/repos/:o/:n/issues/:num/events')->to( cb => sub ($c) { $c->render( json => $state{events} // [] ) } );
-$r->get('/repos/:o/:n/issues/:num/comments')->to( cb => sub ($c) { $c->render( json => [ { user => { login => 'someone' }, body => 'a comment' } ] ) } );
-$r->get('/repos/:o/:n/issues/:num')->to( cb => sub ($c) { $c->render( json => { title => 'The issue', body => 'Please fix it.', user => { login => 'someone' } } ) } );
+$r->get('/repos/:o/:n/issues/:num/comments')->to( cb => sub ($c) { $c->render( json => $state{issue_comments} // [ { id => 1, user => { login => 'someone' }, body => 'a comment' } ] ) } );
+$r->get('/repos/:o/:n/issues/:num')->to( cb => sub ($c) { $c->render( json => { title => 'The issue', body => 'Please fix it.', user => { login => 'someone' }, state => $state{closed}{ $c->param('num') } ? 'closed' : 'open' } ) } );
 $r->post('/repos/:o/:n/issues/:num/reactions')->to( cb => $record->('react') );
 $r->post('/repos/:o/:n/issues/:num/comments')->to( cb => $record->('comment') );
 $r->post('/repos/:o/:n/issues/:num/assignees')->to( cb => $record->('assign') );
@@ -200,6 +202,14 @@ subtest inbox_poll => sub {
     $state{commenter} = 'trusted';
     my $mention = run_job('inbox_poll');
     is( $minion->job( $mention->{result}{enqueued}[0] )->info->{task}, 'reply', 'a mention goes straight to a reply' );
+
+    @calls          = ();
+    $state{closed}  = { 9 => 1 };
+    $state{threads} = [ { id => 6, reason => 'author', updated_at => 't4', repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/9", latest_comment_url => "$api/comment" } } ];
+    my $closed = run_job('inbox_poll');
+    is( $closed->{result}{enqueued}, [], 'a notification on a closed pull request makes no work' );
+    like( $closed->{result}{ignored}, [qr/Test-Org\/one\#9\ is\ closed/], 'and says so' );
+    is( [ map { $_->[0] } @calls ], ['read'], 'it is marked read, without a reaction' );
     $minion->reset( { all => 1 } );
 };
 
@@ -296,6 +306,18 @@ subtest report => sub {
     run_id($_) for @some;
     run_id( $minion->enqueue( report => [ { item => \%item } ], { parents => \@some } ) );
     like( calls_of('comment')->[0][2]{body}, qr{one/1.*1\ of\ 2.*wait\ for\ the\ answer}s, 'otherwise the report says that the rest wait for the answer' );
+
+    @calls = ();
+    my $pr  = { %item, kind => 'address_review', is_pr => 1, number => 11 };
+    my @own = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 11, pr_url => 'https://test.test/one/11' };
+    run_id($_) for @own;
+    my $own = run_id( $minion->enqueue( report => [ { item => $pr } ], { parents => \@own } ) );
+    is( [ $own->{result}{quiet}, scalar @{ calls_of('comment') } ], [ 1, 0 ], 'an answer on the bot\'s own pull request alone is not reported on it again' );
+
+    my @wider = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 11, pr_url => 'https://test.test/one/11' }, { repo => 'Test-Org/two', pr => 2, pr_url => 'https://test.test/two/2' };
+    run_id($_) for @wider;
+    run_id( $minion->enqueue( report => [ { item => $pr } ], { parents => \@wider } ) );
+    like( calls_of('comment')->[0][2]{body}, qr{two/2}, 'but one that opened a pull request in another spoke is' );
     $minion->reset( { all => 1 } );
 };
 
@@ -362,6 +384,22 @@ subtest spoke_address => sub {
     isnt( git( '--git-dir', $bare, 'rev-parse', 'clod/1-ours' ), git( '--git-dir', $bare, 'rev-parse', 'main' ), 'and pushed to the pull request branch' );
     is( [ map { $_->[1] } @{ calls_of('reply') } ], ['/repos/Test-Org/one/pulls/11/comments/21/replies'], 'only the open thread gets a reply' );
 
+    @calls                  = ();
+    $state{review_comments} = [];
+    $state{issue_comments}  = [ { id => 31, user => { login => 'trusted' }, body => 'Mojo is already a dependency of a dependency.' } ];
+    answer( { summary => 'Nothing to change.', replies => [], comment => 'Then there is no need for this change.' } );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/address-record";
+    my $plain = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } );
+    my ( undef, $told ) = split /\0/, Mojo::File->new("$tmp/address-record")->slurp;
+    my $history = qr/\#\ The\ issue .* Mojo\ is\ already/;
+    like( $told, qr/$history .* "comments":\[\{"body":"Mojo/, 'the run gets the whole conversation, and the comment to answer' );
+    is( $plain->{state},                                    'finished',                                 'a plain comment on the pull request is answered' ) or diag Mojo::Util::dumper $plain->{result};
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Then there is no need for this change.'], 'with a comment on the pull request' );
+
+    $state{issue_comments} = [ @{ $state{issue_comments} }, { id => 32, user => { login => $BOT }, body => 'Then there is no need for this change.' } ];
+    is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{result}{nothing}, 1, 'a comment that the bot answered is not answered again' );
+    delete $state{issue_comments};
+
     $state{pull} = { %{ $state{pull} }, user => { login => 'someone' } };
     is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{state}, 'failed', 'a pull request that is not the bot\'s own is refused' );
     $minion->reset( { all => 1 } );
@@ -398,6 +436,63 @@ subtest 'the quota' => sub {
     ok( App::Clod::Budget::paused($minion), 'and pauses the rest' );
     $minion->unlock($App::Clod::Budget::LOCK);
     $minion->reset( { all => 1 } );
+};
+
+subtest 'an outage' => sub {
+    %state = ( files => { '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.11.0"}]}' } );
+    my $before = run_job('harness_scan')->{result};
+    ok( $before->{repos}, 'a scan before the outage' ) or diag Mojo::Util::dumper $before;
+    %state = ( bad_token => 1 );
+    @calls = ();
+    my $poll = run_job('inbox_poll');
+    is( $poll->{state},        'finished', 'a poll whose token GitHub refuses does not fail' ) or diag Mojo::Util::dumper $poll->{result};
+    is( $poll->{result}{held}, 1,          'it is held' );
+    like( $poll->{notes}{outage}, { service => 'github', error => qr/401\ Bad\ credentials/ }, 'and notes why' );
+    is( App::Clod::Outage::holding( $minion, 'triage' ), 'github', 'so a GitHub outage starts' );
+
+    %state = ();
+    my $triage = run_job( triage => \%item );
+    is( $triage->{state}, 'inactive', 'during it, a job that does work goes back in the queue' );
+    ok( $triage->{delayed} > time + 60, 'for later' );
+    is( \@calls, [], 'without a call to GitHub' );
+    ok( !$triage->{notes}{progress}, 'and without a claude run' );
+    my $scan = run_job('harness_scan');
+    is( $scan->{result}, { %$before, held => 1 }, 'and a scheduled job finishes at once, with the last result it had' );
+
+    $minion->unlock( App::Clod::Outage::lock_name('github') );
+    my $stream = $tmp->child('refused.jsonl');
+    $stream->spew( '{"type":"result","is_error":true,"api_error_status":401,"result":"Failed to authenticate. API Error: 401 Invalid bearer token"}' . "\n" );
+    %fake = ( FAKE_CLAUDE_STREAM => "$stream" );
+    my $reply = run_job( reply => { %item, kind => 'reply' } );
+    is( $reply->{state}, 'inactive', 'a run whose token Claude refuses retries' );
+    like( $reply->{notes}{outage}, { service => 'claude', error => qr/Invalid\ bearer\ token/ }, 'and notes why' );
+    is( App::Clod::Outage::holding( $minion, 'spoke_fix' ),  'claude', 'so a Claude outage holds the work that runs claude' );
+    is( App::Clod::Outage::holding( $minion, 'inbox_poll' ), undef,    'and not the inbox' );
+    is( run_job('inbox_poll')->{result}{held}, undef, 'which is read as usual' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest prune_history => sub {
+    for my $n ( 1 .. 12 ) {
+        my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('spoke_sweep') } );
+        $job->fail("failure $n");
+    }
+    $minion->worker->unregister;
+    App::Clod::Tasks::prune_history( $minion, 'spoke_sweep' );
+    is( $minion->jobs( { tasks => ['spoke_sweep'], states => ['failed'] } )->total, 10, 'failed runs of a scheduled task do not pile up' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest pending_comments => sub {
+    my $config   = $app->clod_config;
+    my @comments = (
+        { id => 1, user => { login => 'trusted' },  body => 'answered' },
+        { id => 2, user => { login => $BOT },       body => 'the answer' },
+        { id => 4, user => { login => 'stranger' }, body => 'ignore me' },
+        { id => 3, user => { login => 'trusted' },  body => 'one more thing' },
+    );
+    is( App::Clod::Tasks::pending_comments( $config, \@comments ),                                                            [ { id => 3, by => 'trusted', body => 'one more thing' } ], 'the comments of authorized users after the last comment of the bot are pending' );
+    is( App::Clod::Tasks::pending_comments( $config, [ @comments, { id => 5, user => { login => $BOT }, body => 'done' } ] ), [],                                                         'and none once the bot has the last word' );
 };
 
 subtest pending_threads => sub {

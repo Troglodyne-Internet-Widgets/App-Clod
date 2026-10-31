@@ -16,6 +16,7 @@ use App::Clod::Claude();
 use App::Clod::CodeOwners();
 use App::Clod::GitHub();
 use App::Clod::Harness();
+use App::Clod::Outage();
 use App::Clod::Spoke();
 use App::Clod::Triage();
 
@@ -41,6 +42,15 @@ our %TASKS = (
     spoke_sweep    => \&spoke_sweep,
 );
 
+# Each Minion schedule: its cron line and its task.
+our %SCHEDULES = (
+    inbox    => [ '* * * * *',    'inbox_poll' ],
+    harness  => [ '17 * * * *',   'harness_scan' ],
+    assigned => [ '*/15 * * * *', 'assigned_sweep' ],
+    spokes   => [ '*/15 * * * *', 'spoke_sweep' ],
+);
+our %SCHEDULED = map { $_->[1] => 1 } values %SCHEDULES;
+
 my $HOUR          = 3600;
 my $DAY           = 86_400;
 my $CLAIM_SECONDS = 30 * $DAY;
@@ -56,9 +66,43 @@ C<($app, $config)>.  Adds every task in C<%TASKS> to the Minion of the app.
 sub register ( $app, $config ) {
     for my $name ( sort keys %TASKS ) {
         my $code = $TASKS{$name};
-        $app->minion->add_task( $name => sub ( $job, @args ) { return $code->( $job, $config, @args ) } );
+        $app->minion->add_task( $name => sub ( $job, @args ) { return perform( $job, $config, $code, @args ) } );
     }
     return;
+}
+
+=func perform
+
+C<($job, $config, $code, @args)>.  Runs the task, unless an outage holds it.
+If GitHub refuses the token, it starts a GitHub outage, and the job waits
+through C<hold> in place of failing.
+
+=cut
+
+sub perform ( $job, $config, $code, @args ) {
+    return hold($job) if App::Clod::Outage::holding( $job->minion, $job->task );
+    return 1          if eval { $code->( $job, $config, @args ); 1 };
+    my $error = $@;
+    die $error if !App::Clod::GitHub::is_unauthorized($error);
+    App::Clod::Outage::begin( $job, github => plain_error($error) );
+    log_note( $job, 'GitHub refused the token; all work waits' );
+    return hold($job);
+}
+
+=func hold
+
+C<($job)>.  Keeps the job from doing anything during an outage.  A scheduled
+task finishes with the result of the last one and C<held>, because the schedule
+starts the next one anyway.  Any other job retries after the outage lock
+expires.
+
+=cut
+
+sub hold ($job) {
+    my ( $minion, $task ) = ( $job->minion, $job->task );
+    return $job->retry( { delay => $App::Clod::Outage::SECONDS } ) if !$SCHEDULED{$task};
+    prune_history( $minion, $task );
+    return $job->finish( { %{ last_result( $minion, $task ) // {} }, held => 1 } );
 }
 
 =func schedule
@@ -68,10 +112,7 @@ C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>, C<harne
 =cut
 
 sub schedule ($minion) {
-    $minion->schedule( inbox    => '* * * * *',    'inbox_poll' );
-    $minion->schedule( harness  => '17 * * * *',   'harness_scan' );
-    $minion->schedule( assigned => '*/15 * * * *', 'assigned_sweep' );
-    $minion->schedule( spokes   => '*/15 * * * *', 'spoke_sweep' );
+    $minion->schedule( $_ => @{ $SCHEDULES{$_} } ) for sort keys %SCHEDULES;
     return;
 }
 
@@ -143,17 +184,20 @@ sub last_result ( $minion, $task ) {
 
 =func prune_history
 
-Removes all but the last few finished jobs of a scheduled task.
+Removes all but the last few finished jobs, and the last few failed jobs, of a
+scheduled task.
 
 =cut
 
 # The scheduled tasks run all day; only their last results mean anything.
 sub prune_history ( $minion, $task, $keep = $HISTORY ) {
-    my $jobs = $minion->jobs( { tasks => [$task], states => [q{finished}] } );
-    my $seen = 0;
-    while ( my $info = $jobs->next ) {
-        next if ++$seen <= $keep;
-        $minion->job( $info->{id} )->remove;
+    for my $state (qw{finished failed}) {
+        my $jobs = $minion->jobs( { tasks => [$task], states => [$state] } );
+        my $seen = 0;
+        while ( my $info = $jobs->next ) {
+            next if ++$seen <= $keep;
+            $minion->job( $info->{id} )->remove;
+        }
     }
     return;
 }
@@ -174,11 +218,11 @@ sub log_note ( $job, $message ) {
 
 =func run_claude
 
-C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, and writes its progress to the job notes.  If the quota is paused or runs out, it retries the job and returns undef, so the caller returns at once.
+C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, and writes its progress to the job notes.  If the quota is paused or runs out, or Claude refuses the token, it retries the job and returns undef, so the caller returns at once.  A refused token starts a Claude outage, see L<App::Clod::Outage>.
 
 =cut
 
-# Runs claude for a job.  Undef means the quota ran out and the job will retry.
+# Runs claude for a job.  Undef means that the job will retry.
 sub run_claude ( $job, $config, %run ) {
     my $minion = $job->minion;
     if ( App::Clod::Budget::paused($minion) ) {
@@ -193,6 +237,12 @@ sub run_claude ( $job, $config, %run ) {
         },
     );
     $job->note( progress => { events => $outcome->{events}, done => time } );
+    if ( $outcome->{unauthorized} ) {
+        App::Clod::Outage::begin( $job, claude => $outcome->{result} // $outcome->{stderr} );
+        log_note( $job, 'Claude refused the token; Claude work waits' );
+        $job->retry( { delay => $App::Clod::Outage::SECONDS } );
+        return;
+    }
     if ( $outcome->{quota_reset} ) {
         App::Clod::Budget::pause( $minion, $outcome->{quota_reset} );
         if ( !$outcome->{ok} ) {
@@ -284,7 +334,9 @@ sub authorized ( $config, $login ) {
 Runs every minute from a Minion schedule, and reads GitHub no more often than
 C<poll_interval> or C<X-Poll-Interval> allow.  Its result holds the cursor for
 the next poll.  A notification is claimed with a Minion lock named after the
-thread and its update time, so a second poll does not enqueue it twice.
+thread and its update time, so a second poll does not enqueue it twice.  A
+notification on a closed issue or pull request makes no work, because closing
+it settled the matter.
 
 =cut
 
@@ -344,6 +396,10 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
     if ( !$kind || !$number ) {
         $gh->mark_read( $thread->{id} );
         return "nothing to do for reason '$reason'";
+    }
+    if ( ( $gh->issue( $repo, $number )->{state} // q{} ) eq 'closed' ) {
+        $gh->mark_read( $thread->{id} );
+        return "$repo#$number is closed";
     }
 
     my $requester = requester( $config, $gh, $repo, $number, $reason, $subject );
@@ -723,10 +779,30 @@ sub pending_threads ( $config, $comments ) {
     return \@pending;
 }
 
+=func pending_comments
+
+C<($config, \@comments)>.  The plain comments on a pull request since the last
+comment of the bot, from authorized users, each with C<id>, C<by> and C<body>.
+
+=cut
+
+sub pending_comments ( $config, $comments ) {
+    my @after;
+    for my $c ( sort { $a->{id} <=> $b->{id} } @$comments ) {
+        my $by = $c->{user}{login} // q{};
+        if ( $by eq $config->{bot} ) { @after = (); next }
+        push @after, { id => 0 + $c->{id}, by => $by, body => $c->{body} // q{} } if authorized( $config, $by );
+    }
+    return \@after;
+}
+
 =func spoke_address
 
-Answers the review threads on the bot's own pull request whose last message is
-from an authorized user, pushes the fixes, and replies in each thread.
+Answers what authorized users said on the bot's own pull request since the bot
+last answered: the review threads whose last message is theirs, and the plain
+comments after the last comment of the bot.  It pushes the fixes, replies in
+each thread, and answers the plain comments in one comment.  The prompt also
+holds the whole conversation of the pull request.
 
 =cut
 
@@ -738,8 +814,9 @@ sub spoke_address ( $job, $config, $args ) {
     return $job->fail( { repo => $repo, error => 'the pull request is not the bot\'s own, from this repository' } )
       if $pull->{user}{login} ne $config->{bot} || $pull->{head}{repo}{full_name} ne $repo;
 
-    my $pending = pending_threads( $config, $gh->review_comments( $repo, $item->{number} ) );
-    return $job->finish( { repo => $repo, nothing => 1 } ) if !@$pending;
+    my $pending  = pending_threads( $config, $gh->review_comments( $repo, $item->{number} ) );
+    my $comments = pending_comments( $config, $gh->issue_comments( $repo, $item->{number} ) );
+    return $job->finish( { repo => $repo, nothing => 1 } ) if !@$pending && !@$comments;
 
     my $branch = $pull->{head}{ref};
     return in_worktree(
@@ -749,11 +826,22 @@ sub spoke_address ( $job, $config, $args ) {
             my $outcome = run_claude(
                 $job, $config,
                 dir    => $tree,
-                prompt => prompt( address => repo => $repo, branch => $branch, origin => origin_url( $config, $item ), instructions => $args->{instructions}, context => Mojo::JSON::encode_json($pending) ),
+                prompt => prompt(
+                    address      => repo => $repo,
+                    branch       => $branch,
+                    origin       => origin_url( $config, $item ),
+                    instructions => $args->{instructions},
+                    history      => context( $config, $gh, $item ),
+                    context      => Mojo::JSON::encode_json( { threads => $pending, comments => $comments } ),
+                ),
                 schema => {
                     type       => 'object',
                     required   => [qw{summary replies}],
-                    properties => { summary => { type => 'string' }, replies => { type => 'array', items => { type => 'object', required => [qw{id body}], properties => { id => { type => 'integer' }, body => { type => 'string' } } } } },
+                    properties => {
+                        summary => { type => 'string' },
+                        replies => { type => 'array', items => { type => 'object', required => [qw{id body}], properties => { id => { type => 'integer' }, body => { type => 'string' } } } },
+                        comment => { type => 'string' },
+                    },
                 },
             ) // return;
             my %usage  = usage_of($outcome);
@@ -768,7 +856,8 @@ sub spoke_address ( $job, $config, $args ) {
                 $gh->reply_review_comment( $repo, $item->{number}, $reply->{id}, $reply->{body} );
                 push @replied, $reply->{id};
             }
-            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $commits, replied => \@replied, summary => $answer->{summary}, %usage } );
+            my $answered = @$comments && ( $answer->{comment} // q{} ) ne q{} ? $gh->comment( $repo, $item->{number}, $answer->{comment} )->{html_url} : undef;
+            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $commits, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, %usage } );
         }
     );
 }
@@ -809,7 +898,9 @@ sub reply ( $job, $config, $item ) {
 Comments on the origin with every pull request of the change, and links the
 pull requests to each other.  It runs even if a spoke failed.  If a spoke asked
 a question and none opened a pull request, the question is the last word, and
-it posts nothing.
+it posts nothing.  An answer on the bot's own pull request that touched no
+other spoke posts nothing either, because that pull request is the origin and
+the answer is already on it.
 
 =cut
 
@@ -821,6 +912,8 @@ sub report ( $job, $config, $args ) {
     my $asked   = grep { $_->{question} } @results;
     my $total   = scalar @{ $job->info->{parents} // [] };
     return $job->finish( { prs => [], of => $total, waiting => 1 } ) if $asked && !@done;
+    my @elsewhere = grep { $_->{repo} ne $item->{repo} || ( $_->{pr} // 0 ) != $item->{number} } @done;
+    return $job->finish( { prs => [ map { $_->{pr_url} } @done ], of => $total, quiet => 1 } ) if $item->{kind} eq 'address_review' && !@elsewhere;
 
     my @lines = map { "- $_->{repo}: $_->{pr_url}" } @done;
     my $rest  = $asked         ? 'the rest wait for the answer to the question above'                                     : 'see the jobs for the rest';

@@ -66,8 +66,15 @@ subtest tree => sub {
 subtest request => sub {
     like( dies { $gh->repo('Test-Org/one') }, qr{GitHub\ GET\ /repos/Test-Org/one:\ 401\ Bad\ credentials}, 'an error status dies with the status and the message' );
 
+    my $refused = dies { $gh->repo('Test-Org/one') };
+    my $missing = dies { $gh->get('/repos/Test-Org/one/contents/missing.txt') };
+    ok( App::Clod::GitHub::is_unauthorized($refused),  'a 401 is a refused token' );
+    ok( !App::Clod::GitHub::is_unauthorized($missing), 'a 404 is not' ) or diag $missing;
+
     my $nowhere = App::Clod::GitHub->new( token => 'test-token', api => 'http://127.0.0.1:1', timeout => 2 );
-    like( dies { $nowhere->repo('Test-Org/one') }, qr{no\ response}, 'no answer at all dies differently from an error status' );
+    my $silent  = dies { $nowhere->repo('Test-Org/one') };
+    like( $silent, qr{no\ response}, 'no answer at all dies differently from an error status' );
+    ok( !App::Clod::GitHub::is_unauthorized($silent), 'and is not a refused token' );
     local $ENV{GH_TOKEN};
     like( dies { App::Clod::GitHub->new->token }, qr{GH_TOKEN\ is\ not\ set}, 'no token dies when it is first needed' );
 };

@@ -11,6 +11,8 @@ use Mojo::Util  ();
 use Test::Mojo  ();
 use Time::HiRes qw{time};
 
+use App::Clod::Outage();
+
 my $tmp  = File::Temp->newdir;
 my $conf = Mojo::File->new( "$tmp", 'clod.conf' );
 $conf->spew( Mojo::Util::dumper( { bot => 'test-bot', workspace => "$tmp/ws", spokes => ['Test-Org/one'], auth => { trusted_header => 'X-Test-User' } } ) );
@@ -73,6 +75,25 @@ subtest work => sub {
     like( $item->{url}, qr{github\.com/Test-Org/one/issues/5\z}, 'and links to it' );
     is( $item->{children}[0]{pr_url},                     'https://test.test/pull/1', 'its spoke jobs show their pull requests' );
     is( [ map { $_->{has_job} } @{ $work->{assigned} } ], [ 1, 0 ],                   'an assigned issue with no job is shown as waiting' );
+};
+
+subtest 'an outage' => sub {
+    job( inbox_poll => { polled_at => time - 3600 } );
+    job( triage     => { cost      => 0 }, notes => { outage => { service => 'github', error => 'GitHub GET /notifications: 401 Bad credentials', at => time } } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_texts(), qr/inbox\ has\ not\ been\ read/, 'an old poll with no outage is an action item' );
+
+    $minion->lock( App::Clod::Outage::lock_name('github'), 60 );
+    $t->get_ok('/api/overview')->status_is(200)->json_is( '/outages/0/service' => 'github', 'the overview names the outage' );
+    my $res   = $t->tx->res;
+    my $first = $res->json->{actions}[0];
+    is( $first->{level}, 'danger', 'and the outage is the first action item' );
+    my $when  = qr/\AGitHub\ refuses\ the\ token,\ last\ at\ .+\ UTC:\ /;
+    my $error = qr/GitHub\ GET\ \/notifications:\ 401\ Bad\ credentials\.\ /;
+    like( $first->{text}, qr/$when$error All\ work\ waits/, 'with the error and what it holds' );
+    unlike( action_texts(), qr/inbox\ has\ not\ been\ read/, 'and it replaces the warning about the inbox' );
+    $minion->unlock( App::Clod::Outage::lock_name('github') );
 };
 
 subtest harness => sub {

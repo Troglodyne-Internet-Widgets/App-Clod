@@ -1,0 +1,2 @@
+{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":557,"error_status":401,"error":"authentication_failed"}
+{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"Failed to authenticate. API Error: 401 Invalid bearer token","total_cost_usd":0}

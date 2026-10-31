@@ -85,6 +85,15 @@ sub request ( $self, $method, $path, %opt ) {
     return $res;
 }
 
+=func is_unauthorized
+
+C<($error)>.  True when the error is the one that L</request> dies with for a
+401, which GitHub answers to a token that is wrong, expired or revoked.
+
+=cut
+
+sub is_unauthorized ($error) { return ( $error // q{} ) =~ m{\AGitHub\ [[:upper:]]+\ \S+:\ 401\ } }
+
 =method get
 
 Returns the decoded JSON, or the body for a raw C<accept>.
