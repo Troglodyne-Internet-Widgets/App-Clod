@@ -25,6 +25,11 @@ subtest validate => sub {
     is( $merged->{claude}{model}, 'test-model', 'a section key from the file is kept' );
     ok( scalar @{ $merged->{claude}{allowed_tools} }, 'and the rest of that section still has its defaults' );
 
+    is( $config->{system_prompts}, {}, 'no system prompt by default' );
+    ok( lives { App::Clod::Config::validate( { %minimal, system_prompts => { triage => 'Test with the provisioner.' } } ) }, 'a system prompt for a task that runs claude lives' );
+    like( dies { App::Clod::Config::validate( { %minimal, system_prompts => { inbox_poll => 'x' } } ) },   qr/does\ not\ run\ claude/, 'a system prompt for a task that runs no claude dies' );
+    like( dies { App::Clod::Config::validate( { %minimal, system_prompts => { triage     => ['x'] } } ) }, qr/must\ be\ text/,         'a system prompt that is not text dies' );
+    like( dies { App::Clod::Config::validate( { %minimal, system_prompts => 'x' } ) }, qr/must\ be\ a\ hash/, 'system prompts that are not a hash die' );
     like( dies { App::Clod::Config::validate( [] ) }, qr/must\ be\ a\ hash/, 'a configuration that is not a hash dies' );
     for my $key (qw{bot workspace auth}) {
         my %without = %minimal;

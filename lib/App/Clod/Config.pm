@@ -7,6 +7,8 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Carp ();
 
+use App::Clod::Budget();
+
 my %DEFAULTS = (
     github_api     => 'https://api.github.com',
     github_web     => 'https://github.com',
@@ -28,7 +30,8 @@ my %DEFAULTS = (
         required_workflows      => [],
         require_claude_settings => 0,
     },
-    otel => {},
+    otel           => {},
+    system_prompts => {},
 );
 
 my @REQUIRED = qw{bot workspace auth};
@@ -67,6 +70,14 @@ sub validate ($raw) {
         Carp::croak("A spoke organization must be a login, not '$org'") if $org !~ m{\A[\w.-]+\z};
     }
     Carp::croak('The configuration names no spokes and no spoke_orgs') if !@{ $config{spokes} } && !@{ $config{spoke_orgs} };
+
+    my $system = $config{system_prompts};
+    Carp::croak('system_prompts must be a hash') if ref $system ne 'HASH';
+    my %runs_claude = map { $_ => 1 } @App::Clod::Budget::CLAUDE_TASKS;
+    for my $task ( sort keys %$system ) {
+        Carp::croak("system_prompts names $task, which does not run claude") if !$runs_claude{$task};
+        Carp::croak("system_prompts for $task must be text")                 if ref $system->{$task} || !defined $system->{$task};
+    }
 
     my $auth = $config{auth};
     Carp::croak('auth must be a hash') if ref $auth ne 'HASH';
@@ -171,6 +182,18 @@ a repository, and C<read_tools> for runs that only read.
 C<plugin>, C<plugin_repo>, C<marketplace>, C<marketplace_repo>,
 C<required_workflows> and C<require_claude_settings>.  See
 L<App::Clod::Harness>.
+
+=item system_prompts
+
+Text to append to the system prompt of the C<claude> runs of a task, keyed by
+the task: C<triage>, C<spoke_fix>, C<spoke_review>, C<spoke_address> or
+C<reply>.  Use it for what every run of that task must know about this
+installation, such as how to test a change.  Because F<clod.conf> is perl, a
+value can be read from a file:
+
+    system_prompts => { triage => Mojo::File->new('/etc/clod/triage.md')->slurp('UTF-8') },
+
+Default none.
 
 =item otel
 

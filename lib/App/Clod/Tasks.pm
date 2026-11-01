@@ -218,7 +218,7 @@ sub log_note ( $job, $message ) {
 
 =func run_claude
 
-C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, and writes its progress to the job notes.  If the quota is paused or runs out, or Claude refuses the token, it retries the job and returns undef, so the caller returns at once.  A refused token starts a Claude outage, see L<App::Clod::Outage>.
+C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, with the C<system_prompts> text of the job's task as C<system>, and writes its progress to the job notes.  If the quota is paused or runs out, or Claude refuses the token, it retries the job and returns undef, so the caller returns at once.  A refused token starts a Claude outage, see L<App::Clod::Outage>.
 
 =cut
 
@@ -231,6 +231,7 @@ sub run_claude ( $job, $config, %run ) {
     }
     my $events  = 0;
     my $outcome = claude($config)->run(
+        system => $config->{system_prompts}{ $job->task },
         %run,
         on_event => sub ($event) {
             $job->note( progress => { events => $events, last => $event->{type}, at => time } ) if !( ++$events % 25 );

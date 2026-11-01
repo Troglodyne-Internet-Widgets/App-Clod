@@ -225,6 +225,15 @@ subtest triage => sub {
     is( $children[2]{parents},                           [ map { $_->{id} } @children[ 0, 1 ] ], 'the report waits for them all' );
     ok( $children[2]{lax}, 'and runs even if one failed' );
     is( $info->{notes}{scope}, 'multi', 'the scope is noted for the page' );
+    my $system = $app->clod_config->{system_prompts};
+    $system->{triage} = 'Test with the provisioner.';
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/triage-record";
+    run_job( triage => \%item );
+    my ( undef, undef, @argv ) = split /\0/, Mojo::File->new("$tmp/triage-record")->slurp;
+    my %flag = map { $argv[$_] => $argv[ $_ + 1 ] } grep { $argv[$_] =~ m{\A--} } 0 .. $#argv - 1;
+    is( $flag{'--append-system-prompt'}, 'Test with the provisioner.', 'the system prompt of triage from the configuration reaches the run' );
+    delete $fake{FAKE_CLAUDE_RECORD};
+    delete $system->{triage};
     ok( -e $tmp->child(qw{workspace hub CLAUDE.md}), 'the hub workspace has its CLAUDE.md' );
     like( $tmp->child(qw{workspace hub CLAUDE.md})->slurp, qr/Test-Org\/two\ is\ a\ test\ spoke/, 'which describes each spoke from its own' );
     $minion->reset( { all => 1 } );
