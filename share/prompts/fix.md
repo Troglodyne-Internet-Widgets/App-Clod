@@ -7,6 +7,8 @@ The task comes from {{origin}}. Triage chose this repository with these instruct
 
 {{prior}}
 
+{{tools}}
+
 When the change is done and its tests pass, commit it on this branch with a
 message in the style of this repository. Do not push and do not open a pull
 request: the hub does both. If the change needs nothing in this repository,

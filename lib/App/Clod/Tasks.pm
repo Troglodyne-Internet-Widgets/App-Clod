@@ -51,6 +51,9 @@ our %SCHEDULES = (
 );
 our %SCHEDULED = map { $_->[1] => 1 } values %SCHEDULES;
 
+# The tasks that run claude in a worktree of one spoke.
+our %SPOKE_TASKS = map { $_ => 1 } qw{spoke_fix spoke_review spoke_address};
+
 my $HOUR          = 3600;
 my $DAY           = 86_400;
 my $CLAIM_SECONDS = 30 * $DAY;
@@ -142,7 +145,10 @@ sub spoke ( $config, $repo ) {
 
 =func claude
 
-C<($config)>.  An L<App::Clod::Claude> with the configured program, tools and telemetry.
+C<($config)>.  An L<App::Clod::Claude> with the configured program, tools and
+telemetry.  Its default tools, which the runs that change a repository get,
+are C<allowed_tools> and then C<extra_tools>.  A read-only run passes
+C<read_tools> as C<tools>, so C<extra_tools> never reaches it.
 
 =cut
 
@@ -154,7 +160,7 @@ sub claude ($config) {
         bin           => $c->{bin},
         model         => $c->{model},
         timeout       => $c->{timeout},
-        allowed_tools => $c->{allowed_tools},
+        allowed_tools => [ @{ $c->{allowed_tools} }, @{ $c->{extra_tools} } ],
         env           => \%env,
     );
 }
@@ -216,9 +222,23 @@ sub log_note ( $job, $message ) {
     return;
 }
 
+=func system_text
+
+C<($config, $task)>.  The text that the claude runs of the task append to
+their system prompt: C<spoke_prompt> for a spoke task, then the
+C<system_prompts> text of the task, a blank line between them.  Undef when
+there is neither.
+
+=cut
+
+sub system_text ( $config, $task ) {
+    my @parts = grep { ( $_ // q{} ) ne q{} } ( $SPOKE_TASKS{$task} ? $config->{spoke_prompt} : undef ), $config->{system_prompts}{$task};
+    return @parts ? join( "\n\n", @parts ) : undef;
+}
+
 =func run_claude
 
-C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, with the C<system_prompts> text of the job's task as C<system>, and writes its progress to the job notes.  If the quota is paused or runs out, or Claude refuses the token, it retries the job and returns undef, so the caller returns at once.  A refused token starts a Claude outage, see L<App::Clod::Outage>.
+C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, with the L</system_text> of the job's task as C<system>, and writes its progress to the job notes.  If the quota is paused or runs out, or Claude refuses the token, it retries the job and returns undef, so the caller returns at once.  A refused token starts a Claude outage, see L<App::Clod::Outage>.
 
 =cut
 
@@ -231,7 +251,7 @@ sub run_claude ( $job, $config, %run ) {
     }
     my $events  = 0;
     my $outcome = claude($config)->run(
-        system => $config->{system_prompts}{ $job->task },
+        system => system_text( $config, $job->task ),
         %run,
         on_event => sub ($event) {
             $job->note( progress => { events => $events, last => $event->{type}, at => time } ) if !( ++$events % 25 );
@@ -493,6 +513,21 @@ sub prepare_hub ( $config, $gh, $spokes ) {
     return ( $hub, \%ref );
 }
 
+=func spoke_testing
+
+C<($config)>.  The section of the triage prompt that says what each spoke run
+is told by C<spoke_prompt>, and how to plan around the tool spokes.  Empty
+when C<spoke_prompt> is not set.
+
+=cut
+
+sub spoke_testing ($config) {
+    my $told = $config->{spoke_prompt} // q{};
+    return q{} if $told eq q{};
+    my @tools = @{ $config->{tool_spokes} };
+    return prompt( 'triage-testing', spoke_prompt => $told, tool_spokes => @tools ? join( q{, }, @tools ) : 'none' );
+}
+
 =func triage
 
 Refreshes a reference worktree of every spoke, writes the hub CLAUDE.md, and
@@ -515,6 +550,7 @@ sub triage ( $job, $config, $item ) {
         requester => $item->{requester},
         owners    => join( q{, }, @{ $config->{owners} } ),
         context   => context( $config, $gh, $item ),
+        testing   => spoke_testing($config),
     );
 
     my ( @outcomes, $answer, $error );
@@ -598,12 +634,76 @@ sub parent_results ($job) {
     } @{ $job->info->{parents} // [] };
 }
 
+=func ancestor_results
+
+C<($job)>.  The results of the parents of the job, of their parents, and so
+on, where they are hashes: the nearest first, each job once.
+
+=cut
+
+sub ancestor_results ($job) {
+    my $minion = $job->minion;
+    my @queue  = @{ $job->info->{parents} // [] };
+    my ( %seen, @results );
+    while ( defined( my $id = shift @queue ) ) {
+        next if $seen{$id}++;
+        my $earlier = $minion->job($id) or next;
+        my $info    = $earlier->info;
+        push @results, $info->{result} if ref $info->{result} eq q{HASH};
+        push @queue,   @{ $info->{parents} // [] };
+    }
+    return @results;
+}
+
+=func tool_branch
+
+C<($job, $gh, $tool)>.  The branch for a worktree of a tool spoke: the branch
+of the nearest earlier job of the chain that left one in that repository, so
+that a run uses what an earlier spoke of the same change just added, else the
+default branch.  A C<spoke_fix> result names a branch only when it pushed one,
+and a C<spoke_address> result names the branch of the pull request that it
+answers.
+
+=cut
+
+sub tool_branch ( $job, $gh, $tool ) {
+    my ($earlier) = grep { ( $_->{repo} // q{} ) eq $tool && $_->{branch} } ancestor_results($job);
+    return $earlier ? $earlier->{branch} : default_branch( $gh, $tool );
+}
+
+=func tools_note
+
+C<(\@checkouts)>.  The paragraph of a spoke prompt that names where each tool
+spoke is checked out, or empty when there is none.
+
+=cut
+
+sub tools_note ($checkouts) {
+    return q{} if !@$checkouts;
+    return join "\n",
+      'These repositories are checked out for their tools, each in a directory added to this session and made for this run alone:',
+      ( map { "- $_->{repo} in $_->{dir}, at $_->{branch}" } @$checkouts ),
+      'Use their tools, but do not change them: each checkout is removed when this run ends.';
+}
+
 =func in_worktree
 
 C<($job, $config, $repo, \%how, $work)>.  Takes the lock of the spoke, makes a
-worktree with the options in C<%how>, runs C<< $work->($spoke, $tree) >>, and
-removes the worktree whatever happened.  If another job holds the lock, the job
-retries later.
+worktree with the options in C<%how>, and a worktree of each tool spoke at its
+L</tool_branch>, runs C<< $work->($spoke, $tree, \%tools) >>, and removes every
+worktree whatever happened.  C<%tools> has C<add_dirs>, the tool worktrees for
+the run, and C<note>, the L</tools_note> for its prompt.  The spoke's own
+repository gets no second worktree when it is a tool spoke.  If another job
+holds the lock, the job retries later.
+
+A tool worktree is made without the lock of its repository.  The lock keeps two
+jobs from working on one repository at once, and a tool worktree is no such
+work: it is detached, so it holds no branch, it writes no shared configuration,
+and nothing is pushed from it.  The one write that it shares with other jobs is
+the fetch into the bare clone, which triage already makes without the lock.
+Two fetches at once can meet on the lock file of a ref, and then one of them
+fails, with the job.  Taking the lock would hold every spoke run back while any job works in a tool
+spoke, for up to four hours.
 
 =cut
 
@@ -613,15 +713,28 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
         $job->retry( { delay => 120 } );
         return;
     }
+    my $root  = Mojo::File->new( $config->{workspace}, 'work', $job->id );
     my $spoke = spoke( $config, $repo );
-    my $dir   = Mojo::File->new( $config->{workspace}, 'work', $job->id, $repo );
-    my $tree  = $spoke->worktree( $dir, %$how );
-    my @out   = eval { $work->( $spoke, $tree ) };
-    my $err   = $@;
-    eval { $spoke->remove_worktree($dir); 1 } or warn "could not remove $dir: $@";
+    my @made  = ( { spoke => $spoke, dir => $root->child($repo) } );
+    my $tree  = $spoke->worktree( $made[0]{dir}, %$how );
+    my @out   = eval {
+        my $gh = github($config);
+        for my $tool ( grep { $_ ne $repo } @{ $config->{tool_spokes} } ) {
+            my %checkout = ( repo => $tool, spoke => spoke( $config, $tool ), dir => $root->child($tool), branch => tool_branch( $job, $gh, $tool ) );
+            push @made, \%checkout;
+            $checkout{spoke}->worktree( $checkout{dir}, detach => $checkout{branch} );
+        }
+        my @checkouts = @made[ 1 .. $#made ];
+        $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ) } );
+    };
+    my $err = $@;
+    for my $made (@made) {
+        eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 } or warn "could not remove $made->{dir}: $@";
+    }
 
-    # work/<job>/<owner>/<name>: the two directories above it are this job's alone.
-    rmdir $_ for $dir->dirname, $dir->dirname->dirname;
+    # work/<job>/<owner>/<name>: the directories above each are this job's alone.
+    rmdir $_->{dir}->dirname for @made;
+    rmdir $root;
     die $err if $err;
     return @out;
 }
@@ -657,17 +770,18 @@ sub spoke_fix ( $job, $config, $args ) {
     my $gh     = github($config);
     my $base   = default_branch( $gh, $repo );
     my $branch = 'clod/' . $job->id . q{-} . slug( $item->{title} );
-    my $prior  = @prior ? join( "\n", 'Earlier spokes in this change:', map { "- $_->{repo}: branch $_->{branch}" . ( $_->{pr_url} ? ", $_->{pr_url}" : q{} ) . "\n  $_->{summary}" } @prior ) : q{};
+    my $prior  = @prior ? join( "\n", 'Earlier spokes in this change:', map { "- $_->{repo}: " . ( $_->{branch} ? "branch $_->{branch}" : 'no change' ) . ( $_->{pr_url} ? ", $_->{pr_url}" : q{} ) . "\n  " . ( $_->{summary} // q{} ) } @prior ) : q{};
 
     return in_worktree(
         $job, $config, $repo,
         { branch => $branch, base => $base },
-        sub ( $spoke, $tree ) {
+        sub ( $spoke, $tree, $tools ) {
             my $outcome = run_claude(
                 $job, $config,
-                dir    => $tree,
-                prompt => prompt( fix => repo => $repo, branch => $branch, origin => origin_url( $config, $item ), instructions => $args->{instructions}, prior => $prior, context => context( $config, $gh, $item ) ),
-                schema => {
+                dir      => $tree,
+                prompt   => prompt( fix => repo => $repo, branch => $branch, origin => origin_url( $config, $item ), instructions => $args->{instructions}, prior => $prior, tools => $tools->{note}, context => context( $config, $gh, $item ) ),
+                add_dirs => $tools->{add_dirs},
+                schema   => {
                     type       => 'object',
                     required   => [qw{title summary}],
                     properties => { title => { type => 'string' }, summary => { type => 'string' }, question => { type => 'string' }, path => { type => 'string' } },
@@ -727,14 +841,14 @@ sub spoke_review ( $job, $config, $args ) {
     return in_worktree(
         $job, $config, $repo,
         { pull => $item->{number} },
-        sub ( $, $tree ) {
+        sub ( $, $tree, $tools ) {
             my $outcome = run_claude(
                 $job, $config,
                 dir             => $tree,
-                prompt          => prompt( review => origin => origin_url( $config, $item ), base => $pull->{base}{ref}, instructions => $args->{instructions}, related => $related, context => context( $config, $gh, $item ) ),
+                prompt          => prompt( review => origin => origin_url( $config, $item ), base => $pull->{base}{ref}, instructions => $args->{instructions}, related => $related, tools => $tools->{note}, context => context( $config, $gh, $item ) ),
                 tools           => $config->{claude}{read_tools},
                 permission_mode => 'default',
-                add_dirs        => \@related,
+                add_dirs        => [ @related, @{ $tools->{add_dirs} } ],
                 schema          => \%REVIEW_SCHEMA,
             ) // return;
             my %usage  = usage_of($outcome);
@@ -823,7 +937,7 @@ sub spoke_address ( $job, $config, $args ) {
     return in_worktree(
         $job, $config, $repo,
         { existing => $branch },
-        sub ( $spoke, $tree ) {
+        sub ( $spoke, $tree, $tools ) {
             my $outcome = run_claude(
                 $job, $config,
                 dir    => $tree,
@@ -832,10 +946,12 @@ sub spoke_address ( $job, $config, $args ) {
                     branch       => $branch,
                     origin       => origin_url( $config, $item ),
                     instructions => $args->{instructions},
+                    tools        => $tools->{note},
                     history      => context( $config, $gh, $item ),
                     context      => Mojo::JSON::encode_json( { threads => $pending, comments => $comments } ),
                 ),
-                schema => {
+                add_dirs => $tools->{add_dirs},
+                schema   => {
                     type       => 'object',
                     required   => [qw{summary replies}],
                     properties => {
@@ -1115,5 +1231,9 @@ Every task takes the configuration first, then the job's arguments.  Each
 task is documented at its sub.  An item is the hash that C<inbox_poll> makes
 from a notification: C<repo>, C<number>, C<kind>, C<is_pr>, C<title>,
 C<requester>, C<thread> and C<comment_url>.
+
+The spoke tasks, C<spoke_fix>, C<spoke_review> and C<spoke_address>, work in
+L</in_worktree>, which also checks out the C<tool_spokes> for the run, and
+their runs get C<spoke_prompt> through L</system_text>.
 
 =cut

@@ -117,6 +117,17 @@ them in order, and each run gets the summaries of the runs before it.  The bot
 pushes the branches, opens the pull requests and links them to each other and to
 the issue.
 
+How a spoke run tests a change is a matter of the installation, so
+F<clod.conf> says it: C<spoke_prompt> is added to the system prompt of every
+spoke run, and triage is told it too, so that its instructions agree.  The
+tools for a test, such as a provisioner that builds a guest, can live in a
+repository of their own, a tool spoke.  Each spoke run gets its own worktree of
+each tool spoke, removed after the run, so that runs in parallel never share
+one.  It is at the branch of an earlier spoke of the same change that changed
+the tool spoke, so a run can test with a recipe that the run before it just
+added.  C<extra_tools> allows the runs that change a repository to run those
+tools.  See L<App::Clod::Config>.
+
 If the best fix is upstream, the bot changes nothing.  It assigns the issue to
 the owner of the affected path in CODEOWNERS, or to the repository owner, and
 explains why.

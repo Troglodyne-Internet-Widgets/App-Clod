@@ -30,7 +30,20 @@ subtest validate => sub {
     like( dies { App::Clod::Config::validate( { %minimal, system_prompts => { inbox_poll => 'x' } } ) },   qr/does\ not\ run\ claude/, 'a system prompt for a task that runs no claude dies' );
     like( dies { App::Clod::Config::validate( { %minimal, system_prompts => { triage     => ['x'] } } ) }, qr/must\ be\ text/,         'a system prompt that is not text dies' );
     like( dies { App::Clod::Config::validate( { %minimal, system_prompts => 'x' } ) }, qr/must\ be\ a\ hash/, 'system prompts that are not a hash die' );
+    is( [ $config->{spoke_prompt}, $config->{tool_spokes}, $config->{claude}{extra_tools} ], [ undef, [], [] ], 'no spoke prompt, tool spokes or extra tools by default' );
+    ok( lives { App::Clod::Config::validate( { %minimal, spoke_prompt => 'Test on a guest.' } ) }, 'a spoke prompt that is text lives' );
+    like( dies { App::Clod::Config::validate( { %minimal, spoke_prompt => ['x'] } ) }, qr/spoke_prompt\ must\ be\ text/, 'a spoke prompt that is not text dies' );
+    is( App::Clod::Config::validate( { %minimal, tool_spokes => ['Test-Org/tools'] } )->{tool_spokes}, ['Test-Org/tools'], 'a tool spoke that is Owner/Name lives' );
+    like( dies { App::Clod::Config::validate( { %minimal, tool_spokes => ['tools'] } ) },        qr/tool_spokes\ must\ be\ Owner\/Name,\ not\ 'tools'/, 'a tool spoke that is not Owner/Name dies' );
+    like( dies { App::Clod::Config::validate( { %minimal, tool_spokes => [undef] } ) },          qr/must\ be\ Owner\/Name/,                             'so does an undefined one' );
+    like( dies { App::Clod::Config::validate( { %minimal, tool_spokes => 'Test-Org/tools' } ) }, qr/tool_spokes\ must\ be\ a\ list/,                    'tool spokes that are not a list die' );
+    my $extra = App::Clod::Config::validate( { %minimal, claude => { extra_tools => ['Bash(bin/provision:*)'] } } );
+    is( $extra->{claude}{extra_tools}, ['Bash(bin/provision:*)'], 'extra tools are kept' );
+    ok( scalar @{ $extra->{claude}{read_tools} }, 'beside the default read tools' );
+    like( dies { App::Clod::Config::validate( { %minimal, claude => { extra_tools => 'Bash' } } ) }, qr/extra_tools\ must\ be\ a\ list/,           'extra tools that are not a list die' );
+    like( dies { App::Clod::Config::validate( { %minimal, claude => { extra_tools => [ [] ] } } ) }, qr/extra_tools\ must\ be\ a\ list\ of\ text/, 'and so do extra tools that are not text' );
     like( dies { App::Clod::Config::validate( [] ) }, qr/must\ be\ a\ hash/, 'a configuration that is not a hash dies' );
+
     for my $key (qw{bot workspace auth}) {
         my %without = %minimal;
         delete $without{$key};

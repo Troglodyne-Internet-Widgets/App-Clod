@@ -82,6 +82,7 @@ $r->get('/repos/:o/:n/pulls/:num')->to( cb => sub ($c) { $c->render( json => $st
 $r->patch('/repos/:o/:n/pulls/:num')->to( cb => $record->('update_pull') );
 $r->post('/repos/:o/:n/pulls')->to(
     cb => sub ($c) {
+        return $c->render( json => { message => 'Server Error' }, status => 500 ) if $state{refuse_pull};
         push @calls, [ 'pull', path_of($c), $c->req->json ];
         my $n = 100 + scalar grep { $_->[0] eq 'pull' } @calls;
         $c->render( json => { number => $n, html_url => "https://test.test/" . $c->param('o') . q{/} . $c->param('n') . "/pull/$n" }, status => 201 );
@@ -166,6 +167,14 @@ sub calls_of ($what) {
     return [ grep { $_->[0] eq $what } @calls ];
 }
 
+# What the fake claude recorded: its directory, its prompt, and the values of each flag.
+sub record_of ($file) {
+    my ( $cwd, $prompt, @argv ) = split /\0/, Mojo::File->new($file)->slurp;
+    my %flags;
+    push @{ $flags{ $argv[$_] } }, $argv[ $_ + 1 ] for grep { $argv[$_] =~ m{\A--} } 0 .. $#argv - 1;
+    return { cwd => $cwd, prompt => $prompt, flags => \%flags };
+}
+
 my %item = ( repo => 'Test-Org/one', number => 7, kind => 'fix', is_pr => 0, title => 'Fix the thing!', requester => 'trusted' );
 
 subtest inbox_poll => sub {
@@ -229,9 +238,7 @@ subtest triage => sub {
     $system->{triage} = 'Test with the provisioner.';
     $fake{FAKE_CLAUDE_RECORD} = "$tmp/triage-record";
     run_job( triage => \%item );
-    my ( undef, undef, @argv ) = split /\0/, Mojo::File->new("$tmp/triage-record")->slurp;
-    my %flag = map { $argv[$_] => $argv[ $_ + 1 ] } grep { $argv[$_] =~ m{\A--} } 0 .. $#argv - 1;
-    is( $flag{'--append-system-prompt'}, 'Test with the provisioner.', 'the system prompt of triage from the configuration reaches the run' );
+    is( record_of("$tmp/triage-record")->{flags}{'--append-system-prompt'}, ['Test with the provisioner.'], 'the system prompt of triage from the configuration reaches the run' );
     delete $fake{FAKE_CLAUDE_RECORD};
     delete $system->{triage};
     ok( -e $tmp->child(qw{workspace hub CLAUDE.md}), 'the hub workspace has its CLAUDE.md' );
@@ -411,6 +418,102 @@ subtest spoke_address => sub {
 
     $state{pull} = { %{ $state{pull} }, user => { login => 'someone' } };
     is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{state}, 'failed', 'a pull request that is not the bot\'s own is refused' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest 'tool spokes and the spoke prompt' => sub {
+    %state = ();
+    @calls = ();
+    my $config = $app->clod_config;
+    $config->{spoke_prompt}              = 'Test on a guest.';
+    $config->{tool_spokes}               = ['Test-Org/two'];
+    $config->{claude}{extra_tools}       = ['Bash(bin/provision:*)'];
+    $config->{system_prompts}{spoke_fix} = 'Fix with care.';
+    my $tools = $remote->child('Test-Org/two.git')->to_string;
+    my $main  = git( '--git-dir', $tools, 'rev-parse', 'main' );
+    my ( $record_file, $heads ) = ( "$tmp/tool-record", "$tmp/tool-heads" );
+    my $head_of = sub () {
+        return { map { split /\t/ } split /\n/, Mojo::File->new($heads)->slurp };
+    };
+
+    answer( { title => 't', summary => 'Tested on a guest.' }, commit => 1 );
+    @fake{qw{FAKE_CLAUDE_RECORD FAKE_CLAUDE_HEADS}} = ( $record_file, $heads );
+    my $fix  = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'do it' } );
+    my $told = record_of($record_file);
+    my $dir  = $tmp->child( 'workspace', 'work', $fix->{id}, 'Test-Org', 'two' )->to_string;
+    is( $fix->{state},                            'finished',                             'a fix with a tool spoke finishes' ) or diag Mojo::Util::dumper $fix->{result};
+    is( $told->{flags}{'--append-system-prompt'}, ["Test on a guest.\n\nFix with care."], 'a spoke run is told the spoke prompt, then the system prompt of its task' );
+    is( $told->{flags}{'--add-dir'},              [$dir],                                 'it gets a worktree of the tool spoke of its own' );
+    like( $told->{prompt}, qr/-\ Test-Org\/two\ in\ \Q$dir\E,\ at\ main\n/, 'and its prompt says where, at which branch' );
+    is( $head_of->(), { $dir => $main }, 'with no earlier job in the tool spoke, the worktree is at its default branch' );
+    like( $told->{flags}{'--allowedTools'}[0], qr/,Bash\(bin\/provision:\*\)\z/, 'and the extra tools are allowed, after the configured ones' );
+    ok( !-e $tmp->child( 'workspace', 'work', $fix->{id} ), 'every worktree of the run is gone afterwards' );
+    is( [ grep { m{/work/} } split /\n/, git( '--git-dir', $tools, 'worktree', 'list' ) ], [], 'and the bare clone of the tool spoke has no worktree left' );
+
+    # A recipe that an earlier spoke of the same change pushed, two jobs back.
+    my $seed = $tmp->child( 'seed', 'Test-Org/two' );
+    git( q{-C}, "$seed", qw{checkout --quiet -b clod/1-recipe} );
+    git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet --allow-empty -m recipe} );
+    git( q{-C}, "$seed", 'push', '--quiet', $tools, 'clod/1-recipe' );
+    git( q{-C}, "$seed", qw{checkout --quiet main} );
+    my $recipe = git( '--git-dir', $tools, 'rev-parse', 'clod/1-recipe' );
+    $minion->add_task( fake_spoke => sub ( $job, $r ) { $job->finish($r) } );
+    my $first = $minion->enqueue( fake_spoke => [ { repo => 'Test-Org/two', branch => 'clod/1-recipe', pr_url => 'https://test.test/two/1' } ] );
+    run_id($first);
+    my $between = $minion->enqueue( fake_spoke => [ { repo => 'Test-Org/one', no_change => 1, summary => 'Nothing to do here.' } ], { parents => [$first] } );
+    run_id($between);
+    answer( { title => 't', summary => 's' } );
+    @fake{qw{FAKE_CLAUDE_RECORD FAKE_CLAUDE_HEADS}} = ( $record_file, $heads );
+    my $after = run_id( $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ], { parents => [$between] } ) );
+    my $later = $tmp->child( 'workspace', 'work', $after->{id}, 'Test-Org', 'two' )->to_string;
+    is( $after->{state}, 'finished',            'a fix after an earlier spoke that changed nothing finishes' ) or diag Mojo::Util::dumper $after->{result};
+    is( $head_of->(),    { $later => $recipe }, 'a tool worktree is at the branch of the nearest earlier job that changed the tool spoke' );
+    like( record_of($record_file)->{prompt}, qr/at\ clod\/1-recipe\n/, 'and the prompt names that branch' );
+
+    answer( { title => 't', summary => 's' } );
+    @fake{qw{FAKE_CLAUDE_RECORD FAKE_CLAUDE_EXIT}} = ( $record_file, 1 );
+    my $failed = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    is( $failed->{state},                              'failed',                                                                            'a run that fails fails the job' );
+    is( record_of($record_file)->{flags}{'--add-dir'}, [ $tmp->child( 'workspace', 'work', $failed->{id}, 'Test-Org', 'two' )->to_string ], 'after it had a tool worktree' );
+    ok( !-e $tmp->child( 'workspace', 'work', $failed->{id} ), 'which is gone after the failure too' );
+
+    answer( { title => 't', summary => 's' }, commit => 1 );
+    $state{refuse_pull} = 1;
+    my $died = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    like( [ $died->{state}, $died->{result} ], [ 'failed', qr/500/ ], 'a job that dies after the run fails' );
+    ok( !-e $tmp->child( 'workspace', 'work', $died->{id} ), 'and its tool worktree is gone too' );
+    delete $state{refuse_pull};
+
+    answer( { title => 't', summary => 's' } );
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( record_of($record_file)->{flags}{'--add-dir'}, undef, 'a run in the tool spoke itself gets no second copy of it' );
+
+    answer( { event => 'COMMENT', body => 'Fine.', comments => [] } );
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    my $review = run_job( spoke_review => { item => { %item, kind => 'review', is_pr => 1, number => 9 }, repo => 'Test-Org/one', instructions => 'x' } );
+    my $read   = record_of($record_file);
+    is( $read->{flags}{'--append-system-prompt'}, ['Test on a guest.'],                                                                'a review is told the spoke prompt, and not the system prompt of another task' );
+    is( $read->{flags}{'--add-dir'},              [ $tmp->child( 'workspace', 'work', $review->{id}, 'Test-Org', 'two' )->to_string ], 'and gets a tool worktree too' );
+    unlike( $read->{flags}{'--allowedTools'}[0], qr/provision/, 'but not the extra tools, because it only reads' );
+
+    answer( { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1, instructions => 'x' } ] } );
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    run_job( triage => \%item );
+    my $triage = record_of($record_file);
+    like( $triage->{prompt}, qr/<<<SPOKE_PROMPT\nTest\ on\ a\ guest\.\nSPOKE_PROMPT>>>/, 'triage is told what each spoke run is told' );
+    like( $triage->{prompt}, qr/tools:\ Test-Org\/two\./,                                'and which the tool spokes are' );
+    unlike( $triage->{flags}{'--allowedTools'}[0], qr/provision/, 'and is not allowed the extra tools' );
+    is( $triage->{flags}{'--append-system-prompt'}, undef, 'nor told the spoke prompt as its own' );
+
+    delete $config->{spoke_prompt};
+    answer( { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1, instructions => 'x' } ] } );
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    run_job( triage => \%item );
+    unlike( record_of($record_file)->{prompt}, qr/SPOKE_PROMPT|tool\ spokes/, 'without a spoke prompt, triage has no such section' );
+    delete $config->{system_prompts}{spoke_fix};
+    $config->{tool_spokes} = [];
+    $config->{claude}{extra_tools} = [];
     $minion->reset( { all => 1 } );
 };
 

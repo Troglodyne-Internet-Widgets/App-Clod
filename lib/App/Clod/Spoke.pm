@@ -142,8 +142,15 @@ sub refresh_reference ( $self, $branch ) {
 =method worktree
 
 C<($dir, %opt)>: C<< branch => ..., base => ... >> for a new branch,
-C<< existing => $branch >> for a branch already on the remote, or
-C<< pull => $number >> for the head of a pull request, detached.
+C<< existing => $branch >> for a branch already on the remote,
+C<< pull => $number >> for the head of a pull request, detached, or
+C<< detach => $branch >> for a branch on the remote, detached, to read and to
+run what is in it.
+
+A C<detach> worktree gets no author and no hooks, because nothing commits in
+it.  So making one writes nothing to the bare clone but the fetch and its own
+worktree entry, and it holds no branch, so any number of them can be at one
+branch at once.
 
 =cut
 
@@ -151,6 +158,10 @@ sub worktree ( $self, $dir, %opt ) {
     my $mirror = $self->fetch;
     $dir = Mojo::File->new($dir);
     $dir->dirname->make_path;
+    if ( defined $opt{detach} ) {
+        $self->git( q{-C}, "$mirror", qw{worktree add --detach}, "$dir", "origin/$opt{detach}" );
+        return $dir;
+    }
     if ( $opt{pull} ) {
         $self->git( q{-C}, "$mirror", 'fetch',                   'origin', "+pull/$opt{pull}/head:refs/remotes/origin/pr/$opt{pull}" );
         $self->git( q{-C}, "$mirror", qw{worktree add --detach}, "$dir",   "origin/pr/$opt{pull}" );

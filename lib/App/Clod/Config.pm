@@ -5,7 +5,8 @@ package App::Clod::Config;
 use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
-use Carp ();
+use Carp       ();
+use List::Util ();
 
 use App::Clod::Budget();
 
@@ -21,6 +22,7 @@ my %DEFAULTS = (
         timeout       => 3600,
         allowed_tools => [qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*)}],
         read_tools    => [ qw{Read Grep Glob}, 'Bash(git log:*)', 'Bash(git grep:*)', 'Bash(git show:*)', 'Bash(git diff:*)' ],
+        extra_tools   => [],
     },
     harness => {
         plugin                  => 'perl-slop',
@@ -32,6 +34,8 @@ my %DEFAULTS = (
     },
     otel           => {},
     system_prompts => {},
+    spoke_prompt   => undef,
+    tool_spokes    => [],
 );
 
 my @REQUIRED = qw{bot workspace auth};
@@ -41,6 +45,17 @@ my sub list_of ( $config, $key ) {
     Carp::croak("$key must be a list") if ref $value ne 'ARRAY';
     return $value;
 }
+
+my sub repos_of ( $config, $key ) {
+    my $repos = list_of( $config, $key );
+    for my $repo (@$repos) {
+        my $name = $repo // q{};
+        Carp::croak("Each of $key must be Owner/Name, not '$name'") if $name !~ m{\A[\w.-]+/[\w.-]+\z};
+    }
+    return $repos;
+}
+
+my sub is_text ($value) { return defined $value && !ref $value }
 
 =func validate
 
@@ -61,11 +76,9 @@ sub validate ($raw) {
 
     $config{authorized_users} = list_of( \%config, 'authorized_users' );
     $config{owners}           = list_of( \%config, 'owners' );
-    $config{spokes}           = list_of( \%config, 'spokes' );
-    for my $repo ( @{ $config{spokes} } ) {
-        Carp::croak("A spoke must be Owner/Name, not '$repo'") if $repo !~ m{\A[\w.-]+/[\w.-]+\z};
-    }
-    $config{spoke_orgs} = list_of( \%config, 'spoke_orgs' );
+    $config{spokes}           = repos_of( \%config, 'spokes' );
+    $config{tool_spokes}      = repos_of( \%config, 'tool_spokes' );
+    $config{spoke_orgs}       = list_of( \%config, 'spoke_orgs' );
     for my $org ( @{ $config{spoke_orgs} } ) {
         Carp::croak("A spoke organization must be a login, not '$org'") if $org !~ m{\A[\w.-]+\z};
     }
@@ -76,8 +89,11 @@ sub validate ($raw) {
     my %runs_claude = map { $_ => 1 } @App::Clod::Budget::CLAUDE_TASKS;
     for my $task ( sort keys %$system ) {
         Carp::croak("system_prompts names $task, which does not run claude") if !$runs_claude{$task};
-        Carp::croak("system_prompts for $task must be text")                 if ref $system->{$task} || !defined $system->{$task};
+        Carp::croak("system_prompts for $task must be text")                 if !is_text( $system->{$task} );
     }
+    Carp::croak('spoke_prompt must be text') if defined $config{spoke_prompt} && !is_text( $config{spoke_prompt} );
+    $config{claude}{extra_tools} = list_of( $config{claude}, 'extra_tools' );
+    Carp::croak('extra_tools must be a list of text') if List::Util::any { !is_text($_) } @{ $config{claude}{extra_tools} };
 
     my $auth = $config{auth};
     Carp::croak('auth must be a hash') if ref $auth ne 'HASH';
@@ -177,6 +193,13 @@ page come from them.  Default 30.
 C<bin>, C<model>, C<timeout> in seconds, C<allowed_tools> for runs that change
 a repository, and C<read_tools> for runs that only read.
 
+C<extra_tools> is a list of Claude Code permission rules, such as
+C<Bash(bin/provision:*)>, added to C<allowed_tools> of this installation.  So
+the defaults stay, and only the runs that change a repository, C<spoke_fix>
+and C<spoke_address>, get the rules.  They never reach C<read_tools>, so
+triage, C<spoke_review> and C<reply> stay read-only.  The bot runs unattended,
+so a rule here is permission that no person confirms.  Default none.
+
 =item harness
 
 C<plugin>, C<plugin_repo>, C<marketplace>, C<marketplace_repo>,
@@ -194,6 +217,27 @@ value can be read from a file:
     system_prompts => { triage => Mojo::File->new('/etc/clod/triage.md')->slurp('UTF-8') },
 
 Default none.
+
+=item spoke_prompt
+
+Text to append to the system prompt of every C<spoke_fix>, C<spoke_review>
+and C<spoke_address> run, before the C<system_prompts> text of that task, if
+it has one.  Use it for what every spoke run must know, such as how to test a
+change on this installation.  Triage reads it too: its prompt says that this
+is what each spoke run is told, so that the C<instructions> it writes for each
+repository agree with it.  Default none.
+
+=item tool_spokes
+
+Repositories, as C<Owner/Name>, whose tools every spoke run can use, such as a
+provisioner that builds a guest to test on.  Each C<spoke_fix>,
+C<spoke_review> and C<spoke_address> run gets its own worktree of each one,
+added to the run with C<--add-dir> and named in its prompt, and removed after
+the run.  The worktree is at the branch of the nearest earlier job of the same
+change that left one in that repository, else at its default branch.  A run in
+a tool spoke gets no second copy of it.  For triage to plan a change to a tool
+spoke, it must be a spoke too, in C<spokes> or in C<spoke_orgs>.  See
+L<App::Clod::Tasks/in_worktree>.  Default none.
 
 =item otel
 

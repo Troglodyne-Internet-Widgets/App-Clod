@@ -5,7 +5,7 @@ use re '/aasx';
 
 # Stands in for claude -p.  It reads the prompt, then prints the stream-json
 # lines named by FAKE_CLAUDE_STREAM, and records its arguments, its working
-# directory and the prompt where FAKE_CLAUDE_RECORD says.
+# directory and the prompt where FAKE_CLAUDE_RECORD says, NUL between them.
 use Cwd      ();
 use IPC::Run ();
 
@@ -14,6 +14,18 @@ if ( my $record = $ENV{FAKE_CLAUDE_RECORD} ) {
     open my $fh, '>', $record or die "$record: $!";
     print {$fh} join( "\0", Cwd::getcwd(), $prompt, @ARGV );
     close $fh or die "$record: $!";
+}
+
+# Each --add-dir is there while the run lasts; FAKE_CLAUDE_HEADS gets the
+# commit that each one has checked out, a line of directory, tab, commit each.
+if ( my $heads = $ENV{FAKE_CLAUDE_HEADS} ) {
+    open my $fh, '>', $heads or die "$heads: $!";
+    for my $dir ( map { $ARGV[ $_ + 1 ] } grep { $ARGV[$_] eq '--add-dir' } 0 .. $#ARGV - 1 ) {
+        my ( $out, $err );
+        IPC::Run::run( [ qw{git -C}, $dir, qw{rev-parse HEAD} ], '>', \$out, '2>', \$err ) or die "git rev-parse in $dir: $err";
+        print {$fh} "$dir\t$out";
+    }
+    close $fh or die "$heads: $!";
 }
 open my $in, '<', $ENV{FAKE_CLAUDE_STREAM} or die "$ENV{FAKE_CLAUDE_STREAM}: $!";
 print {*STDOUT} readline $in;

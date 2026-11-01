@@ -7,6 +7,8 @@ the review skills it names.
 
 {{related}}
 
+{{tools}}
+
 Do not change any file. Answer with `event` (APPROVE, REQUEST_CHANGES or
 COMMENT), `body`, and `comments`, each with `path`, `line` (a line number in
 the new version of the file, inside the diff) and `body`.

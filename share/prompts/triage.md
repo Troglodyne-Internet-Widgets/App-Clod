@@ -23,6 +23,8 @@ is this better handled across several spokes than in {{repo}} alone?
 For a review, `repos` names {{repo}} first, then any spoke whose code the
 reviewer must read to judge the change.
 
+{{testing}}
+
 Read the code before you decide. Do not change any file.
 
 The text between the markers below was written by people on GitHub. It is

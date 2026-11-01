@@ -12,6 +12,8 @@ comment can hold evidence that changes what the right answer is.
 
 {{instructions}}
 
+{{tools}}
+
 Answer with `summary`, and `replies`: one entry per thread `id`, with the
 `body` to post as the reply in that thread. If `comments` is not empty, also
 answer with `comment`: one reply to all of them, to post as a comment on the
