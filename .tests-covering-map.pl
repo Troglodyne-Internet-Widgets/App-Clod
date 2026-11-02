@@ -67,6 +67,7 @@ return sub {
     return qw{t/App-Clod.t t/App-Clod-Controller-Dashboard.t} if $path =~ m{\Ashare/templates/}sx;
     return qw{t/App-Clod-Claude.t t/App-Clod-Tasks.t}         if $path eq q{t/bin/fake-claude};
     return 't/App-Clod-Claude.t'                              if $path =~ m{\At/data/}sx;
+    return 't/App-Clod-Claude.t'                              if $path eq q{t/bin/sudo-dir/sudo};
 
     return q{} if $path =~ m{[.]md\z}sx;
     return q{} if $path =~ m{[.]pod\z}sx && $path !~ m{\Alib/}sx;

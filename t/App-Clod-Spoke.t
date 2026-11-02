@@ -46,6 +46,16 @@ subtest refresh_reference => sub {
     ok( -e $spoke->refresh_reference('main')->child('new'), 'and follows it on the next refresh' );
 };
 
+subtest 'the bare clone, shared with its group' => sub {
+    my $umask = umask oct '0077';
+    my $tree  = $spoke->worktree( $tmp->child( 'ws', 'work', 2, 'Test-Org', 'one' ), branch => 'clod/2-shared', base => 'main' );
+    git( q{-C}, "$tree", qw{commit --quiet --no-verify --allow-empty -m shared} );
+    my $mode = ( stat $spoke->mirror->child(qw{refs heads clod 2-shared}) )[2] // 0;
+    is( $mode & oct '0660', oct '0660', 'a branch that the worktree commits is writable by the group, whatever the umask' ) or diag sprintf '%04o', $mode & oct '7777';
+    $spoke->remove_worktree($tree);
+    umask $umask;
+};
+
 subtest worktree => sub {
     my $dir  = $tmp->child( 'ws', 'work', 1, 'Test-Org', 'one' );
     my $tree = $spoke->worktree( $dir, branch => 'clod/1-test', base => 'main' );

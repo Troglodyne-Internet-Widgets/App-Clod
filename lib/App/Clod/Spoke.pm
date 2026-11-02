@@ -100,6 +100,7 @@ sub fetch ($self) {
         $self->git( 'clone', '--bare', $self->github_web . '/' . $self->repo . '.git', "$mirror" );
         $self->git( q{-C}, "$mirror", qw{config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*} );
     }
+    $self->git( q{-C}, "$mirror", qw{config core.sharedRepository group} );
     $self->git( q{-C}, "$mirror", qw{fetch --prune origin} );
     return $mirror;
 }
@@ -237,5 +238,26 @@ is never in a remote URL or in the clone's configuration.
 
 The repository's own F<git-hooks/pre-commit> and F<git-hooks/post-commit> are
 installed into the bare clone, so a commit in any worktree runs them.
+
+Each fetch sets C<core.sharedRepository> to C<group> in the bare clone, so git
+makes what it writes there writable by the group.  That is for
+L<App::Clod::Claude/run_as>: claude commits as another account, into the bare
+clone of the worker, and the worker then pushes and removes the worktree.  It
+also needs three things that this module cannot do:
+
+=over
+
+=item * The workspace belongs to a group of both accounts, and has the setgid
+bit, so that everything in it gets that group.
+
+=item * The worker and claude run with the umask C<0007>, so that the files of
+a worktree are writable by the group too.  sudo combines its own umask with
+the umask of the worker, so sudo needs C<umask=0007> as well.
+
+=item * The gitconfig of the other account names the worktrees in
+C<safe.directory>, because git refuses to work in a repository that another
+account owns.
+
+=back
 
 =cut

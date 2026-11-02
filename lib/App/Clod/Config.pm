@@ -50,6 +50,7 @@ our %SCHEMA = (
             {
                 bin           => { type => 'string', default  => 'claude' },
                 model         => { type => 'string', nullable => 1, default => undef },
+                run_as        => { type => 'string', nullable => 1, default => undef, pattern => '\A[a-z_][a-z0-9_-]*\z' },
                 timeout       => seconds(3600),
                 allowed_tools => list_of( $TEXT, default => [qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*)}] ),
                 read_tools    => list_of( $TEXT, default => [ qw{Read Grep Glob}, 'Bash(git log:*)', 'Bash(git grep:*)', 'Bash(git show:*)', 'Bash(git diff:*)' ] ),
@@ -194,6 +195,12 @@ page come from them.  Default 30.
 
 C<bin>, C<model>, C<timeout> in seconds, C<allowed_tools> for runs that change
 a repository, and C<read_tools> for runs that only read.
+
+C<run_as> is the account that every C<claude> run runs as, through C<sudo>.
+Unset, claude runs as the worker, and can read the token of the bot in the
+environment of the worker.  L<App::Clod::Claude/run_as> says what sudo must
+allow, and L<App::Clod::Spoke/DESCRIPTION> what the workspace needs.  It is
+an account name, so that sudo cannot take it for an option or a UID.
 
 C<extra_tools> is a list of Claude Code permission rules, such as
 C<Bash(bin/provision:*)>, added to C<allowed_tools> of this installation.  So

@@ -71,6 +71,29 @@ subtest 'run, and the environment of claude' => sub {
     is( $ENV{GH_TOKEN}, 'test-github-token', 'and the worker keeps the GitHub token for itself' );
 };
 
+subtest 'run, as another account' => sub {
+    local $ENV{PATH}                    = join q{:}, $here->child( 'bin', 'sudo-dir' ), $here->child('bin'), $ENV{PATH};
+    local $ENV{GH_TOKEN}                = 'test-github-token';
+    local $ENV{CLAUDE_CODE_OAUTH_TOKEN} = 'test-claude-token';
+    local $ENV{FAKE_SUDO_RECORD}        = "$tmp/sudo-account";
+    my $names  = "$tmp/env-as-agent";
+    my $claude = App::Clod::Claude->new(
+        bin    => 'fake-claude',
+        run_as => 'test-agent',
+        env    => { FAKE_CLAUDE_ENV => $names, FAKE_CLAUDE_RECORD => $record, FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string, GH_TOKEN => 'test-github-token' },
+    );
+    my $outcome = $claude->run( dir => "$tmp", prompt => 'the prompt' );
+    is( $outcome->{ok},                              1,            'a run through sudo finds claude on the PATH of the worker, which secure_path replaces' ) or diag $outcome->{stderr};
+    is( Mojo::File->new("$tmp/sudo-account")->slurp, 'test-agent', 'and runs as the account of run_as' );
+    my %seen = map { $_ => 1 } split /\n/, Mojo::File->new($names)->slurp;
+    ok( $seen{CLAUDE_CODE_OAUTH_TOKEN}, 'claude gets its token through the reset environment of sudo' );
+    ok( $seen{FAKE_CLAUDE_STREAM},      'and the extra environment' );
+    ok( !$seen{GH_TOKEN},               'but not the GitHub token, even when the extra environment names it' );
+    my ( $cwd, $prompt ) = recorded();
+    is( $cwd,    "$tmp",       'in the directory that it was given' );
+    is( $prompt, 'the prompt', 'with the prompt on standard input' );
+};
+
 subtest 'run, with no newline after the last event' => sub {
     my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-unterminated.jsonl' )->to_string } );
     my @seen;

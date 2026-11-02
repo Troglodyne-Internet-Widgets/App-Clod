@@ -5,6 +5,7 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
+use Clone            ();
 use File::Temp       ();
 use IPC::Run         ();
 use Mojo::File       ();
@@ -419,6 +420,13 @@ subtest spoke_address => sub {
     $state{pull} = { %{ $state{pull} }, user => { login => 'someone' } };
     is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{state}, 'failed', 'a pull request that is not the bot\'s own is refused' );
     $minion->reset( { all => 1 } );
+};
+
+subtest claude => sub {
+    my $config = Clone::clone( $app->clod_config );
+    is( App::Clod::Tasks::claude($config)->run_as, undef, 'claude runs as the worker unless the configuration says otherwise' );
+    $config->{claude}{run_as} = 'test-agent';
+    is( App::Clod::Tasks::claude($config)->run_as, 'test-agent', 'and as the account of run_as when it does' );
 };
 
 subtest 'tool spokes and the spoke prompt' => sub {

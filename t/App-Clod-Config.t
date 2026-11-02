@@ -35,6 +35,11 @@ subtest validate => sub {
     is( $merged->{claude}{model}, 'test-model', 'a section key from the file is kept' );
     ok( scalar @{ $merged->{claude}{allowed_tools} }, 'and the rest of that section still has its defaults' );
 
+    is( $config->{claude}{run_as},                                                                           undef,        'claude runs as the worker by default' );
+    is( App::Clod::Config::validate( { %minimal, claude => { run_as => 'test-agent' } } )->{claude}{run_as}, 'test-agent', 'or as the account that run_as names' );
+    refused( { %minimal, claude => { run_as => '-test' } }, '/claude/run_as: String does not match', 'an account that sudo would take for an option dies' );
+    refused( { %minimal, claude => { run_as => '#0' } },    '/claude/run_as: String does not match', 'and so does a uid' );
+
     is( $config->{system_prompts}, {}, 'no system prompt by default' );
     ok( lives { App::Clod::Config::validate( { %minimal, system_prompts => { triage => 'Test with the provisioner.' } } ) }, 'a system prompt for a task that runs claude lives' );
     refused( { %minimal, system_prompts => { inbox_poll => 'x' } },   '/system_prompts: Properties not allowed: inbox_poll.', 'a system prompt for a task that runs no claude dies' );

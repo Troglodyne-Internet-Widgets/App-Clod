@@ -1,0 +1,30 @@
+#!/usr/bin/env perl
+use 5.040;
+use warnings FATAL => 'all';
+use re '/aasx';
+use IPC::Run ();
+
+# Stands in for sudo.  It takes the options that App::Clod::Claude gives it,
+# resets the environment as env_reset does, with secure_path in place of PATH,
+# keeps the names that --preserve-env lists, and runs the rest.  It writes the
+# account to FAKE_SUDO_RECORD.
+my ( $account, @kept );
+while ( @ARGV && $ARGV[0] ne q{--} ) {
+    my $option = shift @ARGV;
+    if    ( $option eq '-u' )                          { $account = shift @ARGV }
+    elsif ( index( $option, '--preserve-env=' ) == 0 ) { @kept = split /,/, substr $option, length '--preserve-env=' }
+    elsif ( $option ne '-n' && $option ne '-H' )       { die "fake sudo: unknown option $option\n" }
+}
+shift @ARGV;
+die "fake sudo: no account\n" if !defined $account;
+
+my $record = $ENV{FAKE_SUDO_RECORD};
+my %env    = map { $_ => $ENV{$_} } grep { exists $ENV{$_} } @kept;
+local %ENV = ( %env, PATH => '/bogus/secure/path', HOME => "/bogus/home/$account" );
+if ($record) {
+    open my $fh, '>', $record or die "$record: $!";
+    print {$fh} $account;
+    close $fh or die "$record: $!";
+}
+IPC::Run::run( \@ARGV );
+exit( $? >> 8 );

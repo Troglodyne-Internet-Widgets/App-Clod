@@ -7,8 +7,9 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
-use Carp     ();
-use IPC::Run ();
+use Carp       ();
+use IPC::Run   ();
+use List::Util ();
 use Mojo::JSON();
 use Time::HiRes qw{time};
 
@@ -28,6 +29,12 @@ its environment, an agent that may run C<git> or C<perl> could push, or call
 the API, wherever the bot can.  C<CLAUDE_CODE_OAUTH_TOKEN> stays, because
 claude needs it.  C<run> takes them out after it adds L</env>, so C<env> cannot
 give them back.
+
+That keeps the token out of the environment of claude, but not out of its
+reach, while claude runs as the account of the worker.  A process can read
+F</proc/$pid/environ> of every process of its own account, and the worker has
+the token in its environment.  So set L</run_as> on a host where an agent runs
+unattended.
 
 =cut
 
@@ -73,6 +80,29 @@ The default C<--allowedTools>.
 
 has allowed_tools => sub { [] };
 
+=attr run_as
+
+The account that claude runs as, through C<sudo>, or undef to run it as the
+worker.  The account cannot read F</proc/$pid/environ> of the worker, so it
+cannot reach the token.  sudo needs a rule such as:
+
+    worker ALL=(agent) NOPASSWD:SETENV: ALL
+
+C<SETENV> is for C<--preserve-env>, which passes C<CLAUDE_CODE_OAUTH_TOKEN> and
+the names in L</env> through the environment.  The argument list is no place
+for them, because C<ps> shows it to every account.  C<PATH> goes to
+F</usr/bin/env> as an argument instead, because the C<secure_path> of sudo
+replaces it otherwise, and the git hooks of a spoke find their tools on it.
+C<-H> makes the C<HOME> of the account the C<HOME> of claude, so its settings
+are the settings of that account.
+
+The account and the worker share the workspace through a group.  See
+L<App::Clod::Spoke/DESCRIPTION>.
+
+=cut
+
+has run_as => undef;
+
 =method command
 
 The argument list, for C<%run> as C<run> takes it.  Separate so that a test can
@@ -82,6 +112,10 @@ read it.
 
 sub command ( $self, %run ) {
     my @cmd = ( $self->bin, qw{-p --output-format stream-json --verbose} );
+    if ( my $account = $self->run_as ) {
+        my @kept = sort { $a cmp $b } List::Util::uniq( 'CLAUDE_CODE_OAUTH_TOKEN', keys %{ $self->env } );
+        unshift @cmd, qw{sudo -n -H -u}, $account, '--preserve-env=' . join( q{,}, @kept ), qw{-- /usr/bin/env}, 'PATH=' . ( $ENV{PATH} // q{} );
+    }
     push @cmd, '--model', $self->model if $self->model;
     push @cmd, '--permission-mode', $run{permission_mode} // 'acceptEdits';
     my $tools = $run{tools} // $self->allowed_tools;

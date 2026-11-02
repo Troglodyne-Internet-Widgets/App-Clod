@@ -159,6 +159,7 @@ sub claude ($config) {
     return App::Clod::Claude->new(
         bin           => $c->{bin},
         model         => $c->{model},
+        run_as        => $c->{run_as},
         timeout       => $c->{timeout},
         allowed_tools => [ @{ $c->{allowed_tools} }, @{ $c->{extra_tools} } ],
         env           => \%env,
