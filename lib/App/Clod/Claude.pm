@@ -15,6 +15,9 @@ use Time::HiRes qw{time};
 # How long to wait when a run hit the limit and did not say when it resets.
 my $UNKNOWN_RESET = 1800;
 
+# How much of each end of its stderr a run keeps in the job result.
+my $STDERR_END = 2000;
+
 =attr bin
 
 The C<claude> program.
@@ -106,8 +109,10 @@ True when the API refused the token with a 401.
 
 =item stderr
 
-The first 4000 characters of what claude wrote to stderr.  When claude exited
-with no result, it starts with C<claude ended without a result.>
+What claude wrote to stderr.  Past 4000 characters, only the first 2000 and
+the last 2000 are kept, so that both the start of a stack trace and the last
+error survive.  See L</ends>.  When claude exited with no result, it starts
+with C<claude ended without a result.>
 
 =item exit, timed_out, events
 
@@ -146,10 +151,24 @@ sub run ( $self, %run ) {
     $take->($buffer) if $buffer ne q{};
     $outcome{timed_out} = 1 if !$ok && index( lc $@, q{timeout} ) >= 0;
     $outcome{exit}      = $ok ? $? >> 8 : -1;
-    $outcome{stderr}    = substr $stderr, 0, 4000;
+    $outcome{stderr}    = ends( $stderr, $STDERR_END );
     $outcome{stderr}    = "claude ended without a result. $outcome{stderr}" if $ok && !exists $outcome{result};
     $outcome{ok}        = $ok && !$outcome{exit} && !$outcome{is_error} && exists $outcome{result} ? 1 : 0;
     return \%outcome;
+}
+
+=func ends
+
+C<($text, $length)>.  Returns C<$text> if it holds no more than twice
+C<$length> characters.  Otherwise returns its first and its last C<$length>
+characters, with a line between them that says how many were left out.
+
+=cut
+
+sub ends ( $text, $length ) {
+    my $over = length($text) - 2 * $length;
+    return $text if $over <= 0;
+    return substr( $text, 0, $length ) . "\n[$over characters left out]\n" . substr( $text, -$length );
 }
 
 =method absorb

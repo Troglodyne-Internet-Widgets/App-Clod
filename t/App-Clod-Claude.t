@@ -74,6 +74,12 @@ subtest 'run, with no result' => sub {
     like( $outcome->{stderr}, qr/\Aclaude\ ended\ without\ a\ result\./, 'and says why' );
 };
 
+subtest ends => sub {
+    is( App::Clod::Claude::ends( 'abcdefghij',  5 ), 'abcdefghij',                            'text of twice the length is kept whole' );
+    is( App::Clod::Claude::ends( 'abcdefghijk', 5 ), "abcde\n[1 characters left out]\nghijk", 'one character more keeps the first and the last five' );
+    is( App::Clod::Claude::ends( q{},           5 ), q{},                                     'and nothing is nothing' );
+};
+
 subtest 'run, at the limit' => sub {
     my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-limited.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } );
     my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );
