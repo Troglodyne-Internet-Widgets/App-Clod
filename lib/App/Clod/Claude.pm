@@ -176,19 +176,23 @@ sub ends ( $text, $length ) {
 C<(\%outcome, \%event)>.  Folds one stream-json event into the outcome that
 C<run> returns.
 
+It reads three types of event: C<rate_limit_event>, C<system> with the subtype
+C<init>, and C<result>.  Every other event leaves the outcome as it is.  That
+includes C<assistant> and C<user>, which hold the conversation, and any type
+that a later claude adds.  C<on_event> still gets every event.
+
 =cut
 
-sub absorb ( $outcome, $event ) {
-    my $type = $event->{type} // q{};
-    if ( $type eq 'rate_limit_event' ) {
+my %ABSORB = (
+    rate_limit_event => sub ( $outcome, $event ) {
         my $info = $event->{rate_limit_info} // {};
         $outcome->{rate_limit}  = $info;
         $outcome->{quota_reset} = $info->{resetsAt} if ( $info->{status} // 'allowed' ) ne 'allowed';
-    }
-    elsif ( $type eq 'system' && ( $event->{subtype} // q{} ) eq 'init' ) {
-        $outcome->{session_id} = $event->{session_id};
-    }
-    elsif ( $type eq 'result' ) {
+    },
+    system => sub ( $outcome, $event ) {
+        $outcome->{session_id} = $event->{session_id} if ( $event->{subtype} // q{} ) eq 'init';
+    },
+    result => sub ( $outcome, $event ) {
         $outcome->{result}       = $event->{result};
         $outcome->{structured}   = $event->{structured_output};
         $outcome->{cost}         = $event->{total_cost_usd} // 0;
@@ -199,7 +203,12 @@ sub absorb ( $outcome, $event ) {
         $outcome->{usage} = { map { $_ => $usage->{$_} // 0 } qw{input_tokens output_tokens cache_read_input_tokens cache_creation_input_tokens} };
         $outcome->{quota_reset} //= time + $UNKNOWN_RESET
           if $outcome->{is_error} && ( $event->{result} // q{} ) =~ m{usage\ limit | out\ of\ extra\ usage | rate\ limit}i;
-    }
+    },
+);
+
+sub absorb ( $outcome, $event ) {
+    my $absorb = $ABSORB{ $event->{type} // q{} };
+    $absorb->( $outcome, $event ) if $absorb;
     return;
 }
 

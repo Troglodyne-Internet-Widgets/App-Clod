@@ -74,6 +74,15 @@ subtest 'run, with no result' => sub {
     like( $outcome->{stderr}, qr/\Aclaude\ ended\ without\ a\ result\./, 'and says why' );
 };
 
+subtest absorb => sub {
+    my %outcome = ( events => 1 );
+    App::Clod::Claude::absorb( \%outcome, $_ ) for { type => 'assistant', message => {} }
+    , { type => 'test-type-from-a-later-claude' }, {}, { type => 'system', subtype => 'test-subtype', session_id => 'test-session' };
+    is( \%outcome, { events => 1 }, 'an event that it does not read leaves the outcome as it is' );
+    App::Clod::Claude::absorb( \%outcome, { type => 'system', subtype => 'init', session_id => 'test-session' } );
+    is( $outcome{session_id}, 'test-session', 'and the init event gives the session' );
+};
+
 subtest ends => sub {
     is( App::Clod::Claude::ends( 'abcdefghij',  5 ), 'abcdefghij',                            'text of twice the length is kept whole' );
     is( App::Clod::Claude::ends( 'abcdefghijk', 5 ), "abcde\n[1 characters left out]\nghijk", 'one character more keeps the first and the last five' );
