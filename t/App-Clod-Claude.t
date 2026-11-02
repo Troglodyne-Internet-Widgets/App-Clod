@@ -57,6 +57,20 @@ subtest run => sub {
     like( dies { $claude->run( dir => "$tmp" ) },                          qr/needs\ a\ prompt/,  'so does a missing prompt' );
 };
 
+subtest 'run, and the environment of claude' => sub {
+    local $ENV{GH_TOKEN}                = 'test-github-token';
+    local $ENV{GITHUB_TOKEN}            = 'test-github-token';
+    local $ENV{CLAUDE_CODE_OAUTH_TOKEN} = 'test-claude-token';
+    my $names  = "$tmp/env-names";
+    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_ENV => $names, FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string, TEST_EXTRA => 1 } );
+    $claude->run( dir => "$tmp", prompt => 'x' );
+    my %seen = map { $_ => 1 } split /\n/, Mojo::File->new($names)->slurp;
+    ok( !$seen{GH_TOKEN} && !$seen{GITHUB_TOKEN}, 'claude, and every command it runs, gets no GitHub token' );
+    ok( $seen{CLAUDE_CODE_OAUTH_TOKEN},           'but keeps its own token' );
+    ok( $seen{TEST_EXTRA},                        'and the extra environment' );
+    is( $ENV{GH_TOKEN}, 'test-github-token', 'and the worker keeps the GitHub token for itself' );
+};
+
 subtest 'run, with no newline after the last event' => sub {
     my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-unterminated.jsonl' )->to_string } );
     my @seen;

@@ -18,6 +18,21 @@ my $UNKNOWN_RESET = 1800;
 # How much of each end of its stderr a run keeps in the job result.
 my $STDERR_END = 2000;
 
+=head1 WHAT CLAUDE DOES NOT GET
+
+C<@WITHHELD> names the variables of the worker that a C<claude> run, and every
+command that it runs, does not get.  By default they are C<GH_TOKEN> and
+C<GITHUB_TOKEN>, the token of the bot.  A spoke run commits, and the job pushes
+the branch and opens the pull request with the token itself.  With the token in
+its environment, an agent that may run C<git> or C<perl> could push, or call
+the API, wherever the bot can.  C<CLAUDE_CODE_OAUTH_TOKEN> stays, because
+claude needs it.  C<run> takes them out after it adds L</env>, so C<env> cannot
+give them back.
+
+=cut
+
+our @WITHHELD = qw{GH_TOKEN GITHUB_TOKEN};
+
 =attr bin
 
 The C<claude> program.
@@ -142,6 +157,7 @@ sub run ( $self, %run ) {
     };
 
     local %ENV = ( %ENV, %{ $self->env } );
+    delete @ENV{@WITHHELD};
     my $ok = eval {
         IPC::Run::run( $cmd, init => sub { chdir $dir or die "chdir $dir: $!" }, '<', \$prompt, '>', $read, '2>', \$stderr, IPC::Run::timeout( $self->timeout ) );
         1;
