@@ -216,6 +216,7 @@ sublicense
 subnet
 substring
 subtest
+subtype
 sudo
 symlink
 symlinked
@@ -268,4 +269,3 @@ whitespace
 worktree
 worktrees
 YAML
-subtype

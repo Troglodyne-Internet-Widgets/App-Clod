@@ -16,10 +16,11 @@ docs/             @docs-owner   # a trailing comment
 /build/logs/      @logs-owner
 apps/github       @Test-Org/apps-team
 lib/**/Data.pm    @data-owner
+\#notes.md         @hash-owner
 CODEOWNERS
 
 subtest parse => sub {
-    is( scalar @$rules,      6,              'each rule line is a rule, and comments are not' );
+    is( scalar @$rules,      7,              'each rule line is a rule, and comments are not' );
     is( $rules->[2]{owners}, ['docs-owner'], 'owners lose the @ and a trailing comment is dropped' );
 };
 
@@ -35,6 +36,7 @@ subtest owners => sub {
         'other/apps/github'       => ['fallback'],
         'lib/Foo/Bar/Data.pm'     => ['data-owner'],
         '/docs/leading-slash.md'  => ['docs-owner'],
+        q{#notes.md}              => [q{hash-owner}],
     );
     for my $path ( sort keys %cases ) {
         is( App::Clod::CodeOwners::owners( $rules, $path ), $cases{$path}, "$path is owned by @{ $cases{$path} }" );
