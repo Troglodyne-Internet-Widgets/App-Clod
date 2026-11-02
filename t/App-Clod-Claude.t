@@ -57,6 +57,15 @@ subtest run => sub {
     like( dies { $claude->run( dir => "$tmp" ) },                          qr/needs\ a\ prompt/,  'so does a missing prompt' );
 };
 
+subtest 'run, with no newline after the last event' => sub {
+    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-unterminated.jsonl' )->to_string } );
+    my @seen;
+    my $outcome = $claude->run( dir => "$tmp", prompt => 'x', on_event => sub ($e) { push @seen, $e->{type} } );
+    is( \@seen,                 [qw{system assistant rate_limit_event result}], 'the last event still counts' );
+    is( $outcome->{structured}, { answer => 4 },                                'with its answer' );
+    is( $outcome->{cost},       0.25,                                           'and its cost' );
+};
+
 subtest 'run, at the limit' => sub {
     my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-limited.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } );
     my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );

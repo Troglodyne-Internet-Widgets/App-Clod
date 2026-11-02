@@ -119,16 +119,16 @@ sub run ( $self, %run ) {
     my %outcome = ( events => 0 );
     my $buffer  = q{};
     my $stderr  = q{};
-    my $read    = sub ($chunk) {
+    my $take    = sub ($line) {
+        my $event = eval { Mojo::JSON::decode_json($line) };
+        return if ref $event ne 'HASH';
+        $outcome{events}++;
+        absorb( \%outcome, $event );
+        $run{on_event}->($event) if $run{on_event};
+    };
+    my $read = sub ($chunk) {
         $buffer .= $chunk;
-        while ( $buffer =~ s/\A([^\n]*)\n// ) {
-            my $line  = $1;
-            my $event = eval { Mojo::JSON::decode_json($line) };
-            next if ref $event ne 'HASH';
-            $outcome{events}++;
-            absorb( \%outcome, $event );
-            $run{on_event}->($event) if $run{on_event};
-        }
+        while ( $buffer =~ s/\A([^\n]*)\n// ) { $take->($1) }
     };
 
     local %ENV = ( %ENV, %{ $self->env } );
@@ -136,6 +136,9 @@ sub run ( $self, %run ) {
         IPC::Run::run( $cmd, init => sub { chdir $dir or die "chdir $dir: $!" }, '<', \$prompt, '>', $read, '2>', \$stderr, IPC::Run::timeout( $self->timeout ) );
         1;
     };
+
+    # The last event, when claude ended without its newline.
+    $take->($buffer) if $buffer ne q{};
     $outcome{timed_out} = 1 if !$ok && index( lc $@, q{timeout} ) >= 0;
     $outcome{exit}      = $ok ? $? >> 8 : -1;
     $outcome{stderr}    = substr $stderr, 0, 4000;
