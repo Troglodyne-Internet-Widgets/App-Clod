@@ -1,108 +1,100 @@
 package App::Clod::Config;
 
-# ABSTRACT: Defaults and validation for the clod.conf hash
+# ABSTRACT: The schema of the clod.conf hash, and its validation
 
 use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
-use Carp       ();
-use List::Util ();
+use Carp  ();
+use Clone ();
+use JSON::Validator::Schema::Troglodyne();
 
 use App::Clod::Budget();
 
-my %DEFAULTS = (
-    github_api     => 'https://api.github.com',
-    github_web     => 'https://github.com',
-    retention_days => 30,
-    poll_interval  => 60,
-    http_timeout   => 30,
-    claude         => {
-        bin           => 'claude',
-        model         => undef,
-        timeout       => 3600,
-        allowed_tools => [qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*)}],
-        read_tools    => [ qw{Read Grep Glob}, 'Bash(git log:*)', 'Bash(git grep:*)', 'Bash(git show:*)', 'Bash(git diff:*)' ],
-        extra_tools   => [],
+my $REPO  = { type => 'string', pattern => '\A[\w.-]+/[\w.-]+\z' };
+my $LOGIN = { type => 'string', pattern => '\A[\w.-]+\z' };
+my $TEXT  = { type => 'string' };
+
+my sub list_of ( $item, %more )       { return { type => 'array',   items                => $item, default => [], %more } }
+my sub section ( $properties, %more ) { return { type => 'object',  additionalProperties => 0, default => {}, properties => $properties, %more } }
+my sub seconds ($default)             { return { type => 'integer', minimum              => 1, default => $default } }
+
+our %SCHEMA = (
+    type                 => 'object',
+    required             => [qw{bot workspace auth}],
+    additionalProperties => 0,
+    properties           => {
+        bot       => $LOGIN,
+        workspace => { type => 'string', minLength => 1 },
+        auth      => section(
+            {
+                trusted_header  => { type => 'string', minLength => 1 },
+                user            => { type => 'string', minLength => 1 },
+                password_sha256 => { type => 'string', pattern   => '\A[0-9a-f]{64}\z' },
+            },
+            anyOf => [ { required => ['trusted_header'] }, { required => [qw{user password_sha256}] } ],
+        ),
+        spokes           => list_of($REPO),
+        spoke_orgs       => list_of($LOGIN),
+        tool_spokes      => list_of($REPO),
+        authorized_users => list_of($LOGIN),
+        owners           => list_of($LOGIN),
+        minion           => { type => 'string',  nullable => 1, default => undef },
+        bot_email        => { type => 'string',  nullable => 1, default => undef },
+        github_api       => { type => 'string',  default  => 'https://api.github.com' },
+        github_web       => { type => 'string',  default  => 'https://github.com' },
+        retention_days   => { type => 'integer', minimum  => 1, default => 30 },
+        poll_interval    => { type => 'integer', minimum  => 0, default => 60 },
+        http_timeout     => seconds(30),
+        claude           => section(
+            {
+                bin           => { type => 'string', default  => 'claude' },
+                model         => { type => 'string', nullable => 1, default => undef },
+                timeout       => seconds(3600),
+                allowed_tools => list_of( $TEXT, default => [qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*)}] ),
+                read_tools    => list_of( $TEXT, default => [ qw{Read Grep Glob}, 'Bash(git log:*)', 'Bash(git grep:*)', 'Bash(git show:*)', 'Bash(git diff:*)' ] ),
+                extra_tools   => list_of($TEXT),
+            }
+        ),
+        harness => section(
+            {
+                plugin                  => { type => 'string', default => 'perl-slop' },
+                plugin_repo             => { %$REPO, default => 'Troglodyne-Internet-Widgets/perl-slop-plugin' },
+                marketplace             => { type => 'string', default => 'troglodyne-marketplace' },
+                marketplace_repo        => { %$REPO, default => 'Troglodyne-Internet-Widgets/claude-plugins-marketplace' },
+                required_workflows      => list_of($TEXT),
+                require_claude_settings => { type => 'boolean', default => 0 },
+            }
+        ),
+        otel           => { type => 'object', additionalProperties => $TEXT, default => {} },
+        system_prompts => section( { map { $_ => $TEXT } @App::Clod::Budget::CLAUDE_TASKS } ),
+        spoke_prompt   => { type => 'string', nullable => 1, default => undef },
     },
-    harness => {
-        plugin                  => 'perl-slop',
-        plugin_repo             => 'Troglodyne-Internet-Widgets/perl-slop-plugin',
-        marketplace             => 'troglodyne-marketplace',
-        marketplace_repo        => 'Troglodyne-Internet-Widgets/claude-plugins-marketplace',
-        required_workflows      => [],
-        require_claude_settings => 0,
-    },
-    otel           => {},
-    system_prompts => {},
-    spoke_prompt   => undef,
-    tool_spokes    => [],
 );
-
-my @REQUIRED = qw{bot workspace auth};
-
-my sub list_of ( $config, $key ) {
-    my $value = $config->{$key} // [];
-    Carp::croak("$key must be a list") if ref $value ne 'ARRAY';
-    return $value;
-}
-
-my sub repos_of ( $config, $key ) {
-    my $repos = list_of( $config, $key );
-    for my $repo (@$repos) {
-        my $name = $repo // q{};
-        Carp::croak("Each of $key must be Owner/Name, not '$name'") if $name !~ m{\A[\w.-]+/[\w.-]+\z};
-    }
-    return $repos;
-}
-
-my sub is_text ($value) { return defined $value && !ref $value }
 
 =func validate
 
-Takes the raw hash and returns a new one with the defaults filled in.  Dies on
-a missing or malformed key.
+Takes the raw hash and returns a new one, checked against C<%SCHEMA>, with the
+defaults filled in.  Dies with every error that the schema reports, each at
+the JSON pointer of its key, on a missing, unknown or malformed key.  The
+caller's hash is not changed, and nothing in the result is shared with the
+schema or with another result.
 
 =cut
 
 sub validate ($raw) {
     Carp::croak('The configuration must be a hash') if ref $raw ne 'HASH';
-    my %config = ( %DEFAULTS, %$raw );
-    for my $section (qw{claude harness}) {
-        $config{$section} = { %{ $DEFAULTS{$section} }, %{ $raw->{$section} // {} } };
-    }
+    my $config    = Clone::clone($raw);
+    my $validator = JSON::Validator::Schema::Troglodyne->new;
+    $validator->coerce( { %{ $validator->coerce }, defaults => 1 } );
+    my @errors = $validator->validate( $config, \%SCHEMA );
+    Carp::croak( join "\n", 'The configuration is not valid:', map { "  $_" } @errors ) if @errors;
+    Carp::croak('The configuration names no spokes and no spoke_orgs')                  if !@{ $config->{spokes} } && !@{ $config->{spoke_orgs} };
 
-    my @missing = grep { !defined $config{$_} } @REQUIRED;
-    Carp::croak("The configuration has no value for: @missing") if @missing;
-
-    $config{authorized_users} = list_of( \%config, 'authorized_users' );
-    $config{owners}           = list_of( \%config, 'owners' );
-    $config{spokes}           = repos_of( \%config, 'spokes' );
-    $config{tool_spokes}      = repos_of( \%config, 'tool_spokes' );
-    $config{spoke_orgs}       = list_of( \%config, 'spoke_orgs' );
-    for my $org ( @{ $config{spoke_orgs} } ) {
-        Carp::croak("A spoke organization must be a login, not '$org'") if $org !~ m{\A[\w.-]+\z};
-    }
-    Carp::croak('The configuration names no spokes and no spoke_orgs') if !@{ $config{spokes} } && !@{ $config{spoke_orgs} };
-
-    my $system = $config{system_prompts};
-    Carp::croak('system_prompts must be a hash') if ref $system ne 'HASH';
-    my %runs_claude = map { $_ => 1 } @App::Clod::Budget::CLAUDE_TASKS;
-    for my $task ( sort keys %$system ) {
-        Carp::croak("system_prompts names $task, which does not run claude") if !$runs_claude{$task};
-        Carp::croak("system_prompts for $task must be text")                 if !is_text( $system->{$task} );
-    }
-    Carp::croak('spoke_prompt must be text') if defined $config{spoke_prompt} && !is_text( $config{spoke_prompt} );
-    $config{claude}{extra_tools} = list_of( $config{claude}, 'extra_tools' );
-    Carp::croak('extra_tools must be a list of text') if List::Util::any { !is_text($_) } @{ $config{claude}{extra_tools} };
-
-    my $auth = $config{auth};
-    Carp::croak('auth must be a hash') if ref $auth ne 'HASH';
-    Carp::croak('auth needs trusted_header, or user and password_sha256')
-      if !$auth->{trusted_header} && !( $auth->{user} && $auth->{password_sha256} );
-
-    $config{minion}    //= "sqlite:$config{workspace}/minion.db";
-    $config{bot_email} //= "$config{bot}\@users.noreply.github.com";
-    return \%config;
+    $config = Clone::clone($config);
+    $config->{minion}    //= "sqlite:$config->{workspace}/minion.db";
+    $config->{bot_email} //= "$config->{bot}\@users.noreply.github.com";
+    return $config;
 }
 
 =head1 SYNOPSIS
@@ -122,9 +114,17 @@ sub validate ($raw) {
 =head1 DESCRIPTION
 
 F<clod.conf> is a perl hash, read by L<Mojolicious::Plugin::Config>.  This
-module fills in the defaults and dies on a configuration that cannot work.
-Secrets are never in it: C<GH_TOKEN> and C<CLAUDE_CODE_OAUTH_TOKEN> come from
-the environment.
+module checks it against C<%SCHEMA>, an OpenAPI v3 schema for
+L<JSON::Validator::Schema::Troglodyne>, which also holds every default.  It
+dies on a configuration that cannot work, and on a key that the schema does
+not name, which is how a misspelled key shows.  Secrets are never in it:
+C<GH_TOKEN> and C<CLAUDE_CODE_OAUTH_TOKEN> come from the environment.
+
+L<App::Clod/startup> validates the hash after the plugin has read it.  So two
+things that the plugin does come first.  It merges a file for the mode of the
+application, such as F<clod.production.conf>, if there is one.  It also loads
+each Mojolicious plugin that a C<plugins> key names, before this module
+refuses that key.
 
 =head1 KEYS
 
@@ -142,7 +142,8 @@ The directory for the Minion database, the clones and the worktrees.  Required.
 
 Either C<< { trusted_header => 'X-Remote-User' } >>, for a proxy that does the
 authentication, or C<< { user => ..., password_sha256 => ... } >> for HTTP basic
-authentication.  Required.
+authentication.  C<password_sha256> is the SHA-256 of the password in lowercase
+hex, as C<Digest::SHA::sha256_hex> gives it.  Required.
 
 =item spokes
 
@@ -177,7 +178,8 @@ The address for the bot's commits.  Default the GitHub no-reply address.
 =item poll_interval
 
 The least number of seconds between two inbox reads.  GitHub can ask for more
-with C<X-Poll-Interval>, and the bot obeys.  Default 60.
+with C<X-Poll-Interval>, and the bot obeys.  0 means no wait of its own.
+Default 60.
 
 =item http_timeout
 
