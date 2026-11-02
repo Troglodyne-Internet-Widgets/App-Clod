@@ -66,6 +66,14 @@ subtest 'run, with no newline after the last event' => sub {
     is( $outcome->{cost},       0.25,                                           'and its cost' );
 };
 
+subtest 'run, with no result' => sub {
+    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-no-result.jsonl' )->to_string } );
+    my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );
+    is( $outcome->{exit}, 0, 'a run that exits zero' );
+    is( $outcome->{ok},   0, 'but sends no result is not ok' );
+    like( $outcome->{stderr}, qr/\Aclaude\ ended\ without\ a\ result\./, 'and says why' );
+};
+
 subtest 'run, at the limit' => sub {
     my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-limited.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } );
     my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );

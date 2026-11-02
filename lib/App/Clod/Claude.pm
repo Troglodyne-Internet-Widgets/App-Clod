@@ -83,7 +83,7 @@ C<system>, C<permission_mode> and C<on_event>.  Returns a hash:
 
 =item ok
 
-True when the process exited zero and the result was not an error.
+True when the process exited zero, and sent a result that was not an error.
 
 =item result, structured
 
@@ -104,7 +104,12 @@ The epoch second when the quota opens again, set when a run hit the limit.
 
 True when the API refused the token with a 401.
 
-=item exit, timed_out, stderr, events
+=item stderr
+
+The first 4000 characters of what claude wrote to stderr.  When claude exited
+with no result, it starts with C<claude ended without a result.>
+
+=item exit, timed_out, events
 
 =back
 
@@ -128,7 +133,7 @@ sub run ( $self, %run ) {
     };
     my $read = sub ($chunk) {
         $buffer .= $chunk;
-        while ( $buffer =~ s/\A([^\n]*)\n// ) { $take->($1) }
+        while ( ( my $at = index $buffer, "\n" ) >= 0 ) { $take->( substr $buffer, 0, $at + 1, q{} ) }
     };
 
     local %ENV = ( %ENV, %{ $self->env } );
@@ -142,7 +147,8 @@ sub run ( $self, %run ) {
     $outcome{timed_out} = 1 if !$ok && index( lc $@, q{timeout} ) >= 0;
     $outcome{exit}      = $ok ? $? >> 8 : -1;
     $outcome{stderr}    = substr $stderr, 0, 4000;
-    $outcome{ok}        = $ok && !$outcome{exit} && !$outcome{is_error} ? 1 : 0;
+    $outcome{stderr}    = "claude ended without a result. $outcome{stderr}" if $ok && !exists $outcome{result};
+    $outcome{ok}        = $ok && !$outcome{exit} && !$outcome{is_error} && exists $outcome{result} ? 1 : 0;
     return \%outcome;
 }
 
