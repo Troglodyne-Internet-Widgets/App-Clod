@@ -252,6 +252,14 @@ subtest triage => sub {
     like( $bad->{result}{error}, qr/not\ a\ spoke/, 'and says why' );
     is( $bad->{result}{cost}, 1, 'and counts the cost of both tries' );
 
+    my $broken = $tmp->child('triage-broken.jsonl');
+    $broken->spew( '{"type":"result","is_error":true,"result":"something broke","total_cost_usd":0.5}' . "\n" );
+    %fake = ( FAKE_CLAUDE_STREAM => "$broken", FAKE_CLAUDE_EXIT => 1 );
+    my $failed = run_job( triage => \%item );
+    is( $failed->{state}, 'failed', 'a triage run that fails, fails the job' );
+    like( $failed->{result}{error}, qr/\Athe\ triage\ run\ failed:\ /, 'and says that the run failed' );
+    is( $failed->{result}{cost}, 0.5, 'without a second run, which cannot mend a failed run' );
+
     answer( { scope => 'upstream', reason => 'theirs', repos => [], upstream => { project => 'Other/lib', path => 'lib/X.pm', explanation => 'X is broken there' } } );
     my $up = run_job( triage => \%item );
     is( $minion->job( $up->{result}{children}[0] )->info->{task}, 'kickback', 'an upstream answer is a kickback' );

@@ -546,7 +546,8 @@ sub spoke_briefing ($config) {
 
 Refreshes a reference worktree of every spoke, writes the hub CLAUDE.md, and
 asks the triage question with read-only tools.  An answer that does not pass
-L<App::Clod::Triage/validate> gets one more try, with the error.  Then it
+L<App::Clod::Triage/validate> gets one more try, with the error.  A run that
+fails, with no answer to judge, fails the job at once with its stderr.  Then it
 enqueues the work: C<kickback> for upstream or clarify, one C<spoke_review> for
 a review, and otherwise a chain of C<spoke_fix> or C<spoke_address> jobs, each
 the parent of the next, and a C<report> after them all.
@@ -579,9 +580,10 @@ sub triage ( $job, $config, $item ) {
             schema          => \%App::Clod::Triage::SCHEMA,
         ) // return;
         push @outcomes, $outcome;
+        return $job->fail( { error => "the triage run failed: $outcome->{stderr}", usage_of(@outcomes) } ) if !$outcome->{ok};
         $answer = eval { App::Clod::Triage::validate( $outcome->{structured}, $spokes ) };
         last if $answer;
-        $error = $outcome->{ok} ? $@ : "the run failed: $outcome->{stderr}";
+        $error = $@;
     }
     return $job->fail( { error => "triage gave no usable answer: $error", usage_of(@outcomes) } ) if !$answer;
     $job->note( scope => $answer->{scope}, triage => $answer );
