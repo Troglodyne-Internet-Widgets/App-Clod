@@ -160,6 +160,26 @@ its policies, and tests-covering.  The bot installs each spoke's own
     For each spoke, whether each part of the standard harness is in place.  See
     [App::Clod::Harness](https://metacpan.org/pod/App%3A%3AClod%3A%3AHarness).
 
+# CAVEATS
+
+The bot account must be used by App::Clod alone.  App::Clod knows what it has
+answered by the login of the bot, and what is new by which of the bot's
+notifications are unread.  Anything else that uses the same account changes
+both:
+
+- A comment by the account from another program, or from a person signed in as
+the bot, counts as an answer of the bot.  Every comment before it then counts
+as answered, and so does each review thread whose last message it is.
+- Anything that marks the account's notifications read hides them from the
+poll, which reads only unread ones.  That includes a person who opens them on
+GitHub while signed in as the bot.
+- An assignment or a review request made by the account has the bot as its
+actor, and the bot is not an authorized user, so the poll ignores it.
+
+An edit to a comment that the bot has already answered is not seen.  GitHub
+sends no notification for an edit, and the comment keeps its place before the
+answer.  To change a request, add a comment.
+
 # SEE ALSO
 
 Please see those modules/websites for more information related to this module.
