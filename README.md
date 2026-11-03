@@ -157,7 +157,9 @@ its policies, and tests-covering.  The bot installs each spoke's own
 
 - Harness
 
-    For each spoke, whether each part of the standard harness is in place.  See
+    For each spoke, its flavor and the result of each check of that flavor.  A
+    spoke without a `.conformance.yml` shows the default flavor, marked
+    "(default)".  See
     [App::Clod::Harness](https://metacpan.org/pod/App%3A%3AClod%3A%3AHarness).
 
 # CAVEATS

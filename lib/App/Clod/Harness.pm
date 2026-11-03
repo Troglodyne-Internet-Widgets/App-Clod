@@ -1,6 +1,6 @@
 package App::Clod::Harness;
 
-# ABSTRACT: Whether a spoke has the standard agent harness in place
+# ABSTRACT: Whether a spoke conforms to its standards, and whether the marketplace pins the plugin
 
 use 5.040;
 use warnings FATAL => 'all';
@@ -9,116 +9,105 @@ use re '/aasx';
 use Mojo::JSON();
 use version ();
 
-our $TEMPLATES = 'skills/packaging-perl/templates';
+use Dist::Conformance();
+use Dist::Conformance::Config();
+use Dist::Conformance::Snapshot::Tree();
 
-# The first line of the current perlcritic profile, and of the one before it.
-our $CURRENT_PROFILE = q{# Troglodyne perlcritic policy, for a distribution that};
-our $OLD_PROFILE     = q{# Troglodyne perlcritic policy};
-our @HOOKS           = qw{pre-commit post-commit};
+=func default_config
 
-my sub has_path ( $snapshot, $path ) { return exists $snapshot->{tree}{$path} }
-
-my sub missing ( $snapshot, @paths ) {
-    return grep { !has_path( $snapshot, $_ ) } @paths;
-}
-
-my sub json_of ( $snapshot, $path ) {
-    my $data = eval { Mojo::JSON::decode_json( $snapshot->{file}->($path) ) };
-    return ref $data eq 'HASH' ? $data : undef;
-}
-
-# Each check takes the snapshot and the harness settings, and returns
-# (status, detail).  Status is pass, fail or info.
-our @CHECKS = (
-    [
-        'CLAUDE.md' => sub ( $snapshot, $ ) {
-            return ( 'fail', 'CLAUDE.md is missing' ) if !has_path( $snapshot, 'CLAUDE.md' );
-            my $text = $snapshot->{file}->('CLAUDE.md') // q{};
-            return ( 'pass', 'names perl-slop:reading-perl' ) if index( $text, 'perl-slop:reading-perl' ) >= 0;
-            return ( 'fail', 'CLAUDE.md does not name perl-slop:reading-perl' );
-        }
-    ],
-    [
-        'perlcritic profile' => sub ( $snapshot, $ ) {
-            return ( 'fail', '.perlcriticrc is missing' ) if !has_path( $snapshot, '.perlcriticrc' );
-            my ($first) = split /\n/, $snapshot->{file}->('.perlcriticrc') // q{};
-            return ( 'pass', 'current profile' )  if index( $first // q{}, $CURRENT_PROFILE ) == 0;
-            return ( 'fail', 'outdated profile' ) if index( $first // q{}, $OLD_PROFILE ) == 0;
-            return ( 'fail', 'not a Troglodyne profile' );
-        }
-    ],
-    [
-        'tool configuration' => sub ( $snapshot, $ ) {
-            my @missing = missing( $snapshot, qw{.perltidyrc .preferred_modules.ini .pod_stopwords .tests-covering-map.pl} );
-            return ( 'fail', "missing: @missing" ) if @missing;
-            return ( 'pass', 'all present' );
-        }
-    ],
-    [
-        'git hooks' => sub ( $snapshot, $ ) {
-            my @missing = missing( $snapshot, map { "git-hooks/$_" } @HOOKS );
-            return ( 'fail', "missing: @missing" ) if @missing;
-            my $templates = $snapshot->{templates} // {};
-            my @differ    = grep { $templates->{$_} && $snapshot->{tree}{"git-hooks/$_"}{sha} ne $templates->{$_} } @HOOKS;
-            return ( 'info', "customized or outdated: @differ" ) if @differ;
-            return ( 'pass', 'match the current templates' );
-        }
-    ],
-    [
-        'dist files' => sub ( $snapshot, $ ) {
-            return ( 'info', 'no dist.ini' ) if !has_path( $snapshot, 'dist.ini' );
-            my @missing = missing( $snapshot, qw{weaver.ini Changes prereqs.yml} );
-            return ( 'fail', "missing: @missing" ) if @missing;
-            return ( 'pass', 'all present' );
-        }
-    ],
-    [
-        '.perl-slop.json' => sub ( $snapshot, $ ) {
-            return ( 'info', 'none' ) if !has_path( $snapshot, '.perl-slop.json' );
-            my $data    = json_of( $snapshot, '.perl-slop.json' ) // return ( 'fail', 'does not parse' );
-            my @unknown = grep { $_ ne 'before_edit' && $_ ne 'before_commit' } sort keys %$data;
-            return ( 'fail', "unknown keys: @unknown" ) if @unknown;
-            return ( 'pass', 'valid' );
-        }
-    ],
-    [
-        'Claude settings' => sub ( $snapshot, $settings ) {
-            my $miss = $settings->{require_claude_settings} ? 'fail' : 'info';
-            return ( $miss, '.claude/settings.json is missing' ) if !has_path( $snapshot, '.claude/settings.json' );
-            my $data = json_of( $snapshot, '.claude/settings.json' ) // return ( 'fail', '.claude/settings.json does not parse' );
-            my $key  = "$settings->{plugin}\@$settings->{marketplace}";
-            return ( 'pass', "enables $key" ) if ( $data->{enabledPlugins} // {} )->{$key};
-            return ( $miss,  "does not enable $key" );
-        }
-    ],
-    [
-        'workflows' => sub ( $snapshot, $settings ) {
-            my @have   = sort map { m{\A[.]github/workflows/([^/]+)\z} } keys %{ $snapshot->{tree} };
-            my @wanted = @{ $settings->{required_workflows} // [] };
-            return ( 'info', @have ? "present: @have" : 'none' ) if !@wanted;
-            my %have    = map  { $_ => 1 } @have;
-            my @missing = grep { !$have{$_} } @wanted;
-            return ( 'fail', "missing: @missing" ) if @missing;
-            return ( 'pass', 'all present' );
-        }
-    ],
-);
-
-=func check
-
-Returns a list of C<{check, status, detail}>.
+C<($settings)>, the C<harness> section of F<clod.conf>.  The validated
+F<.conformance.yml> of a spoke that has none: the C<flavor> of the settings,
+from their C<standards>.  Dies as L<Dist::Conformance::Config/validate> does.
 
 =cut
 
-sub check ( $snapshot, $settings ) {
-    my @results;
-    for my $check (@CHECKS) {
-        my ( $name,   $code )   = @$check;
-        my ( $status, $detail ) = eval { $code->( $snapshot, $settings ) };
-        ( $status, $detail ) = ( 'fail', "the check died: $@" ) if !$status;
-        push @results, { check => $name, status => $status, detail => $detail };
+sub default_config ($settings) {
+    return Dist::Conformance::Config::validate( { flavor => $settings->{flavor}, source => $settings->{standards} } );
+}
+
+=func standards
+
+C<($settings, %options)>.  The L<Dist::Conformance::Source> of
+L</default_config>, which a scan builds once and gives to every spoke that has
+no F<.conformance.yml>, so a git source is fetched once.  C<cache> is the
+directory of its clone.
+
+=cut
+
+sub standards ( $settings, %options ) {
+    my $nothing = Dist::Conformance::Snapshot::Tree->new( paths => {}, fetch => sub ($) { return } );
+    return conformance( $nothing, $settings, %options )->source;
+}
+
+=func snapshot
+
+C<($tree, $fetch)>: what L<App::Clod::GitHub/tree> returns, and a sub that
+returns the content of a path.  A L<Dist::Conformance::Snapshot::Tree> of the
+files of the tree, without the entries for its directories.
+
+=cut
+
+sub snapshot ( $tree, $fetch ) {
+    my @blobs = grep { ( $_->{type} // 'blob' ) eq 'blob' } values %$tree;
+    return Dist::Conformance::Snapshot::Tree->new( paths => { map { $_->{path} => $_->{sha} } @blobs }, fetch => $fetch );
+}
+
+=func conformance
+
+C<($snapshot, $settings, %options)>.  The L<Dist::Conformance> of a spoke.  With
+a F<.conformance.yml>, the spoke names its own flavor and source.  Without one,
+it gets L</default_config>, and the C<source> of the options when given, such
+as the one from L</standards>.  C<cache> is the directory of the clones of git
+sources.
+
+=cut
+
+sub conformance ( $snapshot, $settings, %options ) {
+    my %args = ( snapshot => $snapshot );
+    $args{cache} = $options{cache} if defined $options{cache};
+    if ( !$snapshot->contains($Dist::Conformance::Config::FILE) ) {
+        $args{config} = default_config($settings);
+        $args{source} = $options{source} if $options{source};
     }
-    return \@results;
+    return Dist::Conformance->new(%args);
+}
+
+=func workflows
+
+C<($snapshot, $settings)>.  C<(status, detail)>: whether each workflow of
+C<required_workflows> exists under F<.github/workflows>.  With none required,
+it is info, and lists the ones present.
+
+=cut
+
+sub workflows ( $snapshot, $settings ) {
+    my @have   = sort map { m{\A[.]github/workflows/([^/]+)\z} } keys %{ $snapshot->paths };
+    my @wanted = @{ $settings->{required_workflows} // [] };
+    return ( 'info', @have ? "present: @have" : 'none' ) if !@wanted;
+    my %have    = map  { $_ => 1 } @have;
+    my @missing = grep { !$have{$_} } @wanted;
+    return ( 'fail', "missing: @missing" ) if @missing;
+    return ( 'pass', 'all present' );
+}
+
+=func check
+
+C<($snapshot, $settings, %options)>, as L</conformance> takes them.  Returns
+C<{flavor, chosen, checks}>: the flavor, whether the spoke chose it in its own
+F<.conformance.yml>, and a list of C<{check, status, detail}>.  The list is
+every check of the flavor, as L<Dist::Conformance/check> returns it, and then
+C<workflows>.  Dies when the configuration or the flavor cannot be read, or the
+source cannot be fetched.
+
+=cut
+
+sub check ( $snapshot, $settings, %options ) {
+    my $conformance = conformance( $snapshot, $settings, %options );
+    my @results     = @{ $conformance->check };
+
+    my ( $status, $detail ) = workflows( $snapshot, $settings );
+    push @results, { check => 'workflows', status => $status, detail => $detail };
+    return { flavor => $conformance->config->{flavor}, chosen => $snapshot->contains($Dist::Conformance::Config::FILE) ? 1 : 0, checks => \@results };
 }
 
 =func marketplace_check
@@ -130,7 +119,6 @@ plugin.
 
 =cut
 
-# The pinned version against the plugin's own.
 sub marketplace_check ( $plugin_json, $marketplace_json, $plugin ) {
     my $latest  = eval { Mojo::JSON::decode_json($plugin_json)->{version} };
     my $plugins = eval { Mojo::JSON::decode_json($marketplace_json)->{plugins} } // [];
@@ -151,64 +139,28 @@ sub marketplace_check ( $plugin_json, $marketplace_json, $plugin ) {
     use App::Clod::GitHub;
     use App::Clod::Harness;
 
-    my ( $repo, $branch, $settings ) = ( 'Owner/Name', 'main', {} );
-    my $gh      = App::Clod::GitHub->new;
-    my $results = App::Clod::Harness::check(
-        {
-            tree      => $gh->tree( $repo, $branch ),
-            file      => sub ($path) { $gh->file( $repo, $path, $branch ) },
-            templates => { 'pre-commit' => 'a blob SHA', 'post-commit' => 'a blob SHA' },
-        },
-        $settings,
-    );
+    my ( $repo, $branch ) = ( 'Owner/Name', 'main' );
+    my $settings  = { flavor => 'troglodyne-compat', standards => { directory => '/bogus/standards' } };
+    my $gh        = App::Clod::GitHub->new;
+    my $standards = App::Clod::Harness::standards($settings);
+    my $snapshot  = App::Clod::Harness::snapshot( $gh->tree( $repo, $branch ), sub ($path) { $gh->file( $repo, $path, $branch ) } );
+    my $result    = App::Clod::Harness::check( $snapshot, $settings, source => $standards );
+    say "$_->{status}\t$_->{check}" for @{ $result->{checks} };
 
 =head1 DESCRIPTION
 
-A spoke conforms when it has what the packaging-perl skill of the plugin
-scaffolds, and the configuration that makes Claude Code load the plugin.  The
-checks read a snapshot of the default branch: the recursive tree, which gives
-every path and its blob SHA, and a sub that fetches a file's content on demand.
+A spoke conforms when its harness meets the standards of its flavor:
+CLAUDE.md, the perlcritic profile, the configuration of the tools, the git
+hooks, and the Claude Code settings.  L<Dist::Conformance> runs the checks,
+from the flavor files of the plugin, on a snapshot of the default branch that
+the GitHub API reads.  So the checks are the ones that C<conformance check>
+runs in a checkout, and this module does not repeat them.
 
-=over
+A spoke names its flavor in its own F<.conformance.yml>.  A spoke without one
+gets the C<flavor> of the C<harness> section of F<clod.conf>, from its
+C<standards>.
 
-=item CLAUDE.md
-
-It exists and names C<perl-slop:reading-perl>.
-
-=item perlcritic profile
-
-F<.perlcriticrc> starts with the header of the current profile.  The older
-header, without the perl version, is an outdated profile.
-
-=item tool configuration
-
-F<.perltidyrc>, F<.preferred_modules.ini>, F<.pod_stopwords> and
-F<.tests-covering-map.pl> exist.
-
-=item git hooks
-
-F<git-hooks/pre-commit> and F<git-hooks/post-commit> exist.  If a hook's blob
-SHA differs from the template in the plugin, the result is info: the repository
-customized it, or it is older.
-
-=item dist files
-
-If F<dist.ini> exists, so do F<weaver.ini>, F<Changes> and F<prereqs.yml>.
-
-=item .perl-slop.json
-
-If it exists, it parses and has only C<before_edit> and C<before_commit>.
-
-=item Claude settings
-
-F<.claude/settings.json> enables the plugin from the marketplace.  This is info
-unless C<require_claude_settings> is set.
-
-=item workflows
-
-Each workflow in C<required_workflows> exists under F<.github/workflows>.  With
-none required, it lists the ones present.
-
-=back
+L</workflows> is the one check of this module, because F<clod.conf> and not
+the flavor says which workflows a spoke needs.
 
 =cut

@@ -230,8 +230,9 @@ the queue, and the open issues assigned to the bot that no job has yet.
 
 =item Harness
 
-For each spoke, whether each part of the standard harness is in place.  See
-L<App::Clod::Harness>.
+For each spoke, its flavor and the result of each check of that flavor.  A
+spoke without a F<.conformance.yml> shows the default flavor, marked
+"(default)".  See L<App::Clod::Harness>.
 
 =back
 

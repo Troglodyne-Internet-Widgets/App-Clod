@@ -74,6 +74,21 @@ subtest validate => sub {
     ok( lives { App::Clod::Config::validate( { %minimal, auth => { user => 'u', password_sha256 => $HASH } } ) }, 'basic auth with both parts lives' );
 };
 
+subtest 'the standards of the harness' => sub {
+    my $config = App::Clod::Config::validate( {%minimal} );
+    is( $config->{harness}{flavor}, 'troglodyne-compat', 'a spoke without .conformance.yml is held to troglodyne-compat' );
+    is(
+        $config->{harness}{standards},
+        { git => 'https://github.com/Troglodyne-Internet-Widgets/perl-slop-plugin.git', path => 'skills/packaging-perl' },
+        'from the packaging-perl skill of the plugin'
+    );
+    my $forge = App::Clod::Config::validate( { %minimal, github_web => 'https://forge.test.test', harness => { plugin_repo => 'Test-Org/test-plugin' } } );
+    is( $forge->{harness}{standards}{git}, 'https://forge.test.test/Test-Org/test-plugin.git', 'which is the plugin_repo on github_web' );
+    my $set = { directory => '/bogus/standards', path => 'here' };
+    is( App::Clod::Config::validate( { %minimal, harness => { standards => $set } } )->{harness}{standards}, $set, 'standards that the file sets are kept' );
+    like( dies { App::Clod::Config::validate( { %minimal, harness => { standards => { path => 'here' } } } ) }, qr/conformance/, 'and standards that are not a source die' );
+};
+
 subtest 'keys that the schema does not name' => sub {
     refused( { %minimal, spoke  => ['Test-Org/one'] }, '/: Properties not allowed: spoke.', 'a misspelled key dies' );
     refused( { %minimal, claude => { modle     => 'm' } }, '/claude: Properties not allowed: modle.', 'and so does one inside a section' );

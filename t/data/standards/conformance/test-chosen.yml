@@ -1,0 +1,12 @@
+# A flavor that a spoke of the tests names in its own .conformance.yml.
+name: test-chosen
+description: What the harness tests hold a spoke to when it names this flavor
+checks:
+  ToolConfiguration:
+    files:
+      .perltidyrc: templates/perltidyrc
+  ClaudeMd:
+    file: CLAUDE.md
+    template: templates/CLAUDE.md
+    mentions:
+      - perl-slop:reading-perl
