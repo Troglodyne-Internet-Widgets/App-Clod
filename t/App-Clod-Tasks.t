@@ -190,9 +190,9 @@ subtest inbox_poll => sub {
     $state{events} = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'trusted' } } ];
 
     my $info = run_job('inbox_poll');
-    is( $info->{state},                        'finished', 'the poll finishes' ) or diag Mojo::Util::dumper $info->{result};
-    is( scalar @{ $info->{result}{enqueued} }, 1,          'one thread becomes work' );
-    my $triage = $minion->job( $info->{result}{enqueued}[0] )->info;
+    is( $info->{state},                      'finished', 'the poll finishes' ) or diag Mojo::Util::dumper $info->{result};
+    is( scalar @{ $info->{result}{queued} }, 1,          'one thread becomes work' );
+    my $triage = $minion->job( $info->{result}{queued}[0] )->info;
     is( $triage->{task}, 'triage', 'an assignment goes to triage' );
     like( $triage->{args}[0], { repo => 'Test-Org/one', number => 7, kind => 'fix', requester => 'trusted' }, 'with the item' );
     is( $triage->{notes}{origin},      'Test-Org/one#7', 'noted with its origin' );
@@ -201,7 +201,7 @@ subtest inbox_poll => sub {
     like( $info->{result}{ignored}, [ qr/Elsewhere\/repo\ is\ not\ a\ spoke/, qr/nothing\ to\ do\ for\ reason\ 'subscribed'/ ], 'and says why it left the rest' );
 
     my $again = run_job('inbox_poll');
-    is( $again->{result}{enqueued}, [], 'a thread seen before at the same update is not enqueued twice' );
+    is( $again->{result}{queued}, [], 'a thread seen before at the same update is not queued twice' );
 
     $state{threads} = [ +{ %thread, id => 4, updated_at => 't2', repository => { full_name => 'Test-Org/one' } } ];
     $state{events}  = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'stranger' } } ];
@@ -211,13 +211,13 @@ subtest inbox_poll => sub {
     $state{threads}   = [ { id => 5, reason => 'mention', updated_at => 't3', repository => { full_name => 'Test-Org/one' }, subject => { type => 'Issue', url => "$api/repos/Test-Org/one/issues/8", latest_comment_url => "$api/comment" } } ];
     $state{commenter} = 'trusted';
     my $mention = run_job('inbox_poll');
-    is( $minion->job( $mention->{result}{enqueued}[0] )->info->{task}, 'reply', 'a mention goes straight to a reply' );
+    is( $minion->job( $mention->{result}{queued}[0] )->info->{task}, 'reply', 'a mention goes straight to a reply' );
 
     @calls          = ();
     $state{closed}  = { 9 => 1 };
     $state{threads} = [ { id => 6, reason => 'author', updated_at => 't4', repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/9", latest_comment_url => "$api/comment" } } ];
     my $closed = run_job('inbox_poll');
-    is( $closed->{result}{enqueued}, [], 'a notification on a closed pull request makes no work' );
+    is( $closed->{result}{queued}, [], 'a notification on a closed pull request makes no work' );
     like( $closed->{result}{ignored}, [qr/Test-Org\/one\#9\ is\ closed/], 'and says so' );
     is( [ map { $_->[0] } @calls ], ['read'], 'it is marked read, without a reaction' );
     $minion->reset( { all => 1 } );

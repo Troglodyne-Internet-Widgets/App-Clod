@@ -378,10 +378,11 @@ sub inbox_poll ( $job, $config ) {
 
     my $gh = github($config);
     my ( $threads, $meta ) = $gh->notifications( $cursor->{last_modified} );
-    my ( @enqueued, @ignored );
+    my ( @queued, @ignored );
     for my $thread (@$threads) {
         my $outcome = eval { inbox_thread( $job, $config, $gh, $thread ) } // "failed: $@";
-        push @{ $outcome =~ m{\A\d+\z} ? \@enqueued : \@ignored }, $outcome =~ m{\A\d+\z} ? $outcome : "$thread->{id}: $outcome";
+        if   ( $outcome =~ m{\A\d+\z} ) { push @queued,  $outcome }
+        else                            { push @ignored, "$thread->{id}: $outcome" }
     }
     return $job->finish(
         {
@@ -390,7 +391,7 @@ sub inbox_poll ( $job, $config ) {
             poll_interval => $meta->{poll_interval} // $cursor->{poll_interval},
             scopes        => $meta->{scopes}        // $cursor->{scopes},
             threads       => scalar @$threads,
-            enqueued      => \@enqueued,
+            queued        => \@queued,
             ignored       => \@ignored,
         }
     );
@@ -403,7 +404,7 @@ the job id, or the reason it made none.
 
 =cut
 
-# Returns the id of the job that it enqueued, or why it did not.
+# Returns the id of the job that it queued, or why it did not.
 sub inbox_thread ( $job, $config, $gh, $thread ) {
     my $minion  = $job->minion;
     my $repo    = $thread->{repository}{full_name};
@@ -449,7 +450,7 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
     $gh->react( $repo, $number, 'eyes' );
     my $id = $minion->enqueue( ( $kind eq 'reply' ? 'reply' : 'triage' ) => [ \%item ], { notes => { origin => origin_of( \%item ), kind => $kind } } );
     $gh->mark_read( $thread->{id} );
-    log_note( $job, "enqueued job $id for $kind on " . origin_of( \%item ) );
+    log_note( $job, "queued job $id for $kind on " . origin_of( \%item ) );
     return $id;
 }
 
