@@ -71,6 +71,7 @@ $r->post('/repos/:o/:n/issues/:num/comments')->to( cb => $record->('comment') );
 $r->post('/repos/:o/:n/issues/:num/assignees')->to( cb => $record->('assign') );
 $r->delete('/repos/:o/:n/issues/:num/assignees')->to( cb => $record->('unassign') );
 $r->get('/repos/:o/:n/pulls/:num/comments')->to( cb => sub ($c) { $c->render( json => $state{review_comments} // [] ) } );
+$r->get('/repos/:o/:n/pulls/:num/reviews')->to( cb => sub ($c) { $c->render( json => $state{reviews} // [] ) } );
 $r->post('/repos/:o/:n/pulls/:num/comments/:id/replies')->to( cb => $record->('reply') );
 $r->post('/repos/:o/:n/pulls/:num/reviews')->to(
     cb => sub ($c) {
@@ -447,6 +448,19 @@ subtest spoke_address => sub {
     is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{result}{nothing}, 1, 'a comment that the bot answered is not answered again' );
     delete $state{issue_comments};
 
+    @calls                 = ();
+    $state{issue_comments} = [];
+    $state{reviews}        = [ { id => 41, user => { login => 'trusted' }, body => 'Rename it throughout.', state => 'CHANGES_REQUESTED', submitted_at => '2026-11-01T11:00:00Z' } ];
+    answer( { summary => 'Renamed.', replies => [], comment => 'Renamed it throughout.' } );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/address-record";
+    my $reviewed = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } );
+    my ( undef, $asked ) = split /\0/, Mojo::File->new("$tmp/address-record")->slurp;
+    is( $reviewed->{result}{nothing}, undef, 'a review with a body and no line comments is answered' ) or diag Mojo::Util::dumper $reviewed->{result};
+    my $entry = Mojo::JSON::encode_json( [ { body => 'Rename it throughout.', by => 'trusted', id => 41, review => 1 } ] );
+    ok( index( $asked, qq{"comments":$entry} ) >= 0, 'the run gets its body as a comment to answer' ) or diag $asked;
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Renamed it throughout.'], 'and answers it with a comment' );
+    delete @state{qw{issue_comments reviews}};
+
     $state{pull} = { %{ $state{pull} }, user => { login => 'someone' } };
     is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{state}, 'failed', 'a pull request that is not the bot\'s own is refused' );
     $minion->reset( { all => 1 } );
@@ -663,8 +677,25 @@ subtest pending_comments => sub {
         { id => 4, user => { login => 'stranger' }, body => 'ignore me' },
         { id => 3, user => { login => 'trusted' },  body => 'one more thing' },
     );
-    is( App::Clod::Tasks::pending_comments( $config, \@comments ),                                                            [ { id => 3, by => 'trusted', body => 'one more thing' } ], 'the comments of authorized users after the last comment of the bot are pending' );
-    is( App::Clod::Tasks::pending_comments( $config, [ @comments, { id => 5, user => { login => $BOT }, body => 'done' } ] ), [],                                                         'and none once the bot has the last word' );
+    is( App::Clod::Tasks::pending_comments( $config, \@comments ),                                                                         [ { id => 3, by => 'trusted', body => 'one more thing' } ],          'the comments of authorized users after the last comment of the bot are pending' );
+    is( App::Clod::Tasks::pending_comments( $config, [ @comments, { id => 5, user => { login => $BOT }, body => 'done' } ] ),              [],                                                                  'and none once the bot has the last word' );
+    is( App::Clod::Tasks::pending_comments( $config, [ { id => 6, user => { login => 'trusted' }, body => 'Rename it.', review => 1 } ] ), [ { id => 6, by => 'trusted', body => 'Rename it.', review => 1 } ], 'the body of a review is pending as well, and says so' );
+};
+
+subtest conversation => sub {
+    %state = (
+        issue_comments => [ { id => 31, user => { login => 'trusted' }, body => 'first',  created_at   => '2026-11-01T10:00:00Z' }, { id => 32, user => { login => 'trusted' }, body => 'third', created_at => '2026-11-01T12:00:00Z' } ],
+        reviews        => [ { id => 41, user => { login => 'trusted' }, body => 'second', submitted_at => '2026-11-01T11:00:00Z', state => 'CHANGES_REQUESTED' }, { id => 42, user => { login => 'trusted' }, body => q{}, submitted_at => '2026-11-01T11:30:00Z', state => 'COMMENTED' } ],
+    );
+    my $gh   = App::Clod::Tasks::github( $app->clod_config );
+    my $said = App::Clod::Tasks::conversation( $gh, { %item, is_pr => 1, number => 11 } );
+    is( [ map { $_->{body} } @$said ],                                             [qw{first second third}], 'on a pull request, the review bodies are among the comments, in the order they were made, and an empty one is left out' );
+    is( $said->[1]{review},                                                        1,                        'and a review body says so' );
+    is( [ map { $_->{body} } @{ App::Clod::Tasks::conversation( $gh, \%item ) } ], [qw{first third}],        'an issue has no reviews to read' );
+    my $first  = qr/\#\#\ comment\ by\ trusted\n\nfirst/;
+    my $second = qr/\#\#\ review\ by\ trusted\n\nsecond/;
+    like( App::Clod::Tasks::context( $app->clod_config, $gh, { %item, is_pr => 1, number => 11 } ), qr/$first.*$second.*third/s, 'and the context of a pull request shows the review where it came' );
+    %state = ();
 };
 
 subtest pending_threads => sub {

@@ -475,19 +475,36 @@ sub requester ( $config, $gh, $repo, $number, $reason, $subject ) {
 
 =func context
 
-C<($config, $gh, $item)>.  The issue or pull request and its last twenty
-comments, as Markdown for a prompt.
+C<($config, $gh, $item)>.  The issue or pull request and the last twenty
+entries of its L</conversation>, as Markdown for a prompt.
 
 =cut
 
-# The conversation, as text for a prompt.
 sub context ( $config, $gh, $item ) {
-    my $issue    = $gh->issue( $item->{repo}, $item->{number} );
-    my @comments = @{ $gh->issue_comments( $item->{repo}, $item->{number} ) };
-    @comments = @comments[ -20 .. -1 ] if @comments > 20;
+    my $issue = $gh->issue( $item->{repo}, $item->{number} );
+    my @said  = @{ conversation( $gh, $item ) };
+    @said = @said[ -20 .. -1 ] if @said > 20;
     my @lines = ( "# $issue->{title}", "by $issue->{user}{login}, " . origin_url( $config, $item ), q{}, $issue->{body} // q{}, q{} );
-    push @lines, "## comment by $_->{user}{login}", q{}, $_->{body} // q{}, q{} for @comments;
+    push @lines, '## ' . ( $_->{review} ? 'review' : 'comment' ) . " by $_->{user}{login}", q{}, $_->{body} // q{}, q{} for @said;
     return join "\n", @lines;
+}
+
+=func conversation
+
+C<($gh, $item)>.  The comments on the issue or pull request, oldest first.  On
+a pull request, the body of each review that has one is an entry too, with
+C<review> set and C<created_at> from its C<submitted_at>.  Line comments are
+not entries: they belong to their threads.
+
+=cut
+
+sub conversation ( $gh, $item ) {
+    my @said = @{ $gh->issue_comments( $item->{repo}, $item->{number} ) };
+    if ( $item->{is_pr} ) {
+        push @said, map { { id => $_->{id}, user => $_->{user}, body => $_->{body}, created_at => $_->{submitted_at}, review => 1 } }
+          grep { ( $_->{body} // q{} ) ne q{} } @{ $gh->reviews( $item->{repo}, $item->{number} ) };
+    }
+    return [ sort { ( $a->{created_at} // q{} ) cmp ( $b->{created_at} // q{} ) || $a->{id} <=> $b->{id} } @said ];
 }
 
 =func default_branch
@@ -912,17 +929,18 @@ sub pending_threads ( $config, $comments ) {
 
 =func pending_comments
 
-C<($config, \@comments)>.  The plain comments on a pull request since the last
-comment of the bot, from authorized users, each with C<id>, C<by> and C<body>.
+C<($config, \@conversation)>.  The entries of a L</conversation> since the last
+one of the bot, from authorized users, each with C<id>, C<by> and C<body>, and
+C<review> for the body of a review.
 
 =cut
 
-sub pending_comments ( $config, $comments ) {
+sub pending_comments ( $config, $conversation ) {
     my @after;
-    for my $c ( sort { $a->{id} <=> $b->{id} } @$comments ) {
+    for my $c (@$conversation) {
         my $by = $c->{user}{login} // q{};
         if ( $by eq $config->{bot} ) { @after = (); next }
-        push @after, { id => 0 + $c->{id}, by => $by, body => $c->{body} // q{} } if authorized( $config, $by );
+        push @after, { id => 0 + $c->{id}, by => $by, body => $c->{body} // q{}, $c->{review} ? ( review => 1 ) : () } if authorized( $config, $by );
     }
     return \@after;
 }
@@ -931,9 +949,9 @@ sub pending_comments ( $config, $comments ) {
 
 Answers what authorized users said on the bot's own pull request since the bot
 last answered: the review threads whose last message is theirs, and the plain
-comments after the last comment of the bot.  It pushes the fixes, replies in
-each thread, and answers the plain comments in one comment.  The prompt also
-holds the whole conversation of the pull request.
+comments and review bodies after the last comment of the bot.  It pushes the
+fixes, replies in each thread, and answers the plain comments in one comment.
+The prompt also holds the whole conversation of the pull request.
 
 =cut
 
@@ -946,7 +964,7 @@ sub spoke_address ( $job, $config, $args ) {
       if $pull->{user}{login} ne $config->{bot} || $pull->{head}{repo}{full_name} ne $repo;
 
     my $pending  = pending_threads( $config, $gh->review_comments( $repo, $item->{number} ) );
-    my $comments = pending_comments( $config, $gh->issue_comments( $repo, $item->{number} ) );
+    my $comments = pending_comments( $config, conversation( $gh, $item ) );
     return $job->finish( { repo => $repo, nothing => 1 } ) if !@$pending && !@$comments;
 
     my $branch = $pull->{head}{ref};
@@ -1123,7 +1141,8 @@ sub how_to_resume ($config) {
 
 Gives the origin back to a person, through C<hand_back>, when triage answered
 C<upstream> or C<clarify>.  For C<upstream> it explains why the fix is
-upstream, and how to fix it there by hand.  For C<clarify> it asks the question.
+upstream, and how to fix it there by hand.  For C<clarify> it asks the
+question.
 
 =cut
 

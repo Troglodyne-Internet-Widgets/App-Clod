@@ -217,6 +217,15 @@ C<($repo, $number)>.  Every line comment of every review.
 
 sub review_comments ( $self, $repo, $number ) { return $self->paginate("/repos/$repo/pulls/$number/comments") }
 
+=method reviews
+
+C<($repo, $number)>.  Every review of the pull request that the token can see,
+each with its C<body>, C<state> and C<submitted_at>.
+
+=cut
+
+sub reviews ( $self, $repo, $number ) { return $self->paginate("/repos/$repo/pulls/$number/reviews") }
+
 =method react
 
 C<($repo, $number, $content)>.  Adds a reaction, C<eyes> by default.
