@@ -243,7 +243,8 @@ C<spoke_review> and C<spoke_address> run gets its own worktree of each one,
 added to the run with C<--add-dir> and named in its prompt, and removed after
 the run.  The worktree is at the branch of the nearest earlier job of the same
 change that left one in that repository, else at its default branch.  A run in
-a tool spoke gets no second copy of it.  For triage to plan a change to a tool
+a tool spoke gets no second copy of it.  Triage is told which they are, and to
+put a change to one first in its plan.  For triage to plan a change to a tool
 spoke, it must be a spoke too, in C<spokes> or in C<spoke_orgs>.  See
 L<App::Clod::Tasks/in_worktree>.  Default none.
 

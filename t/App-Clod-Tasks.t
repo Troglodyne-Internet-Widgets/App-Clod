@@ -540,9 +540,13 @@ subtest 'tool spokes and the spoke prompt' => sub {
     answer( { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1, instructions => 'x' } ] } );
     $fake{FAKE_CLAUDE_RECORD} = $record_file;
     run_job( triage => \%item );
-    unlike( record_of($record_file)->{prompt}, qr/SPOKE_PROMPT|tool\ spokes/, 'without a spoke prompt, triage has no such section' );
-    delete $config->{system_prompts}{spoke_fix};
+    my $alone = record_of($record_file)->{prompt};
+    unlike( $alone, qr/SPOKE_PROMPT/, 'without a spoke prompt, triage is told none' );
+    like( $alone, qr/tools:\ Test-Org\/two\./, 'but it is still told which the tool spokes are' );
     $config->{tool_spokes} = [];
+    run_job( triage => \%item );
+    unlike( record_of($record_file)->{prompt}, qr/SPOKE_PROMPT|tool\ spokes/, 'without either, triage has no such section' );
+    delete $config->{system_prompts}{spoke_fix};
     $config->{claude}{extra_tools} = [];
     $minion->reset( { all => 1 } );
 };

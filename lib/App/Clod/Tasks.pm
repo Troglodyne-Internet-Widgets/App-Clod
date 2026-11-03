@@ -524,19 +524,22 @@ sub prepare_hub ( $config, $gh, $spokes ) {
     return ( $hub, \%ref );
 }
 
-=func spoke_testing
+=func spoke_briefing
 
-C<($config)>.  The section of the triage prompt that says what each spoke run
-is told by C<spoke_prompt>, and how to plan around the tool spokes.  Empty
-when C<spoke_prompt> is not set.
+C<($config)>.  The section of the triage prompt that says what every spoke run
+is told by C<spoke_prompt>, and which tool spokes it gets a checkout of.  Each
+part is there when its setting is, and the section is empty when neither is.
 
 =cut
 
-sub spoke_testing ($config) {
-    my $told = $config->{spoke_prompt} // q{};
-    return q{} if $told eq q{};
+sub spoke_briefing ($config) {
+    my $told  = $config->{spoke_prompt} // q{};
     my @tools = @{ $config->{tool_spokes} };
-    return prompt( 'triage-testing', spoke_prompt => $told, tool_spokes => @tools ? join( q{, }, @tools ) : 'none' );
+    my @parts = (
+        ( $told ne q{} ? prompt( 'triage-spoke-prompt', spoke_prompt => $told ) : () ),
+        ( @tools ? prompt( 'triage-tool-spokes', tool_spokes => join q{, }, @tools ) : () ),
+    );
+    return join "\n", @parts;
 }
 
 =func triage
@@ -555,13 +558,13 @@ sub triage ( $job, $config, $item ) {
     my $spokes = spokes( $job->minion, $config );
     my ( $hub, $ref ) = prepare_hub( $config, $gh, $spokes );
     my %vars = (
-        kind      => $item->{kind},
-        origin    => origin_of($item),
-        repo      => $item->{repo},
-        requester => $item->{requester},
-        owners    => join( q{, }, @{ $config->{owners} } ),
-        context   => context( $config, $gh, $item ),
-        testing   => spoke_testing($config),
+        kind           => $item->{kind},
+        origin         => origin_of($item),
+        repo           => $item->{repo},
+        requester      => $item->{requester},
+        owners         => join( q{, }, @{ $config->{owners} } ),
+        context        => context( $config, $gh, $item ),
+        spoke_briefing => spoke_briefing($config),
     );
 
     my ( @outcomes, $answer, $error );
