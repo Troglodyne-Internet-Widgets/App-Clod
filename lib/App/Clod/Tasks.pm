@@ -775,15 +775,17 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
 
 =func slug
 
-C<($text)>.  A branch-name form of a title: lowercase, dashes, at most forty
-characters.
+C<($text)>.  A branch-name form of a title: lowercase ASCII letters and digits,
+with a dash for each run of anything else, and at most forty characters, so
+that the branch reads well in the lists of GitHub.  Empty when the title has no
+such letter or digit, or there is no title.
 
 =cut
 
 sub slug ($text) {
-    my $slug = lc( $text // 'change' ) =~ s/[^[:lower:][:digit:]]+/-/gr;
+    my $slug = lc( $text // q{} ) =~ s/[^[:lower:][:digit:]]+/-/gr;
     $slug =~ s/\A-+|-+\z//g;
-    return substr( $slug, 0, 40 ) =~ s/-+\z//r || 'change';
+    return substr( $slug, 0, 40 ) =~ s/-+\z//r;
 }
 
 =func spoke_fix
@@ -804,7 +806,7 @@ sub spoke_fix ( $job, $config, $args ) {
 
     my $gh     = github($config);
     my $base   = default_branch( $gh, $repo );
-    my $branch = 'clod/' . $job->id . q{-} . slug( $item->{title} );
+    my $branch = join q{-}, grep { $_ ne q{} } 'clod/' . $job->id, slug( $item->{title} );
     my $prior  = @prior ? join( "\n", 'Earlier spokes in this change:', map { "- $_->{repo}: " . ( $_->{branch} ? "branch $_->{branch}" : 'no change' ) . ( $_->{pr_url} ? ", $_->{pr_url}" : q{} ) . "\n  " . ( $_->{summary} // q{} ) } @prior ) : q{};
 
     return in_worktree(

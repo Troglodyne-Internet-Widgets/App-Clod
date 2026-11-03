@@ -300,6 +300,10 @@ subtest spoke_fix => sub {
     is( $none->{result}{no_change},   1, 'a run that commits nothing opens nothing' );
     is( scalar @{ calls_of('pull') }, 1, 'so no second pull request' );
 
+    answer( { title => 't', summary => 's' }, commit => 1 );
+    my $unnamed = run_job( spoke_fix => { item => { %item, title => '!!!' }, repo => 'Test-Org/one', instructions => 'x' } );
+    is( $unnamed->{result}{branch}, "clod/$unnamed->{id}", 'a title that gives no slug names the branch by the job alone' ) or diag Mojo::Util::dumper $unnamed->{result};
+
     @calls         = ();
     $state{files}  = { CODEOWNERS => "lib/  \@lib-owner\n" };
     $state{assign} = { assignees  => [ { login => 'lib-owner' } ] };
@@ -761,8 +765,8 @@ subtest spoke_sweep => sub {
 subtest slug => sub {
     %state = ();
     is( App::Clod::Tasks::slug('Fix the thing!'),      'fix-the-thing', 'a title becomes a branch name' );
-    is( App::Clod::Tasks::slug('!!!'),                 'change',        'a title with nothing usable becomes change' );
-    is( App::Clod::Tasks::slug(undef),                 'change',        'so does no title' );
+    is( App::Clod::Tasks::slug('!!!'),                 q{},             'a title with nothing usable gives no slug' );
+    is( App::Clod::Tasks::slug(undef),                 q{},             'nor does no title' );
     is( length App::Clod::Tasks::slug( 'word ' x 30 ), 39,              'a long title is cut, and loses its trailing dash' );
 };
 
