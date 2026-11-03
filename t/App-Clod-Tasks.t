@@ -368,6 +368,10 @@ subtest kickback => sub {
     is( calls_of('unassign')->[0][2], { assignees => [$BOT] },        'and the bot lets go of it' );
     my $to = qr/\A\@lib-owner\ \@Test-Org\/team:\ /;
     like( calls_of('comment')->[0][2]{body}, qr/$to.*Other\/lib.*X\ is\ broken\ there/s, 'and says why, to them and to the team that owns the path' );
+    my $clone   = qr/run\ claude\ yourself\ in\ a\ clone\ of\ Other\/lib,/;
+    my $by_hand = qr/$clone\ with\ perl-slop:pull-requests/;
+    my $tell    = qr/mention\ \@$BOT\ here\ with\ a\ link/;
+    like( calls_of('comment')->[0][2]{body}, qr/$by_hand.*$tell/s, 'and how to fix it upstream by hand, then tell the bot' );
 
     @calls = ();
     $state{files} = {};

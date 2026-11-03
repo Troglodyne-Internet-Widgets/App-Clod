@@ -130,7 +130,11 @@ tools.  See L<App::Clod::Config>.
 
 If the best fix is upstream, the bot changes nothing.  It assigns the issue to
 the owner of the affected path in CODEOWNERS, or to the repository owner, and
-explains why.
+explains why.  The bot never opens a pull request on a project that we do not
+own.  To go on, that person runs claude in a clone of the upstream project,
+with C<perl-slop:pull-requests>, opens the pull request there, and mentions the
+bot on the issue with a link to it.  Nothing watches the upstream pull request
+yet, so a change that our code needs after it merges is for a person to make.
 
 If triage or a spoke cannot go on without an answer from a person, the bot
 changes nothing and does not guess.  It asks the question in a comment, assigns

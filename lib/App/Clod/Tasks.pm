@@ -1118,7 +1118,7 @@ sub how_to_resume ($config) {
 
 Gives the origin back to a person, through C<hand_back>, when triage answered
 C<upstream> or C<clarify>.  For C<upstream> it explains why the fix is
-upstream.  For C<clarify> it asks the question.
+upstream, and how to fix it there by hand.  For C<clarify> it asks the question.
 
 =cut
 
@@ -1141,6 +1141,7 @@ sub kickback ( $job, $config, $args ) {
         $job, $config, $gh, $item, $up->{path},
         "triage found that the best fix for this is upstream, in $up->{project}, which we do not own. I changed nothing.",
         $up->{explanation}, ( $up->{path} ? "The affected path here is `$up->{path}`." : () ), "Why not here: $triage->{reason}",
+        "To fix it there, run claude yourself in a clone of $up->{project}, with perl-slop:pull-requests, and open the pull request. Then mention \@$config->{bot} here with a link to it, so that this issue records it.",
     );
     return $job->finish( { %$asked, scope => 'upstream', project => $up->{project}, summary => $up->{explanation} } );
 }
