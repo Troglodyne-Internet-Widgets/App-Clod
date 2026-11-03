@@ -108,6 +108,15 @@ user in C<authorized_users> caused it.  An assignment to an issue becomes a
 fix, a review request becomes a review, activity on the bot's own pull request
 becomes work on the review comments, and a mention becomes a reply.
 
+GitHub keeps one notification per issue or pull request, not one per comment.
+Each new comment updates it, and its reason is the reason of the latest one.
+So a comment on the bot's own pull request that mentions the bot by name is a
+mention, and gets a reply, not work on the review comments.  If the reply finds
+that the person asked for a change, it starts that work.  Several comments that
+arrive while the work on a pull request waits to start get no job of their own,
+because that work collects everything that was said since the bot last
+answered.  A comment that arrives while that work runs gets a job of its own.
+
 Each fix, review and review answer starts with triage: one C<claude -p> run
 that can read every spoke and decides whether one repository, several, or an
 upstream project that we do not own is the right place for the change.  Then

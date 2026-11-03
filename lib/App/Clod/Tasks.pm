@@ -447,11 +447,37 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
         thread      => $thread->{id},
         comment_url => $subject->{latest_comment_url},
     );
+    my $origin = origin_of( \%item );
+    if ( $kind eq 'address_review' && ( my $queued = queued_address( $minion, $origin ) ) ) {
+        $gh->mark_read( $thread->{id} );
+        return "job $queued will answer $origin";
+    }
     $gh->react( $repo, $number, 'eyes' );
-    my $id = $minion->enqueue( ( $kind eq 'reply' ? 'reply' : 'triage' ) => [ \%item ], { notes => { origin => origin_of( \%item ), kind => $kind } } );
+    my $id = $minion->enqueue( ( $kind eq 'reply' ? 'reply' : 'triage' ) => [ \%item ], { notes => { origin => $origin, kind => $kind } } );
     $gh->mark_read( $thread->{id} );
-    log_note( $job, "queued job $id for $kind on " . origin_of( \%item ) );
+    log_note( $job, "queued job $id for $kind on $origin" );
     return $id;
+}
+
+=func queued_address
+
+C<($minion, $origin)>.  The id of a job that has yet to read the conversation of
+the pull request C<$origin> and answer it: a C<triage> of it for
+C<address_review> that waits or runs, or a C<spoke_address> of it that waits.
+Undef if there is none.  A C<spoke_address> that runs does not count: it read
+what was pending when it started, so it does not answer a later comment.
+
+=cut
+
+sub queued_address ( $minion, $origin ) {
+    my $jobs = $minion->jobs( { tasks => [qw{triage spoke_address}], states => [qw{inactive active}] } );
+    while ( my $info = $jobs->next ) {
+        next if ( $info->{notes}{origin} // q{} ) ne $origin;
+        next if $info->{task} eq 'triage' && ( $info->{notes}{kind} // q{} ) ne 'address_review';
+        next if $info->{task} eq 'spoke_address' && $info->{state} ne 'inactive';
+        return $info->{id};
+    }
+    return;
 }
 
 =func requester
@@ -1270,9 +1296,53 @@ sub spoke_sweep ( $job, $config ) {
 =head1 DESCRIPTION
 
 Every task takes the configuration first, then the job's arguments.  Each
-task is documented at its sub.  An item is the hash that C<inbox_poll> makes
-from a notification: C<repo>, C<number>, C<kind>, C<is_pr>, C<title>,
-C<requester>, C<thread> and C<comment_url>.
+task is documented at its sub.
+
+An item is the hash that L</inbox_thread> makes from one notification.  Every
+job of the change carries it unchanged: C<triage> and C<reply> get it as their
+argument, and the jobs that triage plans get it as C<item>, beside C<repo> and
+C<instructions> for a spoke job.  Its keys:
+
+=over
+
+=item repo
+
+The C<Owner/Name> of the issue or pull request that the notification is about:
+the origin.  A spoke job works in its own C<repo>, which can be another one.
+
+=item number
+
+The number of the issue or pull request in C<repo>.
+
+=item kind
+
+C<fix>, C<review>, C<address_review> or C<reply>, from the reason of the
+notification.  A C<reply> that finds a request for a change hands triage a copy
+with C<fix>, or C<address_review> on a pull request.
+
+=item is_pr
+
+1 when the origin is a pull request, else 0.
+
+=item title
+
+The title of the origin, for the name of the branch.
+
+=item requester
+
+The authorized user who caused the notification.
+
+=item thread
+
+The id of the notification.  No task reads it.  It is there so that a job in
+F</minion> can be traced back to its notification.
+
+=item comment_url
+
+The API URL of the latest comment when the notification came.  No task reads
+it either, for the same reason.
+
+=back
 
 The spoke tasks, C<spoke_fix>, C<spoke_review> and C<spoke_address>, work in
 L</in_worktree>, which also checks out the C<tool_spokes> for the run, and

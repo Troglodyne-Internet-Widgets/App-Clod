@@ -222,6 +222,22 @@ subtest inbox_poll => sub {
     like( $closed->{result}{ignored}, [qr/Test-Org\/one\#9\ is\ closed/], 'and says so' );
     is( [ map { $_->[0] } @calls ], ['read'], 'it is marked read, without a reaction' );
     $minion->reset( { all => 1 } );
+
+    my %comment = ( id => 7, reason => 'author', repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/11", latest_comment_url => "$api/comment" } );
+    my $waiting = $minion->enqueue( spoke_address => [ {} ], { notes => { origin => 'Test-Org/one#11' } } );
+    $state{threads} = [ +{ %comment, updated_at => 't5' } ];
+    my $once = run_job('inbox_poll');
+    is( $once->{result}{queued}, [], 'a comment on a pull request that a waiting job will answer makes no second job' );
+    like( $once->{result}{ignored}, [qr/job\ $waiting\ will\ answer\ Test-Org\/one\#11/], 'and says which job will' );
+
+    my $worker  = $minion->worker->register;
+    my $running = $worker->dequeue( 0, { id => $waiting } );
+    $state{threads} = [ +{ %comment, updated_at => 't6' } ];
+    my $later = run_job('inbox_poll');
+    is( scalar @{ $later->{result}{queued} }, 1, 'but a job that already runs has read what it answers, so a later comment gets a job of its own' ) or diag Mojo::Util::dumper $later->{result};
+    $running->finish;
+    $worker->unregister;
+    $minion->reset( { all => 1 } );
 };
 
 subtest triage => sub {
@@ -694,6 +710,17 @@ subtest pending_comments => sub {
     is( App::Clod::Tasks::pending_comments( $config, \@comments ),                                                                         [ { id => 3, by => 'trusted', body => 'one more thing' } ],          'the comments of authorized users after the last comment of the bot are pending' );
     is( App::Clod::Tasks::pending_comments( $config, [ @comments, { id => 5, user => { login => $BOT }, body => 'done' } ] ),              [],                                                                  'and none once the bot has the last word' );
     is( App::Clod::Tasks::pending_comments( $config, [ { id => 6, user => { login => 'trusted' }, body => 'Rename it.', review => 1 } ] ), [ { id => 6, by => 'trusted', body => 'Rename it.', review => 1 } ], 'the body of a review is pending as well, and says so' );
+};
+
+subtest queued_address => sub {
+    my $origin = 'Test-Org/one#11';
+    is( App::Clod::Tasks::queued_address( $minion, $origin ), undef, 'no job, nothing queued' );
+    $minion->enqueue( triage => [ {} ], { notes => { origin => $origin, kind => 'review' } } );
+    $minion->enqueue( triage => [ {} ], { notes => { origin => 'Test-Org/one#12', kind => 'address_review' } } );
+    is( App::Clod::Tasks::queued_address( $minion, $origin ), undef, 'nor a triage for a review, or for another pull request' );
+    my $triage = $minion->enqueue( triage => [ {} ], { notes => { origin => $origin, kind => 'address_review' } } );
+    is( App::Clod::Tasks::queued_address( $minion, $origin ), $triage, 'a waiting triage that will answer the pull request is' );
+    $minion->reset( { all => 1 } );
 };
 
 subtest conversation => sub {
