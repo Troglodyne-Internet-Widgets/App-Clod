@@ -41,6 +41,7 @@ subtest validate => sub {
         my ( $answer, $error ) = @{ $bad{$case} };
         like( dies { App::Clod::Triage::validate( $answer, \@spokes ) }, $error, "rejects: $case" );
     }
+    is( dies { App::Clod::Triage::validate( { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] }, \@spokes ) }, "Other/repo is not a spoke; the spokes are: Test-Org/one Test-Org/two\n", 'a rejection is the whole message, with no file or line, so it can go back to the model as it is' );
 };
 
 subtest intro => sub {

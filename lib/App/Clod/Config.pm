@@ -5,7 +5,6 @@ package App::Clod::Config;
 use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
-use Carp  ();
 use Clone ();
 use JSON::Validator::Schema::Troglodyne();
 
@@ -84,13 +83,13 @@ schema or with another result.
 =cut
 
 sub validate ($raw) {
-    Carp::croak('The configuration must be a hash') if ref $raw ne 'HASH';
+    die "The configuration must be a hash\n" if ref $raw ne 'HASH';
     my $config    = Clone::clone($raw);
     my $validator = JSON::Validator::Schema::Troglodyne->new;
     $validator->coerce( { %{ $validator->coerce }, defaults => 1 } );
     my @errors = $validator->validate( $config, \%SCHEMA );
-    Carp::croak( join "\n", 'The configuration is not valid:', map { "  $_" } @errors ) if @errors;
-    Carp::croak('The configuration names no spokes and no spoke_orgs')                  if !@{ $config->{spokes} } && !@{ $config->{spoke_orgs} };
+    die join( "\n", 'The configuration is not valid:', map { "  $_" } @errors ) . "\n" if @errors;
+    die "The configuration names no spokes and no spoke_orgs\n"                        if !@{ $config->{spokes} } && !@{ $config->{spoke_orgs} };
 
     $config = Clone::clone($config);
     $config->{minion}    //= "sqlite:$config->{workspace}/minion.db";

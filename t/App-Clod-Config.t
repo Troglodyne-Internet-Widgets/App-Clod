@@ -64,7 +64,7 @@ subtest validate => sub {
         delete $without{$key};
         refused( \%without, "/$key: Missing property.", "a configuration without $key dies" );
     }
-    like( dies { App::Clod::Config::validate( { %minimal, spokes => [] } ) }, qr/names\ no\ spokes\ and\ no\ spoke_orgs/, 'no spokes and no organizations dies' );
+    is( dies { App::Clod::Config::validate( { %minimal, spokes => [] } ) }, "The configuration names no spokes and no spoke_orgs\n", 'no spokes and no organizations dies, with no file or line' );
     ok( lives { App::Clod::Config::validate( { %minimal, spokes => [], spoke_orgs => ['Test-Org'] } ) }, 'an organization alone lives' );
     refused( { %minimal, spoke_orgs => ['Test-Org/one'] },                             '/spoke_orgs/0: String does not match',         'an organization that is a repository dies' );
     refused( { %minimal, spokes     => ['nope'] },                                     '/spokes/0: String does not match',             'a spoke that is not Owner/Name dies' );

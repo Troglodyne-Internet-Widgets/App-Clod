@@ -7,7 +7,6 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
-use Carp       ();
 use IPC::Run   ();
 use List::Util ();
 use Mojo::JSON();
@@ -170,9 +169,9 @@ with C<claude ended without a result.>
 =cut
 
 sub run ( $self, %run ) {
-    my $dir = $run{dir} // Carp::croak('run needs a dir');
-    Carp::croak("$dir is not a directory") if !-d $dir;
-    my $prompt = $run{prompt} // Carp::croak('run needs a prompt');
+    my $dir = $run{dir} // die "run needs a dir\n";
+    die "$dir is not a directory\n" if !-d $dir;
+    my $prompt = $run{prompt} // die "run needs a prompt\n";
     my $cmd    = $self->command(%run);
 
     my %outcome = ( events => 0 );
@@ -193,7 +192,7 @@ sub run ( $self, %run ) {
     local %ENV = ( %ENV, %{ $self->env } );
     delete @ENV{@WITHHELD};
     my $ok = eval {
-        IPC::Run::run( $cmd, init => sub { chdir $dir or die "chdir $dir: $!" }, '<', \$prompt, '>', $read, '2>', \$stderr, IPC::Run::timeout( $self->timeout ) );
+        IPC::Run::run( $cmd, init => sub { chdir $dir or die "chdir $dir: $!\n" }, '<', \$prompt, '>', $read, '2>', \$stderr, IPC::Run::timeout( $self->timeout ) );
         1;
     };
 

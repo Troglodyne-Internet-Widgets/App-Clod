@@ -53,8 +53,8 @@ subtest run => sub {
     is( $cwd,    "$tmp",       'it runs in the directory it was given' );
     is( $prompt, 'the prompt', 'with the prompt on standard input' );
 
-    like( dies { $claude->run( dir => '/bogus/nowhere', prompt => 'x' ) }, qr/not\ a\ directory/, 'a missing directory dies before anything runs' );
-    like( dies { $claude->run( dir => "$tmp" ) },                          qr/needs\ a\ prompt/,  'so does a missing prompt' );
+    is( dies { $claude->run( dir => '/bogus/nowhere', prompt => 'x' ) }, "/bogus/nowhere is not a directory\n", 'a missing directory dies before anything runs' );
+    like( dies { $claude->run( dir => "$tmp" ) }, qr/needs\ a\ prompt/, 'so does a missing prompt' );
 };
 
 subtest 'run, and the environment of claude' => sub {

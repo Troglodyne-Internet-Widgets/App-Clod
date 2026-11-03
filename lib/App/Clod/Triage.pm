@@ -6,8 +6,6 @@ use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
 
-use Carp ();
-
 my @SCOPES = qw{single multi upstream clarify};
 my %SCOPES = map { $_ => 1 } @SCOPES;
 
@@ -47,34 +45,34 @@ to the model as it is.
 # Returns the answer with repos in order, or dies with what is wrong with it,
 # in words that can go back to the model as they are.
 sub validate ( $answer, $spokes ) {
-    Carp::croak('The answer is not a JSON object') if ref $answer ne 'HASH';
+    die "The answer is not a JSON object\n" if ref $answer ne 'HASH';
     my $scope = $answer->{scope} // q{};
-    Carp::croak("scope must be one of @SCOPES, not '$scope'") if !$SCOPES{$scope};
-    Carp::croak('reason is empty')                            if ( $answer->{reason} // q{} ) eq q{};
+    die "scope must be one of @SCOPES, not '$scope'\n" if !$SCOPES{$scope};
+    die "reason is empty\n"                            if ( $answer->{reason} // q{} ) eq q{};
 
     if ( $scope eq 'upstream' ) {
         my $up = $answer->{upstream};
-        Carp::croak('scope upstream needs upstream.project and upstream.explanation')
+        die "scope upstream needs upstream.project and upstream.explanation\n"
           if ref $up ne 'HASH' || !$up->{project} || !$up->{explanation};
         return { %$answer, repos => [] };
     }
     if ( $scope eq 'clarify' ) {
-        Carp::croak('scope clarify needs question.text') if ref $answer->{question} ne 'HASH' || ( $answer->{question}{text} // q{} ) eq q{};
+        die "scope clarify needs question.text\n" if ref $answer->{question} ne 'HASH' || ( $answer->{question}{text} // q{} ) eq q{};
         return { %$answer, repos => [] };
     }
 
     my %spoke = map { $_ => 1 } @$spokes;
     my $repos = $answer->{repos};
-    Carp::croak('repos must be a non-empty list') if ref $repos ne 'ARRAY' || !@$repos;
+    die "repos must be a non-empty list\n" if ref $repos ne 'ARRAY' || !@$repos;
     my %seen;
     for my $entry (@$repos) {
-        Carp::croak('each entry in repos needs repo, order and instructions')
+        die "each entry in repos needs repo, order and instructions\n"
           if ref $entry ne 'HASH' || !$entry->{repo} || !defined $entry->{order} || ( $entry->{instructions} // q{} ) eq q{};
-        Carp::croak("$entry->{repo} is not a spoke; the spokes are: @$spokes") if !$spoke{ $entry->{repo} };
-        Carp::croak("$entry->{repo} is listed twice")                          if $seen{ $entry->{repo} }++;
+        die "$entry->{repo} is not a spoke; the spokes are: @$spokes\n" if !$spoke{ $entry->{repo} };
+        die "$entry->{repo} is listed twice\n"                          if $seen{ $entry->{repo} }++;
     }
-    Carp::croak( 'scope single names ' . scalar(@$repos) . ' repos' ) if $scope eq 'single' && @$repos != 1;
-    Carp::croak('scope multi names one repo')                         if $scope eq 'multi'  && @$repos < 2;
+    die 'scope single names ' . scalar(@$repos) . " repos\n" if $scope eq 'single' && @$repos != 1;
+    die "scope multi names one repo\n"                       if $scope eq 'multi'  && @$repos < 2;
 
     return { %$answer, repos => [ sort { $a->{order} <=> $b->{order} } @$repos ] };
 }

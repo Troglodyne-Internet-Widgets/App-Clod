@@ -87,7 +87,7 @@ sub perform ( $job, $config, $code, @args ) {
     return 1          if eval { $code->( $job, $config, @args ); 1 };
     my $error = $@;
     die $error if !App::Clod::GitHub::is_unauthorized($error);
-    App::Clod::Outage::begin( $job, github => plain_error($error) );
+    App::Clod::Outage::begin( $job, github => $error );
     log_note( $job, 'GitHub refused the token; all work waits' );
     return hold($job);
 }
@@ -304,15 +304,6 @@ sub usage_of (@outcomes) {
     $usage{quota_reset} = $reset if $reset;
     return %usage;
 }
-
-=func plain_error
-
-C<($error)>.  The message without the " at FILE line N." that perl adds.
-
-=cut
-
-# An error for a person to read: without the file and line that perl added.
-sub plain_error ($error) { return $error =~ s/\ at\ \S+\ line\ \d+.*//sr }
 
 =func origin_of
 
@@ -586,7 +577,7 @@ sub triage ( $job, $config, $item ) {
         push @outcomes, $outcome;
         $answer = eval { App::Clod::Triage::validate( $outcome->{structured}, $spokes ) };
         last if $answer;
-        $error = $outcome->{ok} ? plain_error($@) : "the run failed: $outcome->{stderr}";
+        $error = $outcome->{ok} ? $@ : "the run failed: $outcome->{stderr}";
     }
     return $job->fail( { error => "triage gave no usable answer: $error", usage_of(@outcomes) } ) if !$answer;
     $job->note( scope => $answer->{scope}, triage => $answer );
@@ -1177,7 +1168,7 @@ sub harness_scan ( $job, $config ) {
             $repos{$repo} = { branch => $branch, checks => App::Clod::Harness::check( \%snapshot, $settings ) };
             1;
         };
-        $errors{$repo} = plain_error($@) if !$ok;
+        $errors{$repo} = $@ if !$ok;
     }
     my $marketplace = App::Clod::Harness::marketplace_check(
         $gh->file( $settings->{plugin_repo},      '.claude-plugin/plugin.json' ),
@@ -1200,7 +1191,7 @@ sub assigned_sweep ( $job, $config ) {
     my ( @issues, %errors );
     for my $repo ( @{ spokes( $job->minion, $config ) } ) {
         my $list = eval { $gh->assigned_issues( $repo, $config->{bot} ) };
-        if ( !$list ) { $errors{$repo} = plain_error($@); next }
+        if ( !$list ) { $errors{$repo} = $@; next }
         push @issues, map { { repo => $repo, number => $_->{number}, title => $_->{title}, url => $_->{html_url}, is_pr => $_->{pull_request} ? 1 : 0, updated_at => $_->{updated_at} } } @$list;
     }
     return $job->finish( { checked_at => time, issues => \@issues, errors => \%errors } );
@@ -1224,7 +1215,7 @@ sub spoke_sweep ( $job, $config ) {
     for my $org ( @{ $config->{spoke_orgs} } ) {
         my $list = eval { $gh->org_repos($org) };
         if ( !$list ) {
-            $errors{$org} = plain_error($@);
+            $errors{$org} = $@;
             $by_org{$org} = ( $before->{by_org} // {} )->{$org} // [];
             next;
         }

@@ -7,7 +7,6 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
-use Carp       ();
 use IPC::Run   ();
 use Mojo::File ();
 use Mojo::Util ();
@@ -38,7 +37,7 @@ The token that git sends to GitHub.  Default C<GH_TOKEN>.
 
 =cut
 
-has token => sub { $ENV{GH_TOKEN} // Carp::croak('GH_TOKEN is not set') };
+has token => sub { $ENV{GH_TOKEN} // die "GH_TOKEN is not set\n" };
 
 =attr author_email
 
@@ -80,8 +79,9 @@ sub git ( $self, @args ) {
     local $ENV{GIT_CONFIG_KEY_0}    = 'http.' . $self->github_web . '/.extraheader';
     local $ENV{GIT_CONFIG_VALUE_0}  = "AUTHORIZATION: basic $basic";
     my ( $out, $err ) = ( q{}, q{} );
-    IPC::Run::run( [ 'git', @args ], '>', \$out, '2>', \$err, IPC::Run::timeout(600) )
-      or Carp::croak("git @args: $err");
+    my $ok = IPC::Run::run( [ 'git', @args ], '>', \$out, '2>', \$err, IPC::Run::timeout(600) );
+    chomp $err;
+    die "git @args: $err\n" if !$ok;
     chomp $out;
     return $out;
 }
@@ -120,7 +120,7 @@ sub install_hooks ( $self, $tree ) {
         my $hook = Mojo::File->new( $tree, 'git-hooks', $name );
         next if !-e $hook;
         my $installed = $hook->copy_to( $hooks->child($name) );
-        chmod 0755, $installed or Carp::croak("chmod $installed: $!");
+        chmod 0755, $installed or die "chmod $installed: $!\n";
     }
     return;
 }

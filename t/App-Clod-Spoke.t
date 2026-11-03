@@ -83,7 +83,7 @@ subtest worktree => sub {
 };
 
 subtest git => sub {
-    like( dies { $spoke->git(qw{rev-parse --verify no-such-ref}) }, qr/git\ rev-parse\ --verify\ no-such-ref:\ fatal/, 'a failing git command dies with its error' );
+    like( dies { $spoke->git(qw{rev-parse --verify no-such-ref}) }, qr/\Agit\ rev-parse\ --verify\ no-such-ref:\ fatal:\ [^\n]+\n\z/, 'a failing git command dies with its error, on one line, with no file or line' );
     ok( !( grep { m{test-token} } git( '--git-dir', $spoke->mirror->to_string, 'config', '--list' ) ), 'the token is not in the clone\'s configuration' );
 };
 

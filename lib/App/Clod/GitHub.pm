@@ -7,7 +7,6 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
-use Carp ();
 use Mojo::UserAgent();
 use Mojo::URL  ();
 use Mojo::Util ();
@@ -26,7 +25,7 @@ The bot's token.  Default C<GH_TOKEN>.
 
 =cut
 
-has token => sub { $ENV{GH_TOKEN} // Carp::croak('GH_TOKEN is not set') };
+has token => sub { $ENV{GH_TOKEN} // die "GH_TOKEN is not set\n" };
 
 =attr timeout
 
@@ -75,12 +74,12 @@ sub request ( $self, $method, $path, %opt ) {
     my $res = $tx->res;
 
     # No code means that no answer came back: DNS, connect, TLS or the timeout.
-    Carp::croak( "GitHub $method $url: no response: " . ( $tx->error->{message} // 'unknown' ) ) if !$res->code;
+    die "GitHub $method $url: no response: " . ( $tx->error->{message} // 'unknown' ) . "\n" if !$res->code;
 
     my %ok = map { $_ => 1 } @{ $opt{ok} // [] };
     if ( $res->code >= 400 && !$ok{ $res->code } ) {
         my $message = eval { $res->json->{message} } // $res->body;
-        Carp::croak( sprintf 'GitHub %s %s: %d %s', $method, $url->path, $res->code, $message // q{} );
+        die sprintf( "GitHub %s %s: %d %s\n", $method, $url->path, $res->code, $message // q{} );
     }
     return $res;
 }
@@ -357,6 +356,7 @@ token comes from C<GH_TOKEN>.
 A request that got no answer dies with "no response" and the transport error.
 A request that got an answer of 400 or more dies with the status and GitHub's
 message, unless the caller named that status in C<ok>.  So the two failures
-read differently in a job's result.
+read differently in a job's result.  Each message ends in a newline, so perl
+adds no file and line to it, and it can be shown as it is.
 
 =cut
