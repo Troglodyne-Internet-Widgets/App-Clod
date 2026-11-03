@@ -620,7 +620,7 @@ sub triage ( $job, $config, $item ) {
             tools           => $config->{claude}{read_tools},
             permission_mode => 'default',
             add_dirs        => [ map { "$_" } values %$ref ],
-            schema          => \%App::Clod::Triage::SCHEMA,
+            schema          => App::Clod::Triage::schema($spokes),
         ) // return;
         push @outcomes, $outcome;
         return $job->fail( { error => "the triage run failed: $outcome->{stderr}", usage_of(@outcomes) } ) if !$outcome->{ok};

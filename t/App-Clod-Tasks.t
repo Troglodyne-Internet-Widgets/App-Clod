@@ -257,6 +257,8 @@ subtest triage => sub {
     $fake{FAKE_CLAUDE_RECORD} = "$tmp/triage-record";
     run_job( triage => \%item );
     is( record_of("$tmp/triage-record")->{flags}{'--append-system-prompt'}, ['Test with the provisioner.'], 'the system prompt of triage from the configuration reaches the run' );
+    my $sent = Mojo::JSON::decode_json( record_of("$tmp/triage-record")->{flags}{'--json-schema'}[0] );
+    is( $sent->{allOf}[0]{then}{properties}{repos}{items}{properties}{repo}{enum}, App::Clod::Tasks::spokes( $minion, $app->clod_config ), 'and claude is told which repositories are spokes, in the schema' );
     delete $fake{FAKE_CLAUDE_RECORD};
     delete $system->{triage};
     ok( -e $tmp->child(qw{workspace hub CLAUDE.md}), 'the hub workspace has its CLAUDE.md' );
@@ -266,7 +268,7 @@ subtest triage => sub {
     answer( { scope => 'single', reason => 'r', repos => [ { repo => 'Not/aspoke', order => 1, instructions => 'x' } ] } );
     my $bad = run_job( triage => \%item );
     is( $bad->{state}, 'failed', 'an answer that names a repo that is not a spoke fails, after its retry' );
-    like( $bad->{result}{error}, qr/not\ a\ spoke/, 'and says why' );
+    like( $bad->{result}{error}, qr{/repos/0/repo:\ \S+\ Not\ in\ enum\ list:\ Test-Org/one}, 'and says why' );
     is( $bad->{result}{cost}, 1, 'and counts the cost of both tries' );
 
     my $broken = $tmp->child('triage-broken.jsonl');
