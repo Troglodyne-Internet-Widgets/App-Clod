@@ -238,7 +238,8 @@ sub comment ( $self, $repo, $number, $body ) { return $self->post( "/repos/$repo
 
 =method reply_review_comment
 
-C<($repo, $number, $comment_id, $body)>.  Replies in the thread of a line comment.
+C<($repo, $number, $comment_id, $body)>.  Replies in the thread of a line
+comment.
 
 =cut
 
@@ -264,7 +265,8 @@ sub update_pull ( $self, $repo, $number, $fields ) { return $self->patch( "/repo
 
 =method review
 
-C<($repo, $number, \%review)>, where C<%review> has C<event>, C<body>, C<commit_id> and optionally C<comments>.
+C<($repo, $number, \%review)>, where C<%review> has C<event>, C<body>,
+C<commit_id> and optionally C<comments>.
 
 =cut
 

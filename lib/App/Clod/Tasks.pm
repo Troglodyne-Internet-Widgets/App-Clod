@@ -110,7 +110,8 @@ sub hold ($job) {
 
 =func schedule
 
-C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>, C<harness_scan>, C<assigned_sweep> and C<spoke_sweep>.
+C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>,
+C<harness_scan>, C<assigned_sweep> and C<spoke_sweep>.
 
 =cut
 
@@ -180,7 +181,8 @@ sub prompt ( $name, %vars ) {
 
 =func last_result
 
-C<($minion, $task)>.  The result of the newest finished job of that task, or undef.
+C<($minion, $task)>.  The result of the newest finished job of that task, or
+undef.
 
 =cut
 
@@ -239,11 +241,15 @@ sub system_text ( $config, $task ) {
 
 =func run_claude
 
-C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, with the L</system_text> of the job's task as C<system>, and writes its progress to the job notes.  If the quota is paused or runs out, or Claude refuses the token, it retries the job and returns undef, so the caller returns at once.  A refused token starts a Claude outage, see L<App::Clod::Outage>.
+C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, with
+the L</system_text> of the job's task as C<system>, and writes its progress to
+the job notes.  Returns the outcome of L<App::Clod::Claude/run>, a hash
+reference.  If the quota is paused or runs out, or Claude refuses the token, it
+retries the job and returns undef instead, so the caller returns at once.  A
+refused token starts a Claude outage, see L<App::Clod::Outage>.
 
 =cut
 
-# Runs claude for a job.  Undef means that the job will retry.
 sub run_claude ( $job, $config, %run ) {
     my $minion = $job->minion;
     if ( App::Clod::Budget::paused($minion) ) {
@@ -278,7 +284,8 @@ sub run_claude ( $job, $config, %run ) {
 
 =func usage_of
 
-C<(@outcomes)>.  The C<cost>, the last C<rate_limit>, and any C<quota_reset> of the runs, as a list for a job result.
+C<(@outcomes)>.  The C<cost>, the last C<rate_limit>, and any C<quota_reset> of
+the runs, as a list for a job result.
 
 =cut
 
@@ -393,7 +400,8 @@ sub inbox_poll ( $job, $config ) {
 
 =func inbox_thread
 
-C<($job, $config, $gh, $thread)>.  Turns one notification into a job.  Returns the job id, or the reason it made none.
+C<($job, $config, $gh, $thread)>.  Turns one notification into a job.  Returns
+the job id, or the reason it made none.
 
 =cut
 
@@ -468,7 +476,8 @@ sub requester ( $config, $gh, $repo, $number, $reason, $subject ) {
 
 =func context
 
-C<($config, $gh, $item)>.  The issue or pull request and its last twenty comments, as Markdown for a prompt.
+C<($config, $gh, $item)>.  The issue or pull request and its last twenty
+comments, as Markdown for a prompt.
 
 =cut
 
@@ -492,7 +501,9 @@ sub default_branch ( $gh, $repo ) { return $gh->repo($repo)->{default_branch} }
 
 =func prepare_hub
 
-C<($config, $gh, \@spokes)>.  Refreshes the reference worktree of every spoke and writes the hub CLAUDE.md.  Returns the hub directory and a hash of repository to reference worktree.
+C<($config, $gh, \@spokes)>.  Refreshes the reference worktree of every spoke
+and writes the hub CLAUDE.md.  Returns the hub directory and a hash of
+repository to reference worktree.
 
 =cut
 
@@ -534,9 +545,9 @@ sub spoke_testing ($config) {
 Refreshes a reference worktree of every spoke, writes the hub CLAUDE.md, and
 asks the triage question with read-only tools.  An answer that does not pass
 L<App::Clod::Triage/validate> gets one more try, with the error.  Then it
-enqueues the work: C<kickback> for upstream or clarify, one C<spoke_review> for a review,
-and otherwise a chain of C<spoke_fix> or C<spoke_address> jobs, each the parent
-of the next, and a C<report> after them all.
+enqueues the work: C<kickback> for upstream or clarify, one C<spoke_review> for
+a review, and otherwise a chain of C<spoke_fix> or C<spoke_address> jobs, each
+the parent of the next, and a C<report> after them all.
 
 =cut
 
@@ -581,7 +592,8 @@ sub triage ( $job, $config, $item ) {
 
 =func plan_children
 
-C<($job, $item, $answer)>.  Enqueues the jobs that the triage answer calls for, and returns their ids.
+C<($job, $item, $answer)>.  Enqueues the jobs that the triage answer calls for,
+and returns their ids.
 
 =cut
 
@@ -703,8 +715,8 @@ work: it is detached, so it holds no branch, it writes no shared configuration,
 and nothing is pushed from it.  The one write that it shares with other jobs is
 the fetch into the bare clone, which triage already makes without the lock.
 Two fetches at once can meet on the lock file of a ref, and then one of them
-fails, with the job.  Taking the lock would hold every spoke run back while any job works in a tool
-spoke, for up to four hours.
+fails, with the job.  Taking the lock would hold every spoke run back while any
+job works in a tool spoke, for up to four hours.
 
 =cut
 
@@ -742,7 +754,8 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
 
 =func slug
 
-C<($text)>.  A branch-name form of a title: lowercase, dashes, at most forty characters.
+C<($text)>.  A branch-name form of a title: lowercase, dashes, at most forty
+characters.
 
 =cut
 
@@ -873,7 +886,8 @@ sub spoke_review ( $job, $config, $args ) {
 
 =func pending_threads
 
-C<($config, \@comments)>.  The review threads whose last message is from an authorized user, each with C<id>, C<path>, C<line> and C<messages>.
+C<($config, \@comments)>.  The review threads whose last message is from an
+authorized user, each with C<id>, C<path>, C<line> and C<messages>.
 
 =cut
 
@@ -1095,7 +1109,8 @@ sub hand_back ( $job, $config, $gh, $item, $path, @paragraphs ) {
 
 =func how_to_resume
 
-C<($config)>.  The paragraph that tells a person how to give the work back to the bot.
+C<($config)>.  The paragraph that tells a person how to give the work back to
+the bot.
 
 =cut
 

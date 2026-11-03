@@ -10,7 +10,8 @@ our @LOCATIONS = qw{.github/CODEOWNERS CODEOWNERS docs/CODEOWNERS};
 
 =func parse
 
-C<($text)>.  The rules of a CODEOWNERS file, in file order, each with C<pattern>, C<owners> and C<regex>.
+C<($text)>.  The rules of a CODEOWNERS file, in file order, each with
+C<pattern>, C<owners> and C<regex>.
 
 =cut
 
@@ -73,10 +74,10 @@ sub pattern_regex ($pattern) {
 
 =head1 DESCRIPTION
 
-Reads the CODEOWNERS syntax that GitHub documents: one pattern and its owners on
-each line, C<#> comments, C<\#> at the start of a pattern that starts with
+Reads the CODEOWNERS syntax that GitHub documents: one pattern and its owners
+on each line, C<#> comments, C<\#> at the start of a pattern that starts with
 C<#>, gitignore-style patterns, and the last matching rule wins.  Owners lose
-their leading C<@>.  A team owner keeps its C<org/> prefix, so a caller can tell
-a team from a user.
+their leading C<@>.  A team owner keeps its C<org/> prefix, so a caller can
+tell a team from a user.
 
 =cut

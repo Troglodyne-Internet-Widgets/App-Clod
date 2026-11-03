@@ -142,9 +142,9 @@ The directory for the Minion database, the clones and the worktrees.  Required.
 =item auth
 
 Either C<< { trusted_header => 'X-Remote-User' } >>, for a proxy that does the
-authentication, or C<< { user => ..., password_sha256 => ... } >> for HTTP basic
-authentication.  C<password_sha256> is the SHA-256 of the password in lowercase
-hex, as C<Digest::SHA::sha256_hex> gives it.  Required.
+authentication, or C<< { user => ..., password_sha256 => ...  } >> for HTTP
+basic authentication.  C<password_sha256> is the SHA-256 of the password in
+lowercase hex, as C<Digest::SHA::sha256_hex> gives it.  Required.
 
 =item spokes
 

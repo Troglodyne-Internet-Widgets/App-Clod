@@ -88,7 +88,8 @@ sub git ( $self, @args ) {
 
 =method fetch
 
-Clones the spoke if there is no bare clone yet, then fetches.  Returns the bare clone.
+Clones the spoke if there is no bare clone yet, then fetches.  Returns the bare
+clone.
 
 =cut
 
@@ -107,7 +108,8 @@ sub fetch ($self) {
 
 =method install_hooks
 
-C<($tree)>.  Copies F<git-hooks/pre-commit> and F<git-hooks/post-commit> of that checkout into the bare clone, where every worktree finds them.
+C<($tree)>.  Copies F<git-hooks/pre-commit> and F<git-hooks/post-commit> of
+that checkout into the bare clone, where every worktree finds them.
 
 =cut
 
@@ -125,7 +127,8 @@ sub install_hooks ( $self, $tree ) {
 
 =method refresh_reference
 
-C<($branch)>.  Fetches, then resets the reference worktree to C<origin/$branch>.  Returns it.
+C<($branch)>.  Fetches, then resets the reference worktree to
+C<origin/$branch>.  Returns it.
 
 =cut
 
@@ -181,7 +184,8 @@ sub worktree ( $self, $dir, %opt ) {
 
 =method commits_since
 
-C<($dir, $base)>.  The number of commits in the worktree that C<$base> does not have.
+C<($dir, $base)>.  The number of commits in the worktree that C<$base> does not
+have.
 
 =cut
 
@@ -191,7 +195,8 @@ sub commits_since ( $self, $dir, $base ) {
 
 =method push_branch
 
-C<($dir, $branch)>.  Pushes the worktree HEAD to C<$branch> with C<--force-with-lease>, and returns the SHA it pushed.
+C<($dir, $branch)>.  Pushes the worktree HEAD to C<$branch> with
+C<--force-with-lease>, and returns the SHA it pushed.
 
 =cut
 

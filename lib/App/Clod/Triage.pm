@@ -38,7 +38,9 @@ our %SCHEMA = (
 
 =func validate
 
-C<($answer, \@spokes)>.  Returns the answer with C<repos> sorted by C<order>, and empty for C<upstream> and C<clarify>.  Dies with a message that can go back to the model as it is.
+C<($answer, \@spokes)>.  Returns the answer with C<repos> sorted by C<order>,
+and empty for C<upstream> and C<clarify>.  Dies with a message that can go back
+to the model as it is.
 
 =cut
 
@@ -125,8 +127,9 @@ sub intro ($claude_md) {
 Triage runs before every fix, review and review answer.  It asks one question:
 is this change best made in one repository, in several, or upstream in a
 project that we do not own?  A fourth answer, C<clarify>, says that the request
-cannot be planned without a person's answer to C<question.text>.  The answer must follow C<%SCHEMA>, and
-C<validate> checks the things that a schema cannot: that each repository is a
-spoke, that none is named twice, and that the count fits the scope.
+cannot be planned without a person's answer to C<question.text>.  The answer
+must follow C<%SCHEMA>, and C<validate> checks the things that a schema cannot:
+that each repository is a spoke, that none is named twice, and that the count
+fits the scope.
 
 =cut

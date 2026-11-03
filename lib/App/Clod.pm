@@ -103,19 +103,19 @@ that repository's CLAUDE.md, hooks and critic profile shape the work.  Many
 fixes cross repositories.  App::Clod is a GitHub bot that plans across them and
 then works inside each one.
 
-It reads the bot user's notification inbox.  It acts on an item only when a user
-in C<authorized_users> caused it.  An assignment to an issue becomes a fix, a
-review request becomes a review, activity on the bot's own pull request becomes
-work on the review comments, and a mention becomes a reply.
+It reads the bot user's notification inbox.  It acts on an item only when a
+user in C<authorized_users> caused it.  An assignment to an issue becomes a
+fix, a review request becomes a review, activity on the bot's own pull request
+becomes work on the review comments, and a mention becomes a reply.
 
-Each fix, review and review answer starts with triage: one C<claude -p> run that
-can read every spoke and decides whether one repository, several, or an
+Each fix, review and review answer starts with triage: one C<claude -p> run
+that can read every spoke and decides whether one repository, several, or an
 upstream project that we do not own is the right place for the change.  Then
 one C<claude -p> run per repository does the work, inside a git worktree of
 that repository.  For a change across several repositories, Minion parents run
 them in order, and each run gets the summaries of the runs before it.  The bot
-pushes the branches, opens the pull requests and links them to each other and to
-the issue.
+pushes the branches, opens the pull requests and links them to each other and
+to the issue.
 
 How a spoke run tests a change is a matter of the installation, so
 F<clod.conf> says it: C<spoke_prompt> is added to the system prompt of every
@@ -173,9 +173,10 @@ GitHub and C<CLAUDE_CODE_OAUTH_TOKEN> for Claude Code.
 If GitHub or Claude refuses its token with a 401, the bot is in an outage.  The
 jobs do not fail one after another.  A GitHub outage holds all work, and a
 Claude outage holds the work that runs C<claude>.  Each held job waits ten
-minutes, and then the next job tries the token again.  The Overview tab names the
-outage first.  After you replace the token in the environment and restart both
-processes, the work starts again within ten minutes.  See L<App::Clod::Outage>.
+minutes, and then the next job tries the token again.  The Overview tab names
+the outage first.  After you replace the token in the environment and restart
+both processes, the work starts again within ten minutes.  See
+L<App::Clod::Outage>.
 
 =head1 WHAT THE HOST NEEDS
 
