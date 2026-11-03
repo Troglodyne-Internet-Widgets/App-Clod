@@ -12,6 +12,15 @@ my @spokes = qw{Test-Org/one Test-Org/two};
 
 sub entry ( $repo, $order ) { return { repo => $repo, order => $order, instructions => "work in $repo" } }
 
+subtest schema => sub {
+    my $schema = App::Clod::Triage::schema( \@spokes );
+    my @enums  = map { $_->{then}{properties}{repos}{items}{properties}{repo}{enum} // () } @{ $schema->{allOf} };
+    is( \@enums, [ \@spokes, \@spokes ], 'under single and multi, a repository must be a spoke' );
+    push @{ $enums[0] }, 'Other/repo';
+    is( App::Clod::Triage::schema( \@spokes )->{allOf}[0]{then}{properties}{repos}{items}{properties}{repo}{enum}, \@spokes,                        'and a change to one schema reaches neither the spokes nor the next schema' );
+    is( \@spokes,                                                                                                  [qw{Test-Org/one Test-Org/two}], 'nor the list of spokes it was made from' );
+};
+
 subtest validate => sub {
     my $multi = App::Clod::Triage::validate( { scope => 'multi', reason => 'both', repos => [ entry( 'Test-Org/two', 2 ), entry( 'Test-Org/one', 1 ) ] }, \@spokes );
     is( [ map { $_->{repo} } @{ $multi->{repos} } ], [qw{Test-Org/one Test-Org/two}], 'repos come back in order' );
@@ -24,23 +33,24 @@ subtest validate => sub {
     is( $ask->{question}{text}, 'Which one?', 'and keeps its question' );
 
     my %bad = (
-        'not a hash'           => [ [],                                                                                                        qr/not\ a\ JSON\ object/ ],
-        'unknown scope'        => [ { scope => 'some', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                               qr/scope\ must\ be/ ],
-        'empty reason'         => [ { scope => 'single', reason => q{}, repos => [ entry( 'Test-Org/one', 1 ) ] },                             qr/reason\ is\ empty/ ],
-        'no repos'             => [ { scope => 'single', reason => 'r', repos => [] },                                                         qr/non-empty\ list/ ],
-        'not a spoke'          => [ { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] },                               qr/not\ a\ spoke/ ],
+        'not a hash'           => [ [],                                                                                                        qr{\A.*\n\ \ /:\ Expected\ object}s ],
+        'unknown scope'        => [ { scope => 'some', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                               qr{/scope:\ Not\ in\ enum\ list}s ],
+        'empty reason'         => [ { scope => 'single', reason => q{}, repos => [ entry( 'Test-Org/one', 1 ) ] },                             qr{/reason:\ String\ is\ too\ short}s ],
+        'no repos'             => [ { scope => 'single', reason => 'r', repos => [] },                                                         qr{/repos:\ \S+\ Not\ enough\ items:\ 0/1}s ],
+        'not a spoke'          => [ { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] },                               qr{/repos/0/repo:\ \S+\ Not\ in\ enum\ list}s ],
         'twice'                => [ { scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/one', 2 ) ] },  qr/listed\ twice/ ],
-        'single with two'      => [ { scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/two', 2 ) ] }, qr/single\ names\ 2/ ],
-        'multi with one'       => [ { scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                              qr/multi\ names\ one/ ],
-        'no instructions'      => [ { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1 } ] },                 qr/needs\ repo,\ order\ and\ instructions/ ],
-        'clarify, no question' => [ { scope => 'clarify', reason => 'r', repos => [] },                                                        qr/needs\ question\.text/ ],
-        'clarify, empty text'  => [ { scope => 'clarify', reason => 'r', repos => [], question => { text => q{} } },                           qr/needs\ question\.text/ ],
-        'upstream, no detail'  => [ { scope => 'upstream', reason => 'r', repos => [] },                                                       qr/needs\ upstream.project/ ],
+        'single with two'      => [ { scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/two', 2 ) ] }, qr{/repos:\ \S+\ Too\ many\ items:\ 2/1}s ],
+        'multi with one'       => [ { scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                              qr{/repos:\ \S+\ Not\ enough\ items:\ 1/2}s ],
+        'no instructions'      => [ { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1 } ] },                 qr{/repos/0/instructions:\ \S+\ Missing\ property}s ],
+        'clarify, no question' => [ { scope => 'clarify', reason => 'r', repos => [] },                                                        qr{/question:\ \S+\ Missing\ property}s ],
+        'clarify, empty text'  => [ { scope => 'clarify', reason => 'r', repos => [], question => { text => q{} } },                           qr{/question/text:\ String\ is\ too\ short}s ],
+        'upstream, no detail'  => [ { scope => 'upstream', reason => 'r', repos => [] },                                                       qr{/upstream:\ \S+\ Missing\ property}s ],
     );
     for my $case ( sort keys %bad ) {
         my ( $answer, $error ) = @{ $bad{$case} };
         like( dies { App::Clod::Triage::validate( $answer, \@spokes ) }, $error, "rejects: $case" );
     }
+    is( dies { App::Clod::Triage::validate( { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] }, \@spokes ) }, "The answer does not fit the schema:\n  /repos/0/repo: /allOf/0 Not in enum list: Test-Org/one, Test-Org/two.\n", 'a rejection is the whole message, with no file or line, so it can go back to the model as it is' );
 };
 
 subtest intro => sub {

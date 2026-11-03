@@ -53,8 +53,77 @@ subtest run => sub {
     is( $cwd,    "$tmp",       'it runs in the directory it was given' );
     is( $prompt, 'the prompt', 'with the prompt on standard input' );
 
-    like( dies { $claude->run( dir => '/bogus/nowhere', prompt => 'x' ) }, qr/not\ a\ directory/, 'a missing directory dies before anything runs' );
-    like( dies { $claude->run( dir => "$tmp" ) },                          qr/needs\ a\ prompt/,  'so does a missing prompt' );
+    is( dies { $claude->run( dir => '/bogus/nowhere', prompt => 'x' ) }, "/bogus/nowhere is not a directory\n", 'a missing directory dies before anything runs' );
+    like( dies { $claude->run( dir => "$tmp" ) }, qr/needs\ a\ prompt/, 'so does a missing prompt' );
+};
+
+subtest 'run, and the environment of claude' => sub {
+    local $ENV{GH_TOKEN}                = 'test-github-token';
+    local $ENV{GITHUB_TOKEN}            = 'test-github-token';
+    local $ENV{CLAUDE_CODE_OAUTH_TOKEN} = 'test-claude-token';
+    my $names  = "$tmp/env-names";
+    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_ENV => $names, FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string, TEST_EXTRA => 1 } );
+    $claude->run( dir => "$tmp", prompt => 'x' );
+    my %seen = map { $_ => 1 } split /\n/, Mojo::File->new($names)->slurp;
+    ok( !$seen{GH_TOKEN} && !$seen{GITHUB_TOKEN}, 'claude, and every command it runs, gets no GitHub token' );
+    ok( $seen{CLAUDE_CODE_OAUTH_TOKEN},           'but keeps its own token' );
+    ok( $seen{TEST_EXTRA},                        'and the extra environment' );
+    is( $ENV{GH_TOKEN}, 'test-github-token', 'and the worker keeps the GitHub token for itself' );
+};
+
+subtest 'run, as another account' => sub {
+    local $ENV{PATH}                    = join q{:}, $here->child( 'bin', 'sudo-dir' ), $here->child('bin'), $ENV{PATH};
+    local $ENV{GH_TOKEN}                = 'test-github-token';
+    local $ENV{CLAUDE_CODE_OAUTH_TOKEN} = 'test-claude-token';
+    local $ENV{FAKE_SUDO_RECORD}        = "$tmp/sudo-account";
+    my $names  = "$tmp/env-as-agent";
+    my $claude = App::Clod::Claude->new(
+        bin    => 'fake-claude',
+        run_as => 'test-agent',
+        env    => { FAKE_CLAUDE_ENV => $names, FAKE_CLAUDE_RECORD => $record, FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string, GH_TOKEN => 'test-github-token' },
+    );
+    my $outcome = $claude->run( dir => "$tmp", prompt => 'the prompt' );
+    is( $outcome->{ok},                              1,            'a run through sudo finds claude on the PATH of the worker, which secure_path replaces' ) or diag $outcome->{stderr};
+    is( Mojo::File->new("$tmp/sudo-account")->slurp, 'test-agent', 'and runs as the account of run_as' );
+    my %seen = map { $_ => 1 } split /\n/, Mojo::File->new($names)->slurp;
+    ok( $seen{CLAUDE_CODE_OAUTH_TOKEN}, 'claude gets its token through the reset environment of sudo' );
+    ok( $seen{FAKE_CLAUDE_STREAM},      'and the extra environment' );
+    ok( !$seen{GH_TOKEN},               'but not the GitHub token, even when the extra environment names it' );
+    my ( $cwd, $prompt ) = recorded();
+    is( $cwd,    "$tmp",       'in the directory that it was given' );
+    is( $prompt, 'the prompt', 'with the prompt on standard input' );
+};
+
+subtest 'run, with no newline after the last event' => sub {
+    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-unterminated.jsonl' )->to_string } );
+    my @seen;
+    my $outcome = $claude->run( dir => "$tmp", prompt => 'x', on_event => sub ($e) { push @seen, $e->{type} } );
+    is( \@seen,                 [qw{system assistant rate_limit_event result}], 'the last event still counts' );
+    is( $outcome->{structured}, { answer => 4 },                                'with its answer' );
+    is( $outcome->{cost},       0.25,                                           'and its cost' );
+};
+
+subtest 'run, with no result' => sub {
+    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-no-result.jsonl' )->to_string } );
+    my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );
+    is( $outcome->{exit}, 0, 'a run that exits zero' );
+    is( $outcome->{ok},   0, 'but sends no result is not ok' );
+    like( $outcome->{stderr}, qr/\Aclaude\ ended\ without\ a\ result\./, 'and says why' );
+};
+
+subtest absorb => sub {
+    my %outcome = ( events => 1 );
+    App::Clod::Claude::absorb( \%outcome, $_ ) for { type => 'assistant', message => {} }
+    , { type => 'test-type-from-a-later-claude' }, {}, { type => 'system', subtype => 'test-subtype', session_id => 'test-session' };
+    is( \%outcome, { events => 1 }, 'an event that it does not read leaves the outcome as it is' );
+    App::Clod::Claude::absorb( \%outcome, { type => 'system', subtype => 'init', session_id => 'test-session' } );
+    is( $outcome{session_id}, 'test-session', 'and the init event gives the session' );
+};
+
+subtest ends => sub {
+    is( App::Clod::Claude::ends( 'abcdefghij',  5 ), 'abcdefghij',                            'text of twice the length is kept whole' );
+    is( App::Clod::Claude::ends( 'abcdefghijk', 5 ), "abcde\n[1 characters left out]\nghijk", 'one character more keeps the first and the last five' );
+    is( App::Clod::Claude::ends( q{},           5 ), q{},                                     'and nothing is nothing' );
 };
 
 subtest 'run, at the limit' => sub {

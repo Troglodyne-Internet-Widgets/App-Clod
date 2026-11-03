@@ -5,6 +5,7 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
+use Clone            ();
 use File::Temp       ();
 use IPC::Run         ();
 use Mojo::File       ();
@@ -70,6 +71,7 @@ $r->post('/repos/:o/:n/issues/:num/comments')->to( cb => $record->('comment') );
 $r->post('/repos/:o/:n/issues/:num/assignees')->to( cb => $record->('assign') );
 $r->delete('/repos/:o/:n/issues/:num/assignees')->to( cb => $record->('unassign') );
 $r->get('/repos/:o/:n/pulls/:num/comments')->to( cb => sub ($c) { $c->render( json => $state{review_comments} // [] ) } );
+$r->get('/repos/:o/:n/pulls/:num/reviews')->to( cb => sub ($c) { $c->render( json => $state{reviews} // [] ) } );
 $r->post('/repos/:o/:n/pulls/:num/comments/:id/replies')->to( cb => $record->('reply') );
 $r->post('/repos/:o/:n/pulls/:num/reviews')->to(
     cb => sub ($c) {
@@ -189,9 +191,9 @@ subtest inbox_poll => sub {
     $state{events} = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'trusted' } } ];
 
     my $info = run_job('inbox_poll');
-    is( $info->{state},                        'finished', 'the poll finishes' ) or diag Mojo::Util::dumper $info->{result};
-    is( scalar @{ $info->{result}{enqueued} }, 1,          'one thread becomes work' );
-    my $triage = $minion->job( $info->{result}{enqueued}[0] )->info;
+    is( $info->{state},                      'finished', 'the poll finishes' ) or diag Mojo::Util::dumper $info->{result};
+    is( scalar @{ $info->{result}{queued} }, 1,          'one thread becomes work' );
+    my $triage = $minion->job( $info->{result}{queued}[0] )->info;
     is( $triage->{task}, 'triage', 'an assignment goes to triage' );
     like( $triage->{args}[0], { repo => 'Test-Org/one', number => 7, kind => 'fix', requester => 'trusted' }, 'with the item' );
     is( $triage->{notes}{origin},      'Test-Org/one#7', 'noted with its origin' );
@@ -200,7 +202,7 @@ subtest inbox_poll => sub {
     like( $info->{result}{ignored}, [ qr/Elsewhere\/repo\ is\ not\ a\ spoke/, qr/nothing\ to\ do\ for\ reason\ 'subscribed'/ ], 'and says why it left the rest' );
 
     my $again = run_job('inbox_poll');
-    is( $again->{result}{enqueued}, [], 'a thread seen before at the same update is not enqueued twice' );
+    is( $again->{result}{queued}, [], 'a thread seen before at the same update is not queued twice' );
 
     $state{threads} = [ +{ %thread, id => 4, updated_at => 't2', repository => { full_name => 'Test-Org/one' } } ];
     $state{events}  = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'stranger' } } ];
@@ -210,15 +212,31 @@ subtest inbox_poll => sub {
     $state{threads}   = [ { id => 5, reason => 'mention', updated_at => 't3', repository => { full_name => 'Test-Org/one' }, subject => { type => 'Issue', url => "$api/repos/Test-Org/one/issues/8", latest_comment_url => "$api/comment" } } ];
     $state{commenter} = 'trusted';
     my $mention = run_job('inbox_poll');
-    is( $minion->job( $mention->{result}{enqueued}[0] )->info->{task}, 'reply', 'a mention goes straight to a reply' );
+    is( $minion->job( $mention->{result}{queued}[0] )->info->{task}, 'reply', 'a mention goes straight to a reply' );
 
     @calls          = ();
     $state{closed}  = { 9 => 1 };
     $state{threads} = [ { id => 6, reason => 'author', updated_at => 't4', repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/9", latest_comment_url => "$api/comment" } } ];
     my $closed = run_job('inbox_poll');
-    is( $closed->{result}{enqueued}, [], 'a notification on a closed pull request makes no work' );
+    is( $closed->{result}{queued}, [], 'a notification on a closed pull request makes no work' );
     like( $closed->{result}{ignored}, [qr/Test-Org\/one\#9\ is\ closed/], 'and says so' );
     is( [ map { $_->[0] } @calls ], ['read'], 'it is marked read, without a reaction' );
+    $minion->reset( { all => 1 } );
+
+    my %comment = ( id => 7, reason => 'author', repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/11", latest_comment_url => "$api/comment" } );
+    my $waiting = $minion->enqueue( spoke_address => [ {} ], { notes => { origin => 'Test-Org/one#11' } } );
+    $state{threads} = [ +{ %comment, updated_at => 't5' } ];
+    my $once = run_job('inbox_poll');
+    is( $once->{result}{queued}, [], 'a comment on a pull request that a waiting job will answer makes no second job' );
+    like( $once->{result}{ignored}, [qr/job\ $waiting\ will\ answer\ Test-Org\/one\#11/], 'and says which job will' );
+
+    my $worker  = $minion->worker->register;
+    my $running = $worker->dequeue( 0, { id => $waiting } );
+    $state{threads} = [ +{ %comment, updated_at => 't6' } ];
+    my $later = run_job('inbox_poll');
+    is( scalar @{ $later->{result}{queued} }, 1, 'but a job that already runs has read what it answers, so a later comment gets a job of its own' ) or diag Mojo::Util::dumper $later->{result};
+    $running->finish;
+    $worker->unregister;
     $minion->reset( { all => 1 } );
 };
 
@@ -239,6 +257,8 @@ subtest triage => sub {
     $fake{FAKE_CLAUDE_RECORD} = "$tmp/triage-record";
     run_job( triage => \%item );
     is( record_of("$tmp/triage-record")->{flags}{'--append-system-prompt'}, ['Test with the provisioner.'], 'the system prompt of triage from the configuration reaches the run' );
+    my $sent = Mojo::JSON::decode_json( record_of("$tmp/triage-record")->{flags}{'--json-schema'}[0] );
+    is( $sent->{allOf}[0]{then}{properties}{repos}{items}{properties}{repo}{enum}, App::Clod::Tasks::spokes( $minion, $app->clod_config ), 'and claude is told which repositories are spokes, in the schema' );
     delete $fake{FAKE_CLAUDE_RECORD};
     delete $system->{triage};
     ok( -e $tmp->child(qw{workspace hub CLAUDE.md}), 'the hub workspace has its CLAUDE.md' );
@@ -248,8 +268,16 @@ subtest triage => sub {
     answer( { scope => 'single', reason => 'r', repos => [ { repo => 'Not/aspoke', order => 1, instructions => 'x' } ] } );
     my $bad = run_job( triage => \%item );
     is( $bad->{state}, 'failed', 'an answer that names a repo that is not a spoke fails, after its retry' );
-    like( $bad->{result}{error}, qr/not\ a\ spoke/, 'and says why' );
+    like( $bad->{result}{error}, qr{/repos/0/repo:\ \S+\ Not\ in\ enum\ list:\ Test-Org/one}, 'and says why' );
     is( $bad->{result}{cost}, 1, 'and counts the cost of both tries' );
+
+    my $broken = $tmp->child('triage-broken.jsonl');
+    $broken->spew( '{"type":"result","is_error":true,"result":"something broke","total_cost_usd":0.5}' . "\n" );
+    %fake = ( FAKE_CLAUDE_STREAM => "$broken", FAKE_CLAUDE_EXIT => 1 );
+    my $failed = run_job( triage => \%item );
+    is( $failed->{state}, 'failed', 'a triage run that fails, fails the job' );
+    like( $failed->{result}{error}, qr/\Athe\ triage\ run\ failed:\ /, 'and says that the run failed' );
+    is( $failed->{result}{cost}, 0.5, 'without a second run, which cannot mend a failed run' );
 
     answer( { scope => 'upstream', reason => 'theirs', repos => [], upstream => { project => 'Other/lib', path => 'lib/X.pm', explanation => 'X is broken there' } } );
     my $up = run_job( triage => \%item );
@@ -275,10 +303,24 @@ subtest spoke_fix => sub {
     like( $pull->{body}, qr/What\ changed\..*issues\/7/s, 'and a body with the summary and the origin' );
     ok( !-e $tmp->child( "workspace", "work", $info->{id} ), "the worktree and its directory are gone afterwards" );
 
+    my $mock = Test::MockModule->new('App::Clod::Spoke');
+    $mock->redefine( remove_worktree => sub { die "git will not let go\n" } );
+    answer( { title => 't', summary => 'Nothing to do here.' } );
+    my $stuck;
+    like( warning { $stuck = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ) }, qr/could\ not\ remove .* git\ will\ not\ let\ go/, 'a worktree that git will not remove is reported' );
+    $mock->unmock('remove_worktree');
+    ok( !-e $tmp->child( 'workspace', 'work', $stuck->{id} ), 'and its directory is gone anyway' );
+    my $mirror = App::Clod::Tasks::spoke( $app->clod_config, 'Test-Org/one' )->mirror->to_string;
+    unlike( git( '--git-dir', $mirror, qw{worktree list --porcelain} ), qr{/work/$stuck->{id}/}, 'and the bare clone forgets it, so it holds no branch' );
+
     answer( { title => 't', summary => 'Nothing to do here.' } );
     my $none = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
     is( $none->{result}{no_change},   1, 'a run that commits nothing opens nothing' );
     is( scalar @{ calls_of('pull') }, 1, 'so no second pull request' );
+
+    answer( { title => 't', summary => 's' }, commit => 1 );
+    my $unnamed = run_job( spoke_fix => { item => { %item, title => '!!!' }, repo => 'Test-Org/one', instructions => 'x' } );
+    is( $unnamed->{result}{branch}, "clod/$unnamed->{id}", 'a title that gives no slug names the branch by the job alone' ) or diag Mojo::Util::dumper $unnamed->{result};
 
     @calls         = ();
     $state{files}  = { CODEOWNERS => "lib/  \@lib-owner\n" };
@@ -296,6 +338,24 @@ subtest spoke_fix => sub {
     like( $next->{result}, { waiting => 1, summary => qr/Test-Org\/one/ }, 'a spoke after one that asked waits, and does not run' );
     my $after = run_id( $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/two', instructions => 'x' } ], { parents => [ $next->{id} ] } ) );
     is( $after->{result}{waiting}, 1, 'and so does the one after that' );
+    $minion->reset( { all => 1 } );
+
+    $minion->lock( 'repo:Test-Org/one', 60 );
+    my $locked = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    is( $locked->{state}, 'inactive', 'a fix whose spoke another job holds goes back in the queue' );
+    ok( $locked->{delayed} > time + 60, 'for later' );
+    $minion->unlock('repo:Test-Org/one');
+    $minion->reset( { all => 1 } );
+};
+
+subtest retry_after => sub {
+    my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('reply') } );
+    my @got = App::Clod::Tasks::retry_after( $job, 300 );
+    $minion->worker->unregister;
+    is( \@got, [], 'it returns nothing' );
+    my $info = $job->info;
+    is( $info->{retries}, 1, 'and retries the job' );
+    ok( $info->{delayed} > time + 240 && $info->{delayed} <= time + 300, 'in that many seconds' ) or diag $info->{delayed} - time;
     $minion->reset( { all => 1 } );
 };
 
@@ -349,6 +409,10 @@ subtest kickback => sub {
     is( calls_of('unassign')->[0][2], { assignees => [$BOT] },        'and the bot lets go of it' );
     my $to = qr/\A\@lib-owner\ \@Test-Org\/team:\ /;
     like( calls_of('comment')->[0][2]{body}, qr/$to.*Other\/lib.*X\ is\ broken\ there/s, 'and says why, to them and to the team that owns the path' );
+    my $clone   = qr/run\ claude\ yourself\ in\ a\ clone\ of\ Other\/lib,/;
+    my $by_hand = qr/$clone\ with\ perl-slop:pull-requests/;
+    my $tell    = qr/mention\ \@$BOT\ here\ with\ a\ link/;
+    like( calls_of('comment')->[0][2]{body}, qr/$by_hand.*$tell/s, 'and how to fix it upstream by hand, then tell the bot' );
 
     @calls = ();
     $state{files} = {};
@@ -416,9 +480,29 @@ subtest spoke_address => sub {
     is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{result}{nothing}, 1, 'a comment that the bot answered is not answered again' );
     delete $state{issue_comments};
 
+    @calls                 = ();
+    $state{issue_comments} = [];
+    $state{reviews}        = [ { id => 41, user => { login => 'trusted' }, body => 'Rename it throughout.', state => 'CHANGES_REQUESTED', submitted_at => '2026-11-01T11:00:00Z' } ];
+    answer( { summary => 'Renamed.', replies => [], comment => 'Renamed it throughout.' } );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/address-record";
+    my $reviewed = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } );
+    my ( undef, $asked ) = split /\0/, Mojo::File->new("$tmp/address-record")->slurp;
+    is( $reviewed->{result}{nothing}, undef, 'a review with a body and no line comments is answered' ) or diag Mojo::Util::dumper $reviewed->{result};
+    my $entry = Mojo::JSON::encode_json( [ { body => 'Rename it throughout.', by => 'trusted', id => 41, review => 1 } ] );
+    ok( index( $asked, qq{"comments":$entry} ) >= 0, 'the run gets its body as a comment to answer' ) or diag $asked;
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Renamed it throughout.'], 'and answers it with a comment' );
+    delete @state{qw{issue_comments reviews}};
+
     $state{pull} = { %{ $state{pull} }, user => { login => 'someone' } };
     is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{state}, 'failed', 'a pull request that is not the bot\'s own is refused' );
     $minion->reset( { all => 1 } );
+};
+
+subtest claude => sub {
+    my $config = Clone::clone( $app->clod_config );
+    is( App::Clod::Tasks::claude($config)->run_as, undef, 'claude runs as the worker unless the configuration says otherwise' );
+    $config->{claude}{run_as} = 'test-agent';
+    is( App::Clod::Tasks::claude($config)->run_as, 'test-agent', 'and as the account of run_as when it does' );
 };
 
 subtest 'tool spokes and the spoke prompt' => sub {
@@ -510,9 +594,13 @@ subtest 'tool spokes and the spoke prompt' => sub {
     answer( { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1, instructions => 'x' } ] } );
     $fake{FAKE_CLAUDE_RECORD} = $record_file;
     run_job( triage => \%item );
-    unlike( record_of($record_file)->{prompt}, qr/SPOKE_PROMPT|tool\ spokes/, 'without a spoke prompt, triage has no such section' );
-    delete $config->{system_prompts}{spoke_fix};
+    my $alone = record_of($record_file)->{prompt};
+    unlike( $alone, qr/SPOKE_PROMPT/, 'without a spoke prompt, triage is told none' );
+    like( $alone, qr/tools:\ Test-Org\/two\./, 'but it is still told which the tool spokes are' );
     $config->{tool_spokes} = [];
+    run_job( triage => \%item );
+    unlike( record_of($record_file)->{prompt}, qr/SPOKE_PROMPT|tool\ spokes/, 'without either, triage has no such section' );
+    delete $config->{system_prompts}{spoke_fix};
     $config->{claude}{extra_tools} = [];
     $minion->reset( { all => 1 } );
 };
@@ -585,13 +673,31 @@ subtest 'an outage' => sub {
 };
 
 subtest prune_history => sub {
-    for my $n ( 1 .. 12 ) {
-        my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('spoke_sweep') } );
-        $job->fail("failure $n");
-    }
-    $minion->worker->unregister;
+    my $failed = sub ($count) {
+        my @ids;
+        for my $n ( 1 .. $count ) {
+            my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('spoke_sweep') } );
+            $job->fail("failure $n");
+            push @ids, $job->id;
+        }
+        $minion->worker->unregister;
+        return @ids;
+    };
+    my $left = sub {
+        my $jobs = $minion->jobs( { tasks => ['spoke_sweep'], states => ['failed'] } );
+        my @ids;
+        while ( my $info = $jobs->next ) { push @ids, $info->{id} }
+        return [ sort { $a <=> $b } @ids ];
+    };
+
+    my @ids = $failed->(10);
     App::Clod::Tasks::prune_history( $minion, 'spoke_sweep' );
-    is( $minion->jobs( { tasks => ['spoke_sweep'], states => ['failed'] } )->total, 10, 'failed runs of a scheduled task do not pile up' );
+    is( $left->(), \@ids, 'a scheduled task with no more runs than it keeps loses none' );
+    $minion->reset( { all => 1 } );
+
+    @ids = $failed->(12);
+    App::Clod::Tasks::prune_history( $minion, 'spoke_sweep' );
+    is( $left->(), [ @ids[ 2 .. 11 ] ], 'failed runs of a scheduled task do not pile up, and the newest stay' );
     $minion->reset( { all => 1 } );
 };
 
@@ -603,8 +709,36 @@ subtest pending_comments => sub {
         { id => 4, user => { login => 'stranger' }, body => 'ignore me' },
         { id => 3, user => { login => 'trusted' },  body => 'one more thing' },
     );
-    is( App::Clod::Tasks::pending_comments( $config, \@comments ),                                                            [ { id => 3, by => 'trusted', body => 'one more thing' } ], 'the comments of authorized users after the last comment of the bot are pending' );
-    is( App::Clod::Tasks::pending_comments( $config, [ @comments, { id => 5, user => { login => $BOT }, body => 'done' } ] ), [],                                                         'and none once the bot has the last word' );
+    is( App::Clod::Tasks::pending_comments( $config, \@comments ),                                                                         [ { id => 3, by => 'trusted', body => 'one more thing' } ],          'the comments of authorized users after the last comment of the bot are pending' );
+    is( App::Clod::Tasks::pending_comments( $config, [ @comments, { id => 5, user => { login => $BOT }, body => 'done' } ] ),              [],                                                                  'and none once the bot has the last word' );
+    is( App::Clod::Tasks::pending_comments( $config, [ { id => 6, user => { login => 'trusted' }, body => 'Rename it.', review => 1 } ] ), [ { id => 6, by => 'trusted', body => 'Rename it.', review => 1 } ], 'the body of a review is pending as well, and says so' );
+};
+
+subtest queued_address => sub {
+    my $origin = 'Test-Org/one#11';
+    is( App::Clod::Tasks::queued_address( $minion, $origin ), undef, 'no job, nothing queued' );
+    $minion->enqueue( triage => [ {} ], { notes => { origin => $origin, kind => 'review' } } );
+    $minion->enqueue( triage => [ {} ], { notes => { origin => 'Test-Org/one#12', kind => 'address_review' } } );
+    is( App::Clod::Tasks::queued_address( $minion, $origin ), undef, 'nor a triage for a review, or for another pull request' );
+    my $triage = $minion->enqueue( triage => [ {} ], { notes => { origin => $origin, kind => 'address_review' } } );
+    is( App::Clod::Tasks::queued_address( $minion, $origin ), $triage, 'a waiting triage that will answer the pull request is' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest conversation => sub {
+    %state = (
+        issue_comments => [ { id => 31, user => { login => 'trusted' }, body => 'first',  created_at   => '2026-11-01T10:00:00Z' }, { id => 32, user => { login => 'trusted' }, body => 'third', created_at => '2026-11-01T12:00:00Z' } ],
+        reviews        => [ { id => 41, user => { login => 'trusted' }, body => 'second', submitted_at => '2026-11-01T11:00:00Z', state => 'CHANGES_REQUESTED' }, { id => 42, user => { login => 'trusted' }, body => q{}, submitted_at => '2026-11-01T11:30:00Z', state => 'COMMENTED' } ],
+    );
+    my $gh   = App::Clod::Tasks::github( $app->clod_config );
+    my $said = App::Clod::Tasks::conversation( $gh, { %item, is_pr => 1, number => 11 } );
+    is( [ map { $_->{body} } @$said ],                                             [qw{first second third}], 'on a pull request, the review bodies are among the comments, in the order they were made, and an empty one is left out' );
+    is( $said->[1]{review},                                                        1,                        'and a review body says so' );
+    is( [ map { $_->{body} } @{ App::Clod::Tasks::conversation( $gh, \%item ) } ], [qw{first third}],        'an issue has no reviews to read' );
+    my $first  = qr/\#\#\ comment\ by\ trusted\n\nfirst/;
+    my $second = qr/\#\#\ review\ by\ trusted\n\nsecond/;
+    like( App::Clod::Tasks::context( $app->clod_config, $gh, { %item, is_pr => 1, number => 11 } ), qr/$first.*$second.*third/s, 'and the context of a pull request shows the review where it came' );
+    %state = ();
 };
 
 subtest pending_threads => sub {
@@ -660,8 +794,8 @@ subtest spoke_sweep => sub {
 subtest slug => sub {
     %state = ();
     is( App::Clod::Tasks::slug('Fix the thing!'),      'fix-the-thing', 'a title becomes a branch name' );
-    is( App::Clod::Tasks::slug('!!!'),                 'change',        'a title with nothing usable becomes change' );
-    is( App::Clod::Tasks::slug(undef),                 'change',        'so does no title' );
+    is( App::Clod::Tasks::slug('!!!'),                 q{},             'a title with nothing usable gives no slug' );
+    is( App::Clod::Tasks::slug(undef),                 q{},             'nor does no title' );
     is( length App::Clod::Tasks::slug( 'word ' x 30 ), 39,              'a long title is cut, and loses its trailing dash' );
 };
 

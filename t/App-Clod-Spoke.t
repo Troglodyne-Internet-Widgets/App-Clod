@@ -46,6 +46,16 @@ subtest refresh_reference => sub {
     ok( -e $spoke->refresh_reference('main')->child('new'), 'and follows it on the next refresh' );
 };
 
+subtest 'the bare clone, shared with its group' => sub {
+    my $umask = umask oct '0077';
+    my $tree  = $spoke->worktree( $tmp->child( 'ws', 'work', 2, 'Test-Org', 'one' ), branch => 'clod/2-shared', base => 'main' );
+    git( q{-C}, "$tree", qw{commit --quiet --no-verify --allow-empty -m shared} );
+    my $mode = ( stat $spoke->mirror->child(qw{refs heads clod 2-shared}) )[2] // 0;
+    is( $mode & oct '0660', oct '0660', 'a branch that the worktree commits is writable by the group, whatever the umask' ) or diag sprintf '%04o', $mode & oct '7777';
+    $spoke->remove_worktree($tree);
+    umask $umask;
+};
+
 subtest worktree => sub {
     my $dir  = $tmp->child( 'ws', 'work', 1, 'Test-Org', 'one' );
     my $tree = $spoke->worktree( $dir, branch => 'clod/1-test', base => 'main' );
@@ -64,7 +74,12 @@ subtest worktree => sub {
     ok( !-d $tree, 'the worktree can be removed' );
     my $again = $spoke->worktree( $dir, existing => 'clod/1-test' );
     is( git( '-C', "$again", 'rev-parse', 'HEAD' ), $sha, 'and made again from the pushed branch' );
-    $spoke->remove_worktree($again);
+    $again->remove_tree;
+    like( dies { $spoke->worktree( $tmp->child( 'ws', 'work', 4, 'Test-Org', 'one' ), existing => 'clod/1-test' ) }, qr/already\ used\ by\ worktree/, 'a worktree deleted behind the back of git still holds its branch' );
+    $spoke->prune_worktrees;
+    my $freed = $spoke->worktree( $tmp->child( 'ws', 'work', 4, 'Test-Org', 'one' ), existing => 'clod/1-test' );
+    is( git( '-C', "$freed", 'rev-parse', 'HEAD' ), $sha, 'until the bare clone is pruned' );
+    $spoke->remove_worktree($freed);
 
     my @detached = map { $spoke->worktree( $tmp->child( 'ws', 'work', $_, 'Test-Org', 'one' ), detach => 'clod/1-test' ) } 2, 3;
     is( [ map { git( '-C', "$_", 'rev-parse', 'HEAD' ) } @detached ], [ $sha, $sha ], 'two detached worktrees can be at one branch at once' );
@@ -73,7 +88,7 @@ subtest worktree => sub {
 };
 
 subtest git => sub {
-    like( dies { $spoke->git(qw{rev-parse --verify no-such-ref}) }, qr/git\ rev-parse\ --verify\ no-such-ref:\ fatal/, 'a failing git command dies with its error' );
+    like( dies { $spoke->git(qw{rev-parse --verify no-such-ref}) }, qr/\Agit\ rev-parse\ --verify\ no-such-ref:\ fatal:\ [^\n]+\n\z/, 'a failing git command dies with its error, on one line, with no file or line' );
     ok( !( grep { m{test-token} } git( '--git-dir', $spoke->mirror->to_string, 'config', '--list' ) ), 'the token is not in the clone\'s configuration' );
 };
 

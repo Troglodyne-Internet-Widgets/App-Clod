@@ -89,8 +89,8 @@ sub summary ( $minion, $now = time ) {
 =head1 DESCRIPTION
 
 Each C<claude -p> run reports the utilization of the five-hour and seven-day
-quota windows in its C<rate_limit_event>.  The bot keeps the last report and the
-cost of each run in the job's result.  So the budget is a read of recent
+quota windows in its C<rate_limit_event>.  The bot keeps the last report and
+the cost of each run in the job's result.  So the budget is a read of recent
 finished jobs, and needs no store of its own.
 
 When a run hits the limit, C<pause> takes a Minion lock that expires when the

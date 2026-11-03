@@ -23,7 +23,7 @@ is this better handled across several spokes than in {{repo}} alone?
 For a review, `repos` names {{repo}} first, then any spoke whose code the
 reviewer must read to judge the change.
 
-{{testing}}
+{{spoke_briefing}}
 
 Read the code before you decide. Do not change any file.
 

@@ -98,6 +98,7 @@ formatters
 FQDN
 George
 GiB
+gitconfig
 github
 gitignore
 GraphQL
@@ -124,6 +125,7 @@ KiB
 LDAP
 LDAPS
 LDIF
+libgit
 lifecycle
 LLC
 lookups
@@ -160,6 +162,7 @@ NTP
 OAuth
 ok
 OOM
+OpenAPI
 OpenTelemetry
 otel
 overcommit
@@ -200,6 +203,7 @@ ruleset
 runtime
 scaffolded
 scp
+setgid
 sftp
 SHA
 SMTP
@@ -216,6 +220,7 @@ sublicense
 subnet
 substring
 subtest
+subtype
 sudo
 symlink
 symlinked

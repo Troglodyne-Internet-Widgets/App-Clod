@@ -27,23 +27,47 @@ that repository's CLAUDE.md, hooks and critic profile shape the work.  Many
 fixes cross repositories.  App::Clod is a GitHub bot that plans across them and
 then works inside each one.
 
-It reads the bot user's notification inbox.  It acts on an item only when a user
-in `authorized_users` caused it.  An assignment to an issue becomes a fix, a
-review request becomes a review, activity on the bot's own pull request becomes
-work on the review comments, and a mention becomes a reply.
+It reads the bot user's notification inbox.  It acts on an item only when a
+user in `authorized_users` caused it.  An assignment to an issue becomes a
+fix, a review request becomes a review, activity on the bot's own pull request
+becomes work on the review comments, and a mention becomes a reply.
 
-Each fix, review and review answer starts with triage: one `claude -p` run that
-can read every spoke and decides whether one repository, several, or an
+GitHub keeps one notification per issue or pull request, not one per comment.
+Each new comment updates it, and its reason is the reason of the latest one.
+So a comment on the bot's own pull request that mentions the bot by name is a
+mention, and gets a reply, not work on the review comments.  If the reply finds
+that the person asked for a change, it starts that work.  Several comments that
+arrive while the work on a pull request waits to start get no job of their own,
+because that work collects everything that was said since the bot last
+answered.  A comment that arrives while that work runs gets a job of its own.
+
+Each fix, review and review answer starts with triage: one `claude -p` run
+that can read every spoke and decides whether one repository, several, or an
 upstream project that we do not own is the right place for the change.  Then
 one `claude -p` run per repository does the work, inside a git worktree of
 that repository.  For a change across several repositories, Minion parents run
 them in order, and each run gets the summaries of the runs before it.  The bot
-pushes the branches, opens the pull requests and links them to each other and to
-the issue.
+pushes the branches, opens the pull requests and links them to each other and
+to the issue.
+
+How a spoke run tests a change is a matter of the installation, so
+`clod.conf` says it: `spoke_prompt` is added to the system prompt of every
+spoke run, and triage is told it too, so that its instructions agree.  The
+tools for a test, such as a provisioner that builds a guest, can live in a
+repository of their own, a tool spoke.  Each spoke run gets its own worktree of
+each tool spoke, removed after the run, so that runs in parallel never share
+one.  It is at the branch of an earlier spoke of the same change that changed
+the tool spoke, so a run can test with a recipe that the run before it just
+added.  `extra_tools` allows the runs that change a repository to run those
+tools.  See [App::Clod::Config](https://metacpan.org/pod/App%3A%3AClod%3A%3AConfig).
 
 If the best fix is upstream, the bot changes nothing.  It assigns the issue to
 the owner of the affected path in CODEOWNERS, or to the repository owner, and
-explains why.
+explains why.  The bot never opens a pull request on a project that we do not
+own.  To go on, that person runs claude in a clone of the upstream project,
+with `perl-slop:pull-requests`, opens the pull request there, and mentions the
+bot on the issue with a link to it.  Nothing watches the upstream pull request
+yet, so a change that our code needs after it merges is for a person to make.
 
 If triage or a spoke cannot go on without an answer from a person, the bot
 changes nothing and does not guess.  It asks the question in a comment, assigns
@@ -98,6 +122,16 @@ Both read the configuration from `CLOD_CONFIG`, or `clod.conf` in the
 application home.  Secrets come only from the environment: `GH_TOKEN` for
 GitHub and `CLAUDE_CODE_OAUTH_TOKEN` for Claude Code.
 
+# WHEN A TOKEN STOPS WORKING
+
+If GitHub or Claude refuses its token with a 401, the bot is in an outage.  The
+jobs do not fail one after another.  A GitHub outage holds all work, and a
+Claude outage holds the work that runs `claude`.  Each held job waits ten
+minutes, and then the next job tries the token again.  The Overview tab names
+the outage first.  After you replace the token in the environment and restart
+both processes, the work starts again within ten minutes.  See
+[App::Clod::Outage](https://metacpan.org/pod/App%3A%3AClod%3A%3AOutage).
+
 # WHAT THE HOST NEEDS
 
 - `git` and the `claude` program, signed in through `CLAUDE_CODE_OAUTH_TOKEN`.
@@ -112,8 +146,9 @@ its policies, and tests-covering.  The bot installs each spoke's own
 - Overview
 
     Jobs by state, the Claude Code quota used in the five-hour and seven-day
-    windows, and the action items: a marketplace pin older than the plugin, failed
-    jobs, harness checks that fail, and token scopes that are missing.
+    windows, and the action items: an outage, a marketplace pin older than the
+    plugin, failed jobs, harness checks that fail, and token scopes that are
+    missing.
 
 - Work
 
@@ -124,6 +159,26 @@ its policies, and tests-covering.  The bot installs each spoke's own
 
     For each spoke, whether each part of the standard harness is in place.  See
     [App::Clod::Harness](https://metacpan.org/pod/App%3A%3AClod%3A%3AHarness).
+
+# CAVEATS
+
+The bot account must be used by App::Clod alone.  App::Clod knows what it has
+answered by the login of the bot, and what is new by which of the bot's
+notifications are unread.  Anything else that uses the same account changes
+both:
+
+- A comment by the account from another program, or from a person signed in as
+the bot, counts as an answer of the bot.  Every comment before it then counts
+as answered, and so does each review thread whose last message it is.
+- Anything that marks the account's notifications read hides them from the
+poll, which reads only unread ones.  That includes a person who opens them on
+GitHub while signed in as the bot.
+- An assignment or a review request made by the account has the bot as its
+actor, and the bot is not an authorized user, so the poll ignores it.
+
+An edit to a comment that the bot has already answered is not seen.  GitHub
+sends no notification for an edit, and the comment keeps its place before the
+answer.  To change a request, add a comment.
 
 # SEE ALSO
 

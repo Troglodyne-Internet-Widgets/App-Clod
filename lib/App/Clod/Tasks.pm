@@ -87,7 +87,7 @@ sub perform ( $job, $config, $code, @args ) {
     return 1          if eval { $code->( $job, $config, @args ); 1 };
     my $error = $@;
     die $error if !App::Clod::GitHub::is_unauthorized($error);
-    App::Clod::Outage::begin( $job, github => plain_error($error) );
+    App::Clod::Outage::begin( $job, github => $error );
     log_note( $job, 'GitHub refused the token; all work waits' );
     return hold($job);
 }
@@ -103,14 +103,15 @@ expires.
 
 sub hold ($job) {
     my ( $minion, $task ) = ( $job->minion, $job->task );
-    return $job->retry( { delay => $App::Clod::Outage::SECONDS } ) if !$SCHEDULED{$task};
+    return retry_after( $job, $App::Clod::Outage::SECONDS ) if !$SCHEDULED{$task};
     prune_history( $minion, $task );
     return $job->finish( { %{ last_result( $minion, $task ) // {} }, held => 1 } );
 }
 
 =func schedule
 
-C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>, C<harness_scan>, C<assigned_sweep> and C<spoke_sweep>.
+C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>,
+C<harness_scan>, C<assigned_sweep> and C<spoke_sweep>.
 
 =cut
 
@@ -159,6 +160,7 @@ sub claude ($config) {
     return App::Clod::Claude->new(
         bin           => $c->{bin},
         model         => $c->{model},
+        run_as        => $c->{run_as},
         timeout       => $c->{timeout},
         allowed_tools => [ @{ $c->{allowed_tools} }, @{ $c->{extra_tools} } ],
         env           => \%env,
@@ -179,7 +181,8 @@ sub prompt ( $name, %vars ) {
 
 =func last_result
 
-C<($minion, $task)>.  The result of the newest finished job of that task, or undef.
+C<($minion, $task)>.  The result of the newest finished job of that task, or
+undef.
 
 =cut
 
@@ -199,10 +202,10 @@ scheduled task.
 sub prune_history ( $minion, $task, $keep = $HISTORY ) {
     for my $state (qw{finished failed}) {
         my $jobs = $minion->jobs( { tasks => [$task], states => [$state] } );
+        next if $jobs->total <= $keep;
         my $seen = 0;
         while ( my $info = $jobs->next ) {
-            next if ++$seen <= $keep;
-            $minion->job( $info->{id} )->remove;
+            $minion->job( $info->{id} )->remove if ++$seen > $keep;
         }
     }
     return;
@@ -236,19 +239,32 @@ sub system_text ( $config, $task ) {
     return @parts ? join( "\n\n", @parts ) : undef;
 }
 
-=func run_claude
+=func retry_after
 
-C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, with the L</system_text> of the job's task as C<system>, and writes its progress to the job notes.  If the quota is paused or runs out, or Claude refuses the token, it retries the job and returns undef, so the caller returns at once.  A refused token starts a Claude outage, see L<App::Clod::Outage>.
+C<($job, $delay)>.  Retries the job in C<$delay> seconds, and returns nothing,
+which is how L</run_claude> tells its callers that the job will retry.
 
 =cut
 
-# Runs claude for a job.  Undef means that the job will retry.
+sub retry_after ( $job, $delay ) {
+    $job->retry( { delay => $delay } );
+    return;
+}
+
+=func run_claude
+
+C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, with
+the L</system_text> of the job's task as C<system>, and writes its progress to
+the job notes.  Returns the outcome of L<App::Clod::Claude/run>, a hash
+reference.  If the quota is paused or runs out, or Claude refuses the token, it
+retries the job and returns undef instead, so the caller returns at once.  A
+refused token starts a Claude outage, see L<App::Clod::Outage>.
+
+=cut
+
 sub run_claude ( $job, $config, %run ) {
     my $minion = $job->minion;
-    if ( App::Clod::Budget::paused($minion) ) {
-        $job->retry( { delay => 600 } );
-        return;
-    }
+    return retry_after( $job, 600 ) if App::Clod::Budget::paused($minion);
     my $events  = 0;
     my $outcome = claude($config)->run(
         system => system_text( $config, $job->task ),
@@ -261,15 +277,13 @@ sub run_claude ( $job, $config, %run ) {
     if ( $outcome->{unauthorized} ) {
         App::Clod::Outage::begin( $job, claude => $outcome->{result} // $outcome->{stderr} );
         log_note( $job, 'Claude refused the token; Claude work waits' );
-        $job->retry( { delay => $App::Clod::Outage::SECONDS } );
-        return;
+        return retry_after( $job, $App::Clod::Outage::SECONDS );
     }
     if ( $outcome->{quota_reset} ) {
         App::Clod::Budget::pause( $minion, $outcome->{quota_reset} );
         if ( !$outcome->{ok} ) {
             log_note( $job, 'the Claude quota ran out; retrying after it resets' );
-            $job->retry( { delay => List::Util::max( 60, $outcome->{quota_reset} - time + 60 ) } );
-            return;
+            return retry_after( $job, List::Util::max( 60, $outcome->{quota_reset} - time + 60 ) );
         }
     }
     return $outcome;
@@ -277,7 +291,8 @@ sub run_claude ( $job, $config, %run ) {
 
 =func usage_of
 
-C<(@outcomes)>.  The C<cost>, the last C<rate_limit>, and any C<quota_reset> of the runs, as a list for a job result.
+C<(@outcomes)>.  The C<cost>, the last C<rate_limit>, and any C<quota_reset> of
+the runs, as a list for a job result.
 
 =cut
 
@@ -289,15 +304,6 @@ sub usage_of (@outcomes) {
     $usage{quota_reset} = $reset if $reset;
     return %usage;
 }
-
-=func plain_error
-
-C<($error)>.  The message without the " at FILE line N." that perl adds.
-
-=cut
-
-# An error for a person to read: without the file and line that perl added.
-sub plain_error ($error) { return $error =~ s/\ at\ \S+\ line\ \d+.*//sr }
 
 =func origin_of
 
@@ -372,10 +378,11 @@ sub inbox_poll ( $job, $config ) {
 
     my $gh = github($config);
     my ( $threads, $meta ) = $gh->notifications( $cursor->{last_modified} );
-    my ( @enqueued, @ignored );
+    my ( @queued, @ignored );
     for my $thread (@$threads) {
         my $outcome = eval { inbox_thread( $job, $config, $gh, $thread ) } // "failed: $@";
-        push @{ $outcome =~ m{\A\d+\z} ? \@enqueued : \@ignored }, $outcome =~ m{\A\d+\z} ? $outcome : "$thread->{id}: $outcome";
+        if   ( $outcome =~ m{\A\d+\z} ) { push @queued,  $outcome }
+        else                            { push @ignored, "$thread->{id}: $outcome" }
     }
     return $job->finish(
         {
@@ -384,7 +391,7 @@ sub inbox_poll ( $job, $config ) {
             poll_interval => $meta->{poll_interval} // $cursor->{poll_interval},
             scopes        => $meta->{scopes}        // $cursor->{scopes},
             threads       => scalar @$threads,
-            enqueued      => \@enqueued,
+            queued        => \@queued,
             ignored       => \@ignored,
         }
     );
@@ -392,11 +399,12 @@ sub inbox_poll ( $job, $config ) {
 
 =func inbox_thread
 
-C<($job, $config, $gh, $thread)>.  Turns one notification into a job.  Returns the job id, or the reason it made none.
+C<($job, $config, $gh, $thread)>.  Turns one notification into a job.  Returns
+the job id, or the reason it made none.
 
 =cut
 
-# Returns the id of the job that it enqueued, or why it did not.
+# Returns the id of the job that it queued, or why it did not.
 sub inbox_thread ( $job, $config, $gh, $thread ) {
     my $minion  = $job->minion;
     my $repo    = $thread->{repository}{full_name};
@@ -439,11 +447,37 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
         thread      => $thread->{id},
         comment_url => $subject->{latest_comment_url},
     );
+    my $origin = origin_of( \%item );
+    if ( $kind eq 'address_review' && ( my $queued = queued_address( $minion, $origin ) ) ) {
+        $gh->mark_read( $thread->{id} );
+        return "job $queued will answer $origin";
+    }
     $gh->react( $repo, $number, 'eyes' );
-    my $id = $minion->enqueue( ( $kind eq 'reply' ? 'reply' : 'triage' ) => [ \%item ], { notes => { origin => origin_of( \%item ), kind => $kind } } );
+    my $id = $minion->enqueue( ( $kind eq 'reply' ? 'reply' : 'triage' ) => [ \%item ], { notes => { origin => $origin, kind => $kind } } );
     $gh->mark_read( $thread->{id} );
-    log_note( $job, "enqueued job $id for $kind on " . origin_of( \%item ) );
+    log_note( $job, "queued job $id for $kind on $origin" );
     return $id;
+}
+
+=func queued_address
+
+C<($minion, $origin)>.  The id of a job that has yet to read the conversation of
+the pull request C<$origin> and answer it: a C<triage> of it for
+C<address_review> that waits or runs, or a C<spoke_address> of it that waits.
+Undef if there is none.  A C<spoke_address> that runs does not count: it read
+what was pending when it started, so it does not answer a later comment.
+
+=cut
+
+sub queued_address ( $minion, $origin ) {
+    my $jobs = $minion->jobs( { tasks => [qw{triage spoke_address}], states => [qw{inactive active}] } );
+    while ( my $info = $jobs->next ) {
+        next if ( $info->{notes}{origin} // q{} ) ne $origin;
+        next if $info->{task} eq 'triage' && ( $info->{notes}{kind} // q{} ) ne 'address_review';
+        next if $info->{task} eq 'spoke_address' && $info->{state} ne 'inactive';
+        return $info->{id};
+    }
+    return;
 }
 
 =func requester
@@ -467,18 +501,36 @@ sub requester ( $config, $gh, $repo, $number, $reason, $subject ) {
 
 =func context
 
-C<($config, $gh, $item)>.  The issue or pull request and its last twenty comments, as Markdown for a prompt.
+C<($config, $gh, $item)>.  The issue or pull request and the last twenty
+entries of its L</conversation>, as Markdown for a prompt.
 
 =cut
 
-# The conversation, as text for a prompt.
 sub context ( $config, $gh, $item ) {
-    my $issue    = $gh->issue( $item->{repo}, $item->{number} );
-    my @comments = @{ $gh->issue_comments( $item->{repo}, $item->{number} ) };
-    @comments = @comments[ -20 .. -1 ] if @comments > 20;
+    my $issue = $gh->issue( $item->{repo}, $item->{number} );
+    my @said  = @{ conversation( $gh, $item ) };
+    @said = @said[ -20 .. -1 ] if @said > 20;
     my @lines = ( "# $issue->{title}", "by $issue->{user}{login}, " . origin_url( $config, $item ), q{}, $issue->{body} // q{}, q{} );
-    push @lines, "## comment by $_->{user}{login}", q{}, $_->{body} // q{}, q{} for @comments;
+    push @lines, '## ' . ( $_->{review} ? 'review' : 'comment' ) . " by $_->{user}{login}", q{}, $_->{body} // q{}, q{} for @said;
     return join "\n", @lines;
+}
+
+=func conversation
+
+C<($gh, $item)>.  The comments on the issue or pull request, oldest first.  On
+a pull request, the body of each review that has one is an entry too, with
+C<review> set and C<created_at> from its C<submitted_at>.  Line comments are
+not entries: they belong to their threads.
+
+=cut
+
+sub conversation ( $gh, $item ) {
+    my @said = @{ $gh->issue_comments( $item->{repo}, $item->{number} ) };
+    if ( $item->{is_pr} ) {
+        push @said, map { { id => $_->{id}, user => $_->{user}, body => $_->{body}, created_at => $_->{submitted_at}, review => 1 } }
+          grep { ( $_->{body} // q{} ) ne q{} } @{ $gh->reviews( $item->{repo}, $item->{number} ) };
+    }
+    return [ sort { ( $a->{created_at} // q{} ) cmp ( $b->{created_at} // q{} ) || $a->{id} <=> $b->{id} } @said ];
 }
 
 =func default_branch
@@ -491,7 +543,9 @@ sub default_branch ( $gh, $repo ) { return $gh->repo($repo)->{default_branch} }
 
 =func prepare_hub
 
-C<($config, $gh, \@spokes)>.  Refreshes the reference worktree of every spoke and writes the hub CLAUDE.md.  Returns the hub directory and a hash of repository to reference worktree.
+C<($config, $gh, \@spokes)>.  Refreshes the reference worktree of every spoke
+and writes the hub CLAUDE.md.  Returns the hub directory and a hash of
+repository to reference worktree.
 
 =cut
 
@@ -513,29 +567,33 @@ sub prepare_hub ( $config, $gh, $spokes ) {
     return ( $hub, \%ref );
 }
 
-=func spoke_testing
+=func spoke_briefing
 
-C<($config)>.  The section of the triage prompt that says what each spoke run
-is told by C<spoke_prompt>, and how to plan around the tool spokes.  Empty
-when C<spoke_prompt> is not set.
+C<($config)>.  The section of the triage prompt that says what every spoke run
+is told by C<spoke_prompt>, and which tool spokes it gets a checkout of.  Each
+part is there when its setting is, and the section is empty when neither is.
 
 =cut
 
-sub spoke_testing ($config) {
-    my $told = $config->{spoke_prompt} // q{};
-    return q{} if $told eq q{};
+sub spoke_briefing ($config) {
+    my $told  = $config->{spoke_prompt} // q{};
     my @tools = @{ $config->{tool_spokes} };
-    return prompt( 'triage-testing', spoke_prompt => $told, tool_spokes => @tools ? join( q{, }, @tools ) : 'none' );
+    my @parts = (
+        ( $told ne q{} ? prompt( 'triage-spoke-prompt', spoke_prompt => $told ) : () ),
+        ( @tools ? prompt( 'triage-tool-spokes', tool_spokes => join q{, }, @tools ) : () ),
+    );
+    return join "\n", @parts;
 }
 
 =func triage
 
 Refreshes a reference worktree of every spoke, writes the hub CLAUDE.md, and
 asks the triage question with read-only tools.  An answer that does not pass
-L<App::Clod::Triage/validate> gets one more try, with the error.  Then it
-enqueues the work: C<kickback> for upstream or clarify, one C<spoke_review> for a review,
-and otherwise a chain of C<spoke_fix> or C<spoke_address> jobs, each the parent
-of the next, and a C<report> after them all.
+L<App::Clod::Triage/validate> gets one more try, with the error.  A run that
+fails, with no answer to judge, fails the job at once with its stderr.  Then it
+enqueues the work: C<kickback> for upstream or clarify, one C<spoke_review> for
+a review, and otherwise a chain of C<spoke_fix> or C<spoke_address> jobs, each
+the parent of the next, and a C<report> after them all.
 
 =cut
 
@@ -544,13 +602,13 @@ sub triage ( $job, $config, $item ) {
     my $spokes = spokes( $job->minion, $config );
     my ( $hub, $ref ) = prepare_hub( $config, $gh, $spokes );
     my %vars = (
-        kind      => $item->{kind},
-        origin    => origin_of($item),
-        repo      => $item->{repo},
-        requester => $item->{requester},
-        owners    => join( q{, }, @{ $config->{owners} } ),
-        context   => context( $config, $gh, $item ),
-        testing   => spoke_testing($config),
+        kind           => $item->{kind},
+        origin         => origin_of($item),
+        repo           => $item->{repo},
+        requester      => $item->{requester},
+        owners         => join( q{, }, @{ $config->{owners} } ),
+        context        => context( $config, $gh, $item ),
+        spoke_briefing => spoke_briefing($config),
     );
 
     my ( @outcomes, $answer, $error );
@@ -562,12 +620,13 @@ sub triage ( $job, $config, $item ) {
             tools           => $config->{claude}{read_tools},
             permission_mode => 'default',
             add_dirs        => [ map { "$_" } values %$ref ],
-            schema          => \%App::Clod::Triage::SCHEMA,
+            schema          => App::Clod::Triage::schema($spokes),
         ) // return;
         push @outcomes, $outcome;
+        return $job->fail( { error => "the triage run failed: $outcome->{stderr}", usage_of(@outcomes) } ) if !$outcome->{ok};
         $answer = eval { App::Clod::Triage::validate( $outcome->{structured}, $spokes ) };
         last if $answer;
-        $error = $outcome->{ok} ? plain_error($@) : "the run failed: $outcome->{stderr}";
+        $error = $@;
     }
     return $job->fail( { error => "triage gave no usable answer: $error", usage_of(@outcomes) } ) if !$answer;
     $job->note( scope => $answer->{scope}, triage => $answer );
@@ -580,7 +639,8 @@ sub triage ( $job, $config, $item ) {
 
 =func plan_children
 
-C<($job, $item, $answer)>.  Enqueues the jobs that the triage answer calls for, and returns their ids.
+C<($job, $item, $answer)>.  Enqueues the jobs that the triage answer calls for,
+and returns their ids.
 
 =cut
 
@@ -691,10 +751,12 @@ sub tools_note ($checkouts) {
 C<($job, $config, $repo, \%how, $work)>.  Takes the lock of the spoke, makes a
 worktree with the options in C<%how>, and a worktree of each tool spoke at its
 L</tool_branch>, runs C<< $work->($spoke, $tree, \%tools) >>, and removes every
-worktree whatever happened.  C<%tools> has C<add_dirs>, the tool worktrees for
-the run, and C<note>, the L</tools_note> for its prompt.  The spoke's own
-repository gets no second worktree when it is a tool spoke.  If another job
-holds the lock, the job retries later.
+worktree and the directory of the job under F<work/> whatever happened.  A
+worktree that git will not remove is deleted with the rest and pruned from its
+bare clone, so that it holds no branch.  C<%tools> has C<add_dirs>, the tool
+worktrees for the run, and C<note>, the L</tools_note> for its prompt.  The
+spoke's own repository gets no second worktree when it is a tool spoke.  If
+another job holds the lock, the job retries later.
 
 A tool worktree is made without the lock of its repository.  The lock keeps two
 jobs from working on one repository at once, and a tool worktree is no such
@@ -702,17 +764,14 @@ work: it is detached, so it holds no branch, it writes no shared configuration,
 and nothing is pushed from it.  The one write that it shares with other jobs is
 the fetch into the bare clone, which triage already makes without the lock.
 Two fetches at once can meet on the lock file of a ref, and then one of them
-fails, with the job.  Taking the lock would hold every spoke run back while any job works in a tool
-spoke, for up to four hours.
+fails, with the job.  Taking the lock would hold every spoke run back while any
+job works in a tool spoke, for up to four hours.
 
 =cut
 
 sub in_worktree ( $job, $config, $repo, $how, $work ) {
     my $guard = $job->minion->guard( "repo:$repo", $REPO_SECONDS );
-    if ( !$guard ) {
-        $job->retry( { delay => 120 } );
-        return;
-    }
+    return retry_after( $job, 120 ) if !$guard;
     my $root  = Mojo::File->new( $config->{workspace}, 'work', $job->id );
     my $spoke = spoke( $config, $repo );
     my @made  = ( { spoke => $spoke, dir => $root->child($repo) } );
@@ -728,27 +787,31 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
         $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ) } );
     };
     my $err = $@;
+    my @stuck;
     for my $made (@made) {
-        eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 } or warn "could not remove $made->{dir}: $@";
+        next if eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 };
+        warn "could not remove $made->{dir}: $@";
+        push @stuck, $made->{spoke};
     }
-
-    # work/<job>/<owner>/<name>: the directories above each are this job's alone.
-    rmdir $_->{dir}->dirname for @made;
-    rmdir $root;
+    $root->remove_tree;
+    $_->prune_worktrees for @stuck;
     die $err if $err;
     return @out;
 }
 
 =func slug
 
-C<($text)>.  A branch-name form of a title: lowercase, dashes, at most forty characters.
+C<($text)>.  A branch-name form of a title: lowercase ASCII letters and digits,
+with a dash for each run of anything else, and at most forty characters, so
+that the branch reads well in the lists of GitHub.  Empty when the title has no
+such letter or digit, or there is no title.
 
 =cut
 
 sub slug ($text) {
-    my $slug = lc( $text // 'change' ) =~ s/[^[:lower:][:digit:]]+/-/gr;
+    my $slug = lc( $text // q{} ) =~ s/[^[:lower:][:digit:]]+/-/gr;
     $slug =~ s/\A-+|-+\z//g;
-    return substr( $slug, 0, 40 ) =~ s/-+\z//r || 'change';
+    return substr( $slug, 0, 40 ) =~ s/-+\z//r;
 }
 
 =func spoke_fix
@@ -769,7 +832,7 @@ sub spoke_fix ( $job, $config, $args ) {
 
     my $gh     = github($config);
     my $base   = default_branch( $gh, $repo );
-    my $branch = 'clod/' . $job->id . q{-} . slug( $item->{title} );
+    my $branch = join q{-}, grep { $_ ne q{} } 'clod/' . $job->id, slug( $item->{title} );
     my $prior  = @prior ? join( "\n", 'Earlier spokes in this change:', map { "- $_->{repo}: " . ( $_->{branch} ? "branch $_->{branch}" : 'no change' ) . ( $_->{pr_url} ? ", $_->{pr_url}" : q{} ) . "\n  " . ( $_->{summary} // q{} ) } @prior ) : q{};
 
     return in_worktree(
@@ -872,7 +935,8 @@ sub spoke_review ( $job, $config, $args ) {
 
 =func pending_threads
 
-C<($config, \@comments)>.  The review threads whose last message is from an authorized user, each with C<id>, C<path>, C<line> and C<messages>.
+C<($config, \@comments)>.  The review threads whose last message is from an
+authorized user, each with C<id>, C<path>, C<line> and C<messages>.
 
 =cut
 
@@ -896,17 +960,18 @@ sub pending_threads ( $config, $comments ) {
 
 =func pending_comments
 
-C<($config, \@comments)>.  The plain comments on a pull request since the last
-comment of the bot, from authorized users, each with C<id>, C<by> and C<body>.
+C<($config, \@conversation)>.  The entries of a L</conversation> since the last
+one of the bot, from authorized users, each with C<id>, C<by> and C<body>, and
+C<review> for the body of a review.
 
 =cut
 
-sub pending_comments ( $config, $comments ) {
+sub pending_comments ( $config, $conversation ) {
     my @after;
-    for my $c ( sort { $a->{id} <=> $b->{id} } @$comments ) {
+    for my $c (@$conversation) {
         my $by = $c->{user}{login} // q{};
         if ( $by eq $config->{bot} ) { @after = (); next }
-        push @after, { id => 0 + $c->{id}, by => $by, body => $c->{body} // q{} } if authorized( $config, $by );
+        push @after, { id => 0 + $c->{id}, by => $by, body => $c->{body} // q{}, $c->{review} ? ( review => 1 ) : () } if authorized( $config, $by );
     }
     return \@after;
 }
@@ -915,9 +980,9 @@ sub pending_comments ( $config, $comments ) {
 
 Answers what authorized users said on the bot's own pull request since the bot
 last answered: the review threads whose last message is theirs, and the plain
-comments after the last comment of the bot.  It pushes the fixes, replies in
-each thread, and answers the plain comments in one comment.  The prompt also
-holds the whole conversation of the pull request.
+comments and review bodies after the last comment of the bot.  It pushes the
+fixes, replies in each thread, and answers the plain comments in one comment.
+The prompt also holds the whole conversation of the pull request.
 
 =cut
 
@@ -930,7 +995,7 @@ sub spoke_address ( $job, $config, $args ) {
       if $pull->{user}{login} ne $config->{bot} || $pull->{head}{repo}{full_name} ne $repo;
 
     my $pending  = pending_threads( $config, $gh->review_comments( $repo, $item->{number} ) );
-    my $comments = pending_comments( $config, $gh->issue_comments( $repo, $item->{number} ) );
+    my $comments = pending_comments( $config, conversation( $gh, $item ) );
     return $job->finish( { repo => $repo, nothing => 1 } ) if !@$pending && !@$comments;
 
     my $branch = $pull->{head}{ref};
@@ -1094,7 +1159,8 @@ sub hand_back ( $job, $config, $gh, $item, $path, @paragraphs ) {
 
 =func how_to_resume
 
-C<($config)>.  The paragraph that tells a person how to give the work back to the bot.
+C<($config)>.  The paragraph that tells a person how to give the work back to
+the bot.
 
 =cut
 
@@ -1106,7 +1172,8 @@ sub how_to_resume ($config) {
 
 Gives the origin back to a person, through C<hand_back>, when triage answered
 C<upstream> or C<clarify>.  For C<upstream> it explains why the fix is
-upstream.  For C<clarify> it asks the question.
+upstream, and how to fix it there by hand.  For C<clarify> it asks the
+question.
 
 =cut
 
@@ -1129,6 +1196,7 @@ sub kickback ( $job, $config, $args ) {
         $job, $config, $gh, $item, $up->{path},
         "triage found that the best fix for this is upstream, in $up->{project}, which we do not own. I changed nothing.",
         $up->{explanation}, ( $up->{path} ? "The affected path here is `$up->{path}`." : () ), "Why not here: $triage->{reason}",
+        "To fix it there, run claude yourself in a clone of $up->{project}, with perl-slop:pull-requests, and open the pull request. Then mention \@$config->{bot} here with a link to it, so that this issue records it.",
     );
     return $job->finish( { %$asked, scope => 'upstream', project => $up->{project}, summary => $up->{explanation} } );
 }
@@ -1157,7 +1225,7 @@ sub harness_scan ( $job, $config ) {
             $repos{$repo} = { branch => $branch, checks => App::Clod::Harness::check( \%snapshot, $settings ) };
             1;
         };
-        $errors{$repo} = plain_error($@) if !$ok;
+        $errors{$repo} = $@ if !$ok;
     }
     my $marketplace = App::Clod::Harness::marketplace_check(
         $gh->file( $settings->{plugin_repo},      '.claude-plugin/plugin.json' ),
@@ -1180,7 +1248,7 @@ sub assigned_sweep ( $job, $config ) {
     my ( @issues, %errors );
     for my $repo ( @{ spokes( $job->minion, $config ) } ) {
         my $list = eval { $gh->assigned_issues( $repo, $config->{bot} ) };
-        if ( !$list ) { $errors{$repo} = plain_error($@); next }
+        if ( !$list ) { $errors{$repo} = $@; next }
         push @issues, map { { repo => $repo, number => $_->{number}, title => $_->{title}, url => $_->{html_url}, is_pr => $_->{pull_request} ? 1 : 0, updated_at => $_->{updated_at} } } @$list;
     }
     return $job->finish( { checked_at => time, issues => \@issues, errors => \%errors } );
@@ -1204,7 +1272,7 @@ sub spoke_sweep ( $job, $config ) {
     for my $org ( @{ $config->{spoke_orgs} } ) {
         my $list = eval { $gh->org_repos($org) };
         if ( !$list ) {
-            $errors{$org} = plain_error($@);
+            $errors{$org} = $@;
             $by_org{$org} = ( $before->{by_org} // {} )->{$org} // [];
             next;
         }
@@ -1228,9 +1296,53 @@ sub spoke_sweep ( $job, $config ) {
 =head1 DESCRIPTION
 
 Every task takes the configuration first, then the job's arguments.  Each
-task is documented at its sub.  An item is the hash that C<inbox_poll> makes
-from a notification: C<repo>, C<number>, C<kind>, C<is_pr>, C<title>,
-C<requester>, C<thread> and C<comment_url>.
+task is documented at its sub.
+
+An item is the hash that L</inbox_thread> makes from one notification.  Every
+job of the change carries it unchanged: C<triage> and C<reply> get it as their
+argument, and the jobs that triage plans get it as C<item>, beside C<repo> and
+C<instructions> for a spoke job.  Its keys:
+
+=over
+
+=item repo
+
+The C<Owner/Name> of the issue or pull request that the notification is about:
+the origin.  A spoke job works in its own C<repo>, which can be another one.
+
+=item number
+
+The number of the issue or pull request in C<repo>.
+
+=item kind
+
+C<fix>, C<review>, C<address_review> or C<reply>, from the reason of the
+notification.  A C<reply> that finds a request for a change hands triage a copy
+with C<fix>, or C<address_review> on a pull request.
+
+=item is_pr
+
+1 when the origin is a pull request, else 0.
+
+=item title
+
+The title of the origin, for the name of the branch.
+
+=item requester
+
+The authorized user who caused the notification.
+
+=item thread
+
+The id of the notification.  No task reads it.  It is there so that a job in
+F</minion> can be traced back to its notification.
+
+=item comment_url
+
+The API URL of the latest comment when the notification came.  No task reads
+it either, for the same reason.
+
+=back
 
 The spoke tasks, C<spoke_fix>, C<spoke_review> and C<spoke_address>, work in
 L</in_worktree>, which also checks out the C<tool_spokes> for the run, and

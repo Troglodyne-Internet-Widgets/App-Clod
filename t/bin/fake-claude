@@ -16,6 +16,14 @@ if ( my $record = $ENV{FAKE_CLAUDE_RECORD} ) {
     close $fh or die "$record: $!";
 }
 
+# FAKE_CLAUDE_ENV gets the names of the environment variables, one a line,
+# and no values.
+if ( my $names = $ENV{FAKE_CLAUDE_ENV} ) {
+    open my $fh, '>', $names or die "$names: $!";
+    print {$fh} map { "$_\n" } sort keys %ENV;
+    close $fh or die "$names: $!";
+}
+
 # Each --add-dir is there while the run lasts; FAKE_CLAUDE_HEADS gets the
 # commit that each one has checked out, a line of directory, tab, commit each.
 if ( my $heads = $ENV{FAKE_CLAUDE_HEADS} ) {

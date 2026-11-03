@@ -6,75 +6,62 @@ use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
 
-use Carp ();
+use JSON::Validator::Schema::Draft7 ();
 
 my @SCOPES = qw{single multi upstream clarify};
-my %SCOPES = map { $_ => 1 } @SCOPES;
 
-our %SCHEMA = (
-    type       => 'object',
-    required   => [qw{scope reason repos}],
-    properties => {
-        scope  => { type => 'string', enum => \@SCOPES },
-        reason => { type => 'string' },
-        repos  => {
-            type  => 'array',
-            items => {
-                type       => 'object',
-                required   => [qw{repo order instructions}],
-                properties => { repo => { type => 'string' }, order => { type => 'integer' }, instructions => { type => 'string' } },
-            },
-        },
-        upstream => {
-            type       => 'object',
-            properties => { project => { type => 'string' }, path => { type => 'string' }, explanation => { type => 'string' } },
-        },
-        question => {
-            type       => 'object',
-            properties => { text => { type => 'string' }, path => { type => 'string' } },
-        },
-    },
-);
+=func schema
 
-=func validate
-
-C<($answer, \@spokes)>.  Returns the answer with C<repos> sorted by C<order>, and empty for C<upstream> and C<clarify>.  Dies with a message that can go back to the model as it is.
+C<(\@spokes)>.  The JSON Schema of an answer, for C<--json-schema> and for
+L</validate>.  Under C<single> and C<multi>, each repository must be one of
+C<@spokes>, and the count of them must fit the scope.  C<upstream> needs
+C<upstream.project> and C<upstream.explanation>, and C<clarify> needs
+C<question.text>.  A new schema comes back from each call.
 
 =cut
 
-# Returns the answer with repos in order, or dies with what is wrong with it,
-# in words that can go back to the model as they are.
+sub schema ($spokes) {
+    my $text  = sub () { return { type => 'string', minLength => 1 } };
+    my $scope = sub ($name) { return { properties => { scope => { const => $name } } } };
+    my $repos = sub (%count) {
+        my $entry = { type => 'object', required => [qw{repo order instructions}], properties => { repo => { type => 'string', enum => [@$spokes] }, order => { type => 'integer' }, instructions => $text->() } };
+        return { properties => { repos => { %count, items => $entry } } };
+    };
+    return {
+        type       => 'object',
+        required   => [qw{scope reason repos}],
+        properties => {
+            scope    => { type => 'string', enum => [@SCOPES] },
+            reason   => $text->(),
+            repos    => { type => 'array' },
+            upstream => { type => 'object', required => [qw{project explanation}], properties => { project => $text->(), path => { type => 'string' }, explanation => $text->() } },
+            question => { type => 'object', required => ['text'], properties => { text => $text->(), path => { type => 'string' } } },
+        },
+        allOf => [
+            { if => $scope->('single'),   then => $repos->( minItems => 1, maxItems => 1 ) },
+            { if => $scope->('multi'),    then => $repos->( minItems => 2 ) },
+            { if => $scope->('upstream'), then => { required => ['upstream'] } },
+            { if => $scope->('clarify'),  then => { required => ['question'] } },
+        ],
+    };
+}
+
+=func validate
+
+C<($answer, \@spokes)>.  Returns the answer with C<repos> sorted by C<order>,
+and empty for C<upstream> and C<clarify>.  Dies with every way in which the
+answer breaks L</schema>, or with a repository that it names twice, in words
+that can go back to the model as they are.
+
+=cut
+
 sub validate ( $answer, $spokes ) {
-    Carp::croak('The answer is not a JSON object') if ref $answer ne 'HASH';
-    my $scope = $answer->{scope} // q{};
-    Carp::croak("scope must be one of @SCOPES, not '$scope'") if !$SCOPES{$scope};
-    Carp::croak('reason is empty')                            if ( $answer->{reason} // q{} ) eq q{};
-
-    if ( $scope eq 'upstream' ) {
-        my $up = $answer->{upstream};
-        Carp::croak('scope upstream needs upstream.project and upstream.explanation')
-          if ref $up ne 'HASH' || !$up->{project} || !$up->{explanation};
-        return { %$answer, repos => [] };
-    }
-    if ( $scope eq 'clarify' ) {
-        Carp::croak('scope clarify needs question.text') if ref $answer->{question} ne 'HASH' || ( $answer->{question}{text} // q{} ) eq q{};
-        return { %$answer, repos => [] };
-    }
-
-    my %spoke = map { $_ => 1 } @$spokes;
-    my $repos = $answer->{repos};
-    Carp::croak('repos must be a non-empty list') if ref $repos ne 'ARRAY' || !@$repos;
+    my @errors = JSON::Validator::Schema::Draft7->new( schema($spokes) )->validate($answer);
+    die join( "\n", 'The answer does not fit the schema:', map { "  $_" } @errors ) . "\n" if @errors;
+    return { %$answer, repos => [] }                                                       if $answer->{scope} eq 'upstream' || $answer->{scope} eq 'clarify';
     my %seen;
-    for my $entry (@$repos) {
-        Carp::croak('each entry in repos needs repo, order and instructions')
-          if ref $entry ne 'HASH' || !$entry->{repo} || !defined $entry->{order} || ( $entry->{instructions} // q{} ) eq q{};
-        Carp::croak("$entry->{repo} is not a spoke; the spokes are: @$spokes") if !$spoke{ $entry->{repo} };
-        Carp::croak("$entry->{repo} is listed twice")                          if $seen{ $entry->{repo} }++;
-    }
-    Carp::croak( 'scope single names ' . scalar(@$repos) . ' repos' ) if $scope eq 'single' && @$repos != 1;
-    Carp::croak('scope multi names one repo')                         if $scope eq 'multi'  && @$repos < 2;
-
-    return { %$answer, repos => [ sort { $a->{order} <=> $b->{order} } @$repos ] };
+    $seen{ $_->{repo} }++ and die "$_->{repo} is listed twice\n" for @{ $answer->{repos} };
+    return { %$answer, repos => [ sort { $a->{order} <=> $b->{order} } @{ $answer->{repos} } ] };
 }
 
 =func hub_claude_md
@@ -117,7 +104,7 @@ sub intro ($claude_md) {
     use App::Clod::Triage;
 
     my ( $hub, $prompt, @spokes ) = @ARGV;
-    my $outcome = App::Clod::Claude->new->run( dir => $hub, prompt => $prompt, schema => \%App::Clod::Triage::SCHEMA );
+    my $outcome = App::Clod::Claude->new->run( dir => $hub, prompt => $prompt, schema => App::Clod::Triage::schema( \@spokes ) );
     my $answer  = App::Clod::Triage::validate( $outcome->{structured}, \@spokes );
 
 =head1 DESCRIPTION
@@ -125,8 +112,10 @@ sub intro ($claude_md) {
 Triage runs before every fix, review and review answer.  It asks one question:
 is this change best made in one repository, in several, or upstream in a
 project that we do not own?  A fourth answer, C<clarify>, says that the request
-cannot be planned without a person's answer to C<question.text>.  The answer must follow C<%SCHEMA>, and
-C<validate> checks the things that a schema cannot: that each repository is a
-spoke, that none is named twice, and that the count fits the scope.
+cannot be planned without a person's answer to C<question.text>.  L</schema> is
+the form of an answer and every rule that it must follow, so that claude gets
+the rules as well as the form.  L</validate> checks an answer against it, and
+checks the one rule that JSON Schema cannot say: that no repository is named
+twice.
 
 =cut
