@@ -285,6 +285,16 @@ subtest spoke_fix => sub {
     like( $pull->{body}, qr/What\ changed\..*issues\/7/s, 'and a body with the summary and the origin' );
     ok( !-e $tmp->child( "workspace", "work", $info->{id} ), "the worktree and its directory are gone afterwards" );
 
+    my $mock = Test::MockModule->new('App::Clod::Spoke');
+    $mock->redefine( remove_worktree => sub { die "git will not let go\n" } );
+    answer( { title => 't', summary => 'Nothing to do here.' } );
+    my $stuck;
+    like( warning { $stuck = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ) }, qr/could\ not\ remove .* git\ will\ not\ let\ go/, 'a worktree that git will not remove is reported' );
+    $mock->unmock('remove_worktree');
+    ok( !-e $tmp->child( 'workspace', 'work', $stuck->{id} ), 'and its directory is gone anyway' );
+    my $mirror = App::Clod::Tasks::spoke( $app->clod_config, 'Test-Org/one' )->mirror->to_string;
+    unlike( git( '--git-dir', $mirror, qw{worktree list --porcelain} ), qr{/work/$stuck->{id}/}, 'and the bare clone forgets it, so it holds no branch' );
+
     answer( { title => 't', summary => 'Nothing to do here.' } );
     my $none = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
     is( $none->{result}{no_change},   1, 'a run that commits nothing opens nothing' );

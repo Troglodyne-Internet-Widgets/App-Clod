@@ -217,6 +217,18 @@ sub remove_worktree ( $self, $dir ) {
     return;
 }
 
+=method prune_worktrees
+
+Forgets each worktree of the bare clone whose directory is gone.  Such a
+worktree still holds its branch, so no other worktree can check it out.
+
+=cut
+
+sub prune_worktrees ($self) {
+    $self->git( q{-C}, $self->mirror->to_string, qw{worktree prune} );
+    return;
+}
+
 =head1 SYNOPSIS
 
     use 5.040;

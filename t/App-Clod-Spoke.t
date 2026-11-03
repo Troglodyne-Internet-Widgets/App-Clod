@@ -74,7 +74,12 @@ subtest worktree => sub {
     ok( !-d $tree, 'the worktree can be removed' );
     my $again = $spoke->worktree( $dir, existing => 'clod/1-test' );
     is( git( '-C', "$again", 'rev-parse', 'HEAD' ), $sha, 'and made again from the pushed branch' );
-    $spoke->remove_worktree($again);
+    $again->remove_tree;
+    like( dies { $spoke->worktree( $tmp->child( 'ws', 'work', 4, 'Test-Org', 'one' ), existing => 'clod/1-test' ) }, qr/already\ used\ by\ worktree/, 'a worktree deleted behind the back of git still holds its branch' );
+    $spoke->prune_worktrees;
+    my $freed = $spoke->worktree( $tmp->child( 'ws', 'work', 4, 'Test-Org', 'one' ), existing => 'clod/1-test' );
+    is( git( '-C', "$freed", 'rev-parse', 'HEAD' ), $sha, 'until the bare clone is pruned' );
+    $spoke->remove_worktree($freed);
 
     my @detached = map { $spoke->worktree( $tmp->child( 'ws', 'work', $_, 'Test-Org', 'one' ), detach => 'clod/1-test' ) } 2, 3;
     is( [ map { git( '-C', "$_", 'rev-parse', 'HEAD' ) } @detached ], [ $sha, $sha ], 'two detached worktrees can be at one branch at once' );

@@ -725,10 +725,12 @@ sub tools_note ($checkouts) {
 C<($job, $config, $repo, \%how, $work)>.  Takes the lock of the spoke, makes a
 worktree with the options in C<%how>, and a worktree of each tool spoke at its
 L</tool_branch>, runs C<< $work->($spoke, $tree, \%tools) >>, and removes every
-worktree whatever happened.  C<%tools> has C<add_dirs>, the tool worktrees for
-the run, and C<note>, the L</tools_note> for its prompt.  The spoke's own
-repository gets no second worktree when it is a tool spoke.  If another job
-holds the lock, the job retries later.
+worktree and the directory of the job under F<work/> whatever happened.  A
+worktree that git will not remove is deleted with the rest and pruned from its
+bare clone, so that it holds no branch.  C<%tools> has C<add_dirs>, the tool
+worktrees for the run, and C<note>, the L</tools_note> for its prompt.  The
+spoke's own repository gets no second worktree when it is a tool spoke.  If
+another job holds the lock, the job retries later.
 
 A tool worktree is made without the lock of its repository.  The lock keeps two
 jobs from working on one repository at once, and a tool worktree is no such
@@ -759,13 +761,14 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
         $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ) } );
     };
     my $err = $@;
+    my @stuck;
     for my $made (@made) {
-        eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 } or warn "could not remove $made->{dir}: $@";
+        next if eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 };
+        warn "could not remove $made->{dir}: $@";
+        push @stuck, $made->{spoke};
     }
-
-    # work/<job>/<owner>/<name>: the directories above each are this job's alone.
-    rmdir $_->{dir}->dirname for @made;
-    rmdir $root;
+    $root->remove_tree;
+    $_->prune_worktrees for @stuck;
     die $err if $err;
     return @out;
 }
