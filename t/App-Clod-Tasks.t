@@ -593,13 +593,31 @@ subtest 'an outage' => sub {
 };
 
 subtest prune_history => sub {
-    for my $n ( 1 .. 12 ) {
-        my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('spoke_sweep') } );
-        $job->fail("failure $n");
-    }
-    $minion->worker->unregister;
+    my $failed = sub ($count) {
+        my @ids;
+        for my $n ( 1 .. $count ) {
+            my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('spoke_sweep') } );
+            $job->fail("failure $n");
+            push @ids, $job->id;
+        }
+        $minion->worker->unregister;
+        return @ids;
+    };
+    my $left = sub {
+        my $jobs = $minion->jobs( { tasks => ['spoke_sweep'], states => ['failed'] } );
+        my @ids;
+        while ( my $info = $jobs->next ) { push @ids, $info->{id} }
+        return [ sort { $a <=> $b } @ids ];
+    };
+
+    my @ids = $failed->(10);
     App::Clod::Tasks::prune_history( $minion, 'spoke_sweep' );
-    is( $minion->jobs( { tasks => ['spoke_sweep'], states => ['failed'] } )->total, 10, 'failed runs of a scheduled task do not pile up' );
+    is( $left->(), \@ids, 'a scheduled task with no more runs than it keeps loses none' );
+    $minion->reset( { all => 1 } );
+
+    @ids = $failed->(12);
+    App::Clod::Tasks::prune_history( $minion, 'spoke_sweep' );
+    is( $left->(), [ @ids[ 2 .. 11 ] ], 'failed runs of a scheduled task do not pile up, and the newest stay' );
     $minion->reset( { all => 1 } );
 };
 

@@ -200,10 +200,10 @@ scheduled task.
 sub prune_history ( $minion, $task, $keep = $HISTORY ) {
     for my $state (qw{finished failed}) {
         my $jobs = $minion->jobs( { tasks => [$task], states => [$state] } );
+        next if $jobs->total <= $keep;
         my $seen = 0;
         while ( my $info = $jobs->next ) {
-            next if ++$seen <= $keep;
-            $minion->job( $info->{id} )->remove;
+            $minion->job( $info->{id} )->remove if ++$seen > $keep;
         }
     }
     return;
