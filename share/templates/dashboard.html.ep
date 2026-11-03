@@ -88,7 +88,7 @@
     const when = t => t ? new Date(t * 1000).toLocaleString() : '';
     const stateColor = { active: 'primary', inactive: 'secondary', finished: 'success', failed: 'danger' };
     const badge = (text, color) => `<span class="badge text-bg-${color}">${esc(text)}</span>`;
-    const statusBadge = { pass: badge('pass', 'success'), fail: badge('fail', 'danger'), info: badge('info', 'secondary') };
+    const statusBadge = { pass: badge('pass', 'success'), fail: badge('fail', 'danger'), info: badge('info', 'secondary'), skip: badge('skip', 'light') };
     const jobLink = id => `<a href="${minion}/jobs?id=${encodeURIComponent(id)}">#${esc(id)}</a>`;
 
     function card(title, value, sub, icon) {
@@ -144,15 +144,16 @@
         ? `${statusBadge[m.status] || ''} <strong>${esc(m.plugin)}</strong> marketplace pin: ${esc(m.detail)}. <span class="text-body-secondary small">Scanned ${esc(when(d.checked_at))}.</span>`
         : '<span class="text-body-secondary">No harness scan has finished yet.</span>';
       const checks = d.checks || [];
-      document.getElementById('harness-head').innerHTML = `<tr><th>Spoke</th>${checks.map(c => `<th class="text-center small">${esc(c)}</th>`).join('')}</tr>`;
+      document.getElementById('harness-head').innerHTML = `<tr><th>Spoke</th><th class="small">Flavor</th>${checks.map(c => `<th class="text-center small">${esc(c)}</th>`).join('')}</tr>`;
       const repos = Object.keys(d.repos || {}).sort();
       document.getElementById('harness-body').innerHTML = repos.map(r => {
         const byName = Object.fromEntries(d.repos[r].checks.map(c => [c.check, c]));
-        return `<tr><th>${esc(r)}</th>${checks.map(c => {
+        const flavor = d.repos[r].chosen ? esc(d.repos[r].flavor) : `${esc(d.repos[r].flavor)} <span class="text-body-secondary">(default)</span>`;
+        return `<tr><th>${esc(r)}</th><td class="small">${flavor}</td>${checks.map(c => {
           const x = byName[c];
           return x ? `<td class="cell" title="${esc(x.detail)}">${statusBadge[x.status] || esc(x.status)}</td>` : '<td></td>';
         }).join('')}</tr>`;
-      }).join('') + Object.entries(d.errors || {}).map(([r, e]) => `<tr><th>${esc(r)}</th><td colspan="${checks.length}" class="text-danger small">${esc(e)}</td></tr>`).join('');
+      }).join('') + Object.entries(d.errors || {}).map(([r, e]) => `<tr><th>${esc(r)}</th><td colspan="${checks.length + 1}" class="text-danger small">${esc(e)}</td></tr>`).join('');
     }
 
     async function refresh() {

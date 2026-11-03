@@ -1,0 +1,18 @@
+# The flavor of a spoke without .conformance.yml, in the tests.
+name: test-default
+description: What the harness tests hold a spoke to when it names no flavor
+checks:
+  ClaudeMd:
+    file: CLAUDE.md
+    template: templates/CLAUDE.md
+    mentions:
+      - perl-slop:reading-perl
+  ClaudeSettings:
+    file: .claude/settings.json
+    plugins:
+      - test-plugin@test-market
+    missing: info
+  GitHooks:
+    directory: git-hooks
+    hooks:
+      pre-commit: templates/pre-commit

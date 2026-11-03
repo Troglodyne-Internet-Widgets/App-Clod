@@ -5,82 +5,99 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
+use Mojo::File ();
+use Dist::Conformance::Snapshot();
 
 use App::Clod::Harness();
 
-my %settings = ( plugin => 'test-plugin', marketplace => 'test-market', required_workflows => [], require_claude_settings => 0 );
-my %current  = ( 'pre-commit' => 'sha-pre', 'post-commit' => 'sha-post' );
+my $here      = Mojo::File->new(__FILE__)->dirname->to_abs;
+my $STANDARDS = $here->child( 'data', 'standards' );
+my $HOOK      = $STANDARDS->child( 'templates', 'pre-commit' )->slurp;
 
-# A snapshot as harness_scan builds one: the tree, the template SHAs, and the files.
-sub snapshot (%files) {
+my %settings = ( flavor => 'test-default', standards => { directory => "$STANDARDS" }, required_workflows => [] );
 
-    # A key sha:PATH gives PATH its blob SHA, and is not itself a file.
+# A tree as App::Clod::GitHub::tree returns one, of %files, and a sub that
+# fetches them.  A key sha:PATH gives PATH its blob SHA, and is not itself a file.
+sub tree (%files) {
     my %sha;
     for my $key ( grep { index( $_, q{sha:} ) == 0 } keys %files ) {
         $sha{ substr $key, 4 } = delete $files{$key};
     }
-    my %tree = map { $_ => { path => $_, sha => $sha{$_} // "sha-of-$_" } } keys %files;
-    return { tree => \%tree, templates => \%current, file => sub ($path) { $files{$path} } };
+    my %tree = map { $_ => { path => $_, type => 'blob', sha => $sha{$_} // Dist::Conformance::Snapshot::blob_sha( $files{$_} ) } } keys %files;
+    return ( \%tree, sub ($path) { $files{$path} } );
 }
 
-sub by_check ( $snapshot, $over = {} ) {
-    return { map { $_->{check} => $_ } @{ App::Clod::Harness::check( $snapshot, { %settings, %$over } ) } };
+sub snapshot (%files) { return App::Clod::Harness::snapshot( tree(%files) ) }
+
+sub by_check ($result) {
+    return { map { $_->{check} => $_ } @{ $result->{checks} } };
 }
 
-# Modeled on a repository that has had the whole scaffold.
+# Modeled on a repository that has had the whole scaffold of test-default.
 my %conforming = (
-    'CLAUDE.md'                 => "Invoke `perl-slop:reading-perl` first.\n",
-    '.perlcriticrc'             => "# Troglodyne perlcritic policy, for a distribution that declares use 5.040 or\n",
-    '.perltidyrc'               => q{},
-    '.preferred_modules.ini'    => q{},
-    '.pod_stopwords'            => q{},
-    '.tests-covering-map.pl'    => q{},
-    'git-hooks/pre-commit'      => q{},
-    'git-hooks/post-commit'     => q{},
-    'sha:git-hooks/pre-commit'  => 'sha-pre',
-    'sha:git-hooks/post-commit' => 'sha-post',
-    'dist.ini'                  => q{},
-    'weaver.ini'                => q{},
-    'Changes'                   => q{},
-    'prereqs.yml'               => q{},
-    '.claude/settings.json'     => '{"enabledPlugins":{"test-plugin@test-market":true}}',
+    'CLAUDE.md'             => "Invoke `perl-slop:reading-perl` first.\n",
+    'git-hooks/pre-commit'  => $HOOK,
+    '.claude/settings.json' => '{"enabledPlugins":{"test-plugin@test-market":true}}',
 );
 
-subtest check => sub {
-    my $all = by_check( snapshot(%conforming) );
-    is( [ map { $_->{check} } @{ App::Clod::Harness::check( snapshot(%conforming), \%settings ) } ], [ map { $_->[0] } @App::Clod::Harness::CHECKS ], 'one result per check, in order' );
-    for my $name ( 'CLAUDE.md', 'perlcritic profile', 'tool configuration', 'git hooks', 'dist files', 'Claude settings' ) {
-        is( $all->{$name}{status}, 'pass', "a conforming repo passes $name" ) or diag $all->{$name}{detail};
-    }
-    is( $all->{'.perl-slop.json'}{status}, 'info', 'no .perl-slop.json is only info' );
-    is( $all->{workflows}{status},         'info', 'with none required, workflows are info' );
+subtest snapshot => sub {
+    my ( $tree, $fetch ) = tree( 'lib/Foo.pm' => "1;\n" );
+    $tree->{lib} = { path => 'lib', type => 'tree', sha => 'sha-of-lib' };
+    my $snapshot = App::Clod::Harness::snapshot( $tree, $fetch );
+    is( [ sort keys %{ $snapshot->paths } ], ['lib/Foo.pm'],             'the snapshot has the files of the tree, and not its directories' );
+    is( $snapshot->sha('lib/Foo.pm'),        $tree->{'lib/Foo.pm'}{sha}, 'with their blob SHAs' );
+    is( $snapshot->content('lib/Foo.pm'),    "1;\n",                     'and fetches their content' );
+};
 
-    my $bare = by_check( snapshot( 'README.md' => q{} ) );
-    is( $bare->{$_}{status},                                                                                       'fail', "an empty repo fails $_" ) for ( 'CLAUDE.md', 'perlcritic profile', 'tool configuration', 'git hooks' );
-    is( $bare->{'dist files'}{status},                                                                             'info', 'no dist.ini is only info' );
-    is( $bare->{'Claude settings'}{status},                                                                        'info', 'no settings is info when they are not required' );
-    is( by_check( snapshot( 'README.md' => q{} ), { require_claude_settings => 1 } )->{'Claude settings'}{status}, 'fail', 'and fail when they are' );
+subtest 'a spoke without .conformance.yml' => sub {
+    my $result = App::Clod::Harness::check( snapshot(%conforming), \%settings );
+    is( $result->{flavor},                              'test-default',                                   'gets the flavor of the settings' );
+    is( $result->{chosen},                              0,                                                'which it did not choose' );
+    is( [ map { $_->{check} } @{ $result->{checks} } ], [qw{ClaudeMd ClaudeSettings GitHooks workflows}], 'one result for each check of the flavor, in order, and then workflows' );
+    my $all = by_check($result);
+    is( $all->{$_}{status}, 'pass', "a conforming spoke passes $_" ) or diag $all->{$_}{detail} for qw{ClaudeMd ClaudeSettings GitHooks};
 
-    my $old = by_check( snapshot( %conforming, '.perlcriticrc' => "# Troglodyne perlcritic policy\n\nseverity = 1\n" ) );
-    is( $old->{'perlcritic profile'}{detail}, 'outdated profile', 'the old header is an outdated profile' );
+    my $bare = by_check( App::Clod::Harness::check( snapshot( 'README.md' => q{} ), \%settings ) );
+    is( $bare->{ClaudeMd}{status},       'fail', 'an empty spoke fails ClaudeMd' );
+    is( $bare->{GitHooks}{status},       'fail', 'and GitHooks' );
+    is( $bare->{ClaudeSettings}{status}, 'info', 'and settings that the flavor does not require are info' );
 
-    my $custom = by_check( snapshot( %conforming, 'sha:git-hooks/pre-commit' => 'sha-local' ) );
-    is( $custom->{'git hooks'}{status}, 'info', 'a hook unlike the template is info' );
-    like( $custom->{'git hooks'}{detail}, qr/pre-commit/, 'and names the hook' );
+    my $custom = by_check( App::Clod::Harness::check( snapshot( %conforming, 'git-hooks/pre-commit' => "#!/bin/sh\nexit 1\n" ), \%settings ) );
+    is( $custom->{GitHooks}{status}, 'info', 'a hook unlike the template is info' );
+    like( $custom->{GitHooks}{detail}, qr/pre-commit/, 'and names the hook' );
+};
 
-    delete local $conforming{Changes};
-    is( by_check( snapshot(%conforming) )->{'dist files'}{detail}, 'missing: Changes', 'a dist.ini without Changes fails' );
+subtest 'the standards of a scan' => sub {
+    my $standards = App::Clod::Harness::standards( \%settings );
+    is( $standards->base->to_string, "$STANDARDS", 'are the source of the settings' );
 
-    is( by_check( snapshot( %conforming, '.perl-slop.json' => '{"before_edit":{}}' ) )->{'.perl-slop.json'}{status}, 'pass',                'a valid .perl-slop.json passes' );
-    is( by_check( snapshot( %conforming, '.perl-slop.json' => '{"other":1}' ) )->{'.perl-slop.json'}{detail},        'unknown keys: other', 'an unknown key fails' );
-    is( by_check( snapshot( %conforming, '.perl-slop.json' => '{' ) )->{'.perl-slop.json'}{detail},                  'does not parse',      'bad JSON fails' );
+    my %elsewhere = ( %settings, standards => { directory => '/bogus/standards' } );
+    my $result    = App::Clod::Harness::check( snapshot(%conforming), \%elsewhere, source => $standards );
+    is( by_check($result)->{ClaudeMd}{status}, 'pass', 'and a spoke without .conformance.yml reads its flavor from them, not from the settings again' );
+    like( dies { App::Clod::Harness::check( snapshot(%conforming), \%elsewhere ) }, qr/bogus/, 'which it would otherwise' );
+};
 
+subtest 'a spoke that names its flavor' => sub {
+    my $yml = "flavor: test-chosen\nsource:\n  directory: $STANDARDS\n";
+    my $own = App::Clod::Harness::check( snapshot( %conforming, '.conformance.yml' => $yml ), \%settings );
+    is( $own->{flavor},                              'test-chosen',                              'is held to its own flavor' );
+    is( $own->{chosen},                              1,                                          'which it chose' );
+    is( [ map { $_->{check} } @{ $own->{checks} } ], [qw{ClaudeMd ToolConfiguration workflows}], 'and runs only the checks of that flavor' );
+    is( by_check($own)->{ToolConfiguration}{detail}, 'missing: .perltidyrc',                     'which it can fail' );
+
+    my $skips = App::Clod::Harness::check( snapshot( %conforming, '.conformance.yml' => "${yml}skip:\n  - ToolConfiguration\n" ), \%settings );
+    is( by_check($skips)->{ToolConfiguration}{status}, 'skip', 'a check that it skips is skip' );
+
+    like( dies { App::Clod::Harness::check( snapshot( %conforming, '.conformance.yml' => "flavor: test-chosen\n" ),                                 \%settings ) }, qr/source/,    'a .conformance.yml that does not validate dies' );
+    like( dies { App::Clod::Harness::check( snapshot( %conforming, '.conformance.yml' => "flavor: test-gone\nsource:\n  directory: $STANDARDS\n" ), \%settings ) }, qr/test-gone/, 'and so does a flavor that the source does not have' );
+};
+
+subtest workflows => sub {
     my %flows = ( %conforming, '.github/workflows/ci.yml' => q{} );
-    is( by_check( snapshot(%flows), { required_workflows => ['ci.yml'] } )->{workflows}{status},   'pass',              'a required workflow that is there passes' );
-    is( by_check( snapshot(%flows), { required_workflows => ['lint.yml'] } )->{workflows}{detail}, 'missing: lint.yml', 'one that is not fails' );
-
-    my $broken = App::Clod::Harness::check( { tree => {}, file => sub { die 'boom' } }, \%settings );
-    ok( scalar @$broken, 'a check that dies still gives a result for every check' );
+    is( [ App::Clod::Harness::workflows( snapshot(%conforming), \%settings ) ],                        [ 'info', 'none' ],              'with none required and none present, workflows are info' );
+    is( [ App::Clod::Harness::workflows( snapshot(%flows), \%settings ) ],                             [ 'info', 'present: ci.yml' ],   'with none required, they list the ones present' );
+    is( [ App::Clod::Harness::workflows( snapshot(%flows), { required_workflows => ['ci.yml'] } ) ],   [ 'pass', 'all present' ],       'a required workflow that is there passes' );
+    is( [ App::Clod::Harness::workflows( snapshot(%flows), { required_workflows => ['lint.yml'] } ) ], [ 'fail', 'missing: lint.yml' ], 'one that is not fails' );
 };
 
 subtest marketplace_check => sub {

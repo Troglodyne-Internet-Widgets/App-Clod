@@ -131,7 +131,8 @@ $conf->spew(
             owners           => ['Test-Org'],
             auth             => { trusted_header => 'X-Test-User' },
             poll_interval    => 0,
-            claude           => { bin => $here->child( 'bin', 'fake-claude' )->to_string, timeout => 60 },
+            claude           => { bin    => $here->child( 'bin', 'fake-claude' )->to_string, timeout   => 60 },
+            harness          => { flavor => 'test-default',                                  standards => { directory => $here->child( 'data', 'standards' )->to_string } },
         }
     )
 );
@@ -760,9 +761,20 @@ subtest harness_scan => sub {
     %state = ();
     $state{files} = { 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.10.0"}]}' };
     my $info = run_job('harness_scan');
-    is( [ sort keys %{ $info->{result}{repos} } ], \@SPOKES,                                        'every spoke is scanned' );
-    is( $info->{result}{marketplace}{status},      'fail',                                          'and the marketplace pin is checked' );
-    is( $info->{result}{checks},                   [ map { $_->[0] } @App::Clod::Harness::CHECKS ], 'the result names the checks, for the page' );
+    is( [ sort keys %{ $info->{result}{repos} } ], \@SPOKES,                                         'every spoke is scanned' );
+    is( $info->{result}{marketplace}{status},      'fail',                                           'and the marketplace pin is checked' );
+    is( $info->{result}{checks},                   [qw{ClaudeMd ClaudeSettings GitHooks workflows}], 'the result names the checks of every spoke, for the page' );
+    my $one = $info->{result}{repos}{'Test-Org/one'};
+    is( [ @{$one}{qw{flavor chosen}} ],                                          [ 'test-default', 0 ], 'a spoke without .conformance.yml gets the flavor of the configuration' );
+    is( { map { $_->{check} => $_->{status} } @{ $one->{checks} } }->{ClaudeMd}, 'pass',                'and is checked against it' );
+
+    $state{files}{'.conformance.yml'} = "flavor: test-chosen\nsource:\n  directory: " . $here->child( 'data', 'standards' ) . "\n";
+    my $chosen = run_job('harness_scan')->{result};
+    is( $chosen->{checks},                        [qw{ClaudeMd ToolConfiguration workflows}], 'a spoke that names its flavor is checked against that one' );
+    is( $chosen->{repos}{'Test-Org/one'}{chosen}, 1,                                          'which it chose' );
+
+    $state{files}{'.conformance.yml'} = "flavor: test-gone\nsource:\n  directory: " . $here->child( 'data', 'standards' ) . "\n";
+    like( run_job('harness_scan')->{result}{errors}{'Test-Org/one'}, qr/test-gone/, 'and one whose flavor cannot be read is an error of the scan' );
 };
 
 subtest assigned_sweep => sub {

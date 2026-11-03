@@ -9,6 +9,7 @@ use Clone ();
 use JSON::Validator::Schema::Troglodyne();
 
 use App::Clod::Budget();
+use App::Clod::Harness();
 
 my $REPO  = { type => 'string', pattern => '\A[\w.-]+/[\w.-]+\z' };
 my $LOGIN = { type => 'string', pattern => '\A[\w.-]+\z' };
@@ -58,12 +59,13 @@ our %SCHEMA = (
         ),
         harness => section(
             {
-                plugin                  => { type => 'string', default => 'perl-slop' },
-                plugin_repo             => { %$REPO, default => 'Troglodyne-Internet-Widgets/perl-slop-plugin' },
-                marketplace             => { type => 'string', default => 'troglodyne-marketplace' },
-                marketplace_repo        => { %$REPO, default => 'Troglodyne-Internet-Widgets/claude-plugins-marketplace' },
-                required_workflows      => list_of($TEXT),
-                require_claude_settings => { type => 'boolean', default => 0 },
+                plugin             => { type => 'string', default => 'perl-slop' },
+                plugin_repo        => { %$REPO, default => 'Troglodyne-Internet-Widgets/perl-slop-plugin' },
+                marketplace        => { type => 'string', default => 'troglodyne-marketplace' },
+                marketplace_repo   => { %$REPO, default => 'Troglodyne-Internet-Widgets/claude-plugins-marketplace' },
+                required_workflows => list_of($TEXT),
+                flavor             => { type => 'string', minLength => 1, default => 'troglodyne-compat' },
+                standards          => { type => 'object', nullable  => 1, default => undef },
             }
         ),
         otel           => { type => 'object', additionalProperties => $TEXT, default => {} },
@@ -92,8 +94,10 @@ sub validate ($raw) {
     die "The configuration names no spokes and no spoke_orgs\n"                        if !@{ $config->{spokes} } && !@{ $config->{spoke_orgs} };
 
     $config = Clone::clone($config);
-    $config->{minion}    //= "sqlite:$config->{workspace}/minion.db";
-    $config->{bot_email} //= "$config->{bot}\@users.noreply.github.com";
+    $config->{minion}             //= "sqlite:$config->{workspace}/minion.db";
+    $config->{bot_email}          //= "$config->{bot}\@users.noreply.github.com";
+    $config->{harness}{standards} //= { git => "$config->{github_web}/$config->{harness}{plugin_repo}.git", path => 'skills/packaging-perl' };
+    App::Clod::Harness::default_config( $config->{harness} );
     return $config;
 }
 
@@ -211,8 +215,14 @@ so a rule here is permission that no person confirms.  Default none.
 =item harness
 
 C<plugin>, C<plugin_repo>, C<marketplace>, C<marketplace_repo>,
-C<required_workflows> and C<require_claude_settings>.  See
-L<App::Clod::Harness>.
+C<required_workflows>, C<flavor> and C<standards>.  See L<App::Clod::Harness>.
+
+C<flavor> is the flavor of a spoke without a F<.conformance.yml>.  Default
+C<troglodyne-compat>.  C<standards> is where that flavor comes from, as the
+C<source> key of F<.conformance.yml> gives it: C<{ git, ref, path }> or
+C<{ directory, path }>.  Default C<path> F<skills/packaging-perl> of the git
+repository of C<plugin_repo> on C<github_web>.  The configuration dies when
+the two do not make a valid F<.conformance.yml>.
 
 =item system_prompts
 

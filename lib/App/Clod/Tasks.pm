@@ -1204,7 +1204,10 @@ sub kickback ( $job, $config, $args ) {
 =func harness_scan
 
 Hourly.  Runs L<App::Clod::Harness> over every spoke and checks the
-marketplace pin.
+marketplace pin.  The result of each spoke has its flavor, whether the spoke
+chose it, and its checks.  C<checks> names every check of any spoke, sorted,
+for the columns of the page.  The clones of the standards are in
+F<conformance> of the workspace.
 
 =cut
 
@@ -1213,16 +1216,17 @@ sub harness_scan ( $job, $config ) {
     my $gh       = github($config);
     my $settings = $config->{harness};
 
-    my $plugin_branch = default_branch( $gh, $settings->{plugin_repo} );
-    my $plugin_tree   = $gh->tree( $settings->{plugin_repo}, $plugin_branch );
-    my %templates     = map { $_ => ( $plugin_tree->{"$App::Clod::Harness::TEMPLATES/$_"} // {} )->{sha} } @App::Clod::Harness::HOOKS;
+    my %options = ( cache => "$config->{workspace}/conformance" );
+    $options{source} = App::Clod::Harness::standards( $settings, %options );
 
-    my ( %repos, %errors );
+    my ( %repos, %errors, %checks );
     for my $repo ( @{ spokes( $job->minion, $config ) } ) {
         my $ok = eval {
             my $branch   = default_branch( $gh, $repo );
-            my %snapshot = ( tree => $gh->tree( $repo, $branch ), templates => \%templates, file => sub ($path) { $gh->file( $repo, $path, $branch ) } );
-            $repos{$repo} = { branch => $branch, checks => App::Clod::Harness::check( \%snapshot, $settings ) };
+            my $snapshot = App::Clod::Harness::snapshot( $gh->tree( $repo, $branch ), sub ($path) { $gh->file( $repo, $path, $branch ) } );
+            my $result   = App::Clod::Harness::check( $snapshot, $settings, %options );
+            $checks{ $_->{check} } = 1 for @{ $result->{checks} };
+            $repos{$repo} = { branch => $branch, %$result };
             1;
         };
         $errors{$repo} = $@ if !$ok;
@@ -1232,7 +1236,7 @@ sub harness_scan ( $job, $config ) {
         $gh->file( $settings->{marketplace_repo}, '.claude-plugin/marketplace.json' ),
         $settings->{plugin},
     );
-    return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, marketplace => $marketplace, checks => [ map { $_->[0] } @App::Clod::Harness::CHECKS ] } );
+    return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, marketplace => $marketplace, checks => [ sort keys %checks ] } );
 }
 
 =func assigned_sweep
