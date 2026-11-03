@@ -103,7 +103,7 @@ expires.
 
 sub hold ($job) {
     my ( $minion, $task ) = ( $job->minion, $job->task );
-    return $job->retry( { delay => $App::Clod::Outage::SECONDS } ) if !$SCHEDULED{$task};
+    return retry_after( $job, $App::Clod::Outage::SECONDS ) if !$SCHEDULED{$task};
     prune_history( $minion, $task );
     return $job->finish( { %{ last_result( $minion, $task ) // {} }, held => 1 } );
 }
@@ -239,6 +239,18 @@ sub system_text ( $config, $task ) {
     return @parts ? join( "\n\n", @parts ) : undef;
 }
 
+=func retry_after
+
+C<($job, $delay)>.  Retries the job in C<$delay> seconds, and returns nothing,
+which is how L</run_claude> tells its callers that the job will retry.
+
+=cut
+
+sub retry_after ( $job, $delay ) {
+    $job->retry( { delay => $delay } );
+    return;
+}
+
 =func run_claude
 
 C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, with
@@ -252,10 +264,7 @@ refused token starts a Claude outage, see L<App::Clod::Outage>.
 
 sub run_claude ( $job, $config, %run ) {
     my $minion = $job->minion;
-    if ( App::Clod::Budget::paused($minion) ) {
-        $job->retry( { delay => 600 } );
-        return;
-    }
+    return retry_after( $job, 600 ) if App::Clod::Budget::paused($minion);
     my $events  = 0;
     my $outcome = claude($config)->run(
         system => system_text( $config, $job->task ),
@@ -268,15 +277,13 @@ sub run_claude ( $job, $config, %run ) {
     if ( $outcome->{unauthorized} ) {
         App::Clod::Outage::begin( $job, claude => $outcome->{result} // $outcome->{stderr} );
         log_note( $job, 'Claude refused the token; Claude work waits' );
-        $job->retry( { delay => $App::Clod::Outage::SECONDS } );
-        return;
+        return retry_after( $job, $App::Clod::Outage::SECONDS );
     }
     if ( $outcome->{quota_reset} ) {
         App::Clod::Budget::pause( $minion, $outcome->{quota_reset} );
         if ( !$outcome->{ok} ) {
             log_note( $job, 'the Claude quota ran out; retrying after it resets' );
-            $job->retry( { delay => List::Util::max( 60, $outcome->{quota_reset} - time + 60 ) } );
-            return;
+            return retry_after( $job, List::Util::max( 60, $outcome->{quota_reset} - time + 60 ) );
         }
     }
     return $outcome;
@@ -722,10 +729,7 @@ job works in a tool spoke, for up to four hours.
 
 sub in_worktree ( $job, $config, $repo, $how, $work ) {
     my $guard = $job->minion->guard( "repo:$repo", $REPO_SECONDS );
-    if ( !$guard ) {
-        $job->retry( { delay => 120 } );
-        return;
-    }
+    return retry_after( $job, 120 ) if !$guard;
     my $root  = Mojo::File->new( $config->{workspace}, 'work', $job->id );
     my $spoke = spoke( $config, $repo );
     my @made  = ( { spoke => $spoke, dir => $root->child($repo) } );

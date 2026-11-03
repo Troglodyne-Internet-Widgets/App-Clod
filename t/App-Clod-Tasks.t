@@ -298,6 +298,24 @@ subtest spoke_fix => sub {
     my $after = run_id( $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/two', instructions => 'x' } ], { parents => [ $next->{id} ] } ) );
     is( $after->{result}{waiting}, 1, 'and so does the one after that' );
     $minion->reset( { all => 1 } );
+
+    $minion->lock( 'repo:Test-Org/one', 60 );
+    my $locked = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    is( $locked->{state}, 'inactive', 'a fix whose spoke another job holds goes back in the queue' );
+    ok( $locked->{delayed} > time + 60, 'for later' );
+    $minion->unlock('repo:Test-Org/one');
+    $minion->reset( { all => 1 } );
+};
+
+subtest retry_after => sub {
+    my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('reply') } );
+    my @got = App::Clod::Tasks::retry_after( $job, 300 );
+    $minion->worker->unregister;
+    is( \@got, [], 'it returns nothing' );
+    my $info = $job->info;
+    is( $info->{retries}, 1, 'and retries the job' );
+    ok( $info->{delayed} > time + 240 && $info->{delayed} <= time + 300, 'in that many seconds' ) or diag $info->{delayed} - time;
+    $minion->reset( { all => 1 } );
 };
 
 subtest report => sub {
