@@ -229,9 +229,10 @@ Each spoke has one bare clone under F<mirrors/> in the workspace, and a
 worktree for each job that changes it.  A second worktree under F<ref/> follows
 the default branch, so that triage can read every spoke.
 
-It runs the git program rather than a library, because a commit there must run
-the hooks of the repository, and the claude run in the same worktree uses git
-too.
+It runs the git program through L<IPC::Run>, with a timeout, rather than a
+library.  L<Git::Raw> builds a bundled copy of an old libgit2 rather than the
+one on the host, and L<Git::Repository> can wait on a stalled fetch or push
+forever.  The claude run in the same worktree uses the git program too.
 
 The token goes to git as an HTTP header through C<GIT_CONFIG_*> variables.  It
 is never in a remote URL or in the clone's configuration.
