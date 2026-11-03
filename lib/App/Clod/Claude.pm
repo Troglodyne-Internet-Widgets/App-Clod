@@ -256,7 +256,7 @@ my %ABSORB = (
 );
 
 sub absorb ( $outcome, $event ) {
-    my $absorb = $ABSORB{ $event->{type} // q{} };
+    my $absorb = defined $event->{type} ? $ABSORB{ $event->{type} } : undef;
     $absorb->( $outcome, $event ) if $absorb;
     return;
 }
