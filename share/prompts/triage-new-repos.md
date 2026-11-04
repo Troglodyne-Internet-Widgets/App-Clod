@@ -1,5 +1,5 @@
 This bot can make a new repository, in one of these organizations: {{orgs}},
-and at most {{max}} for this request. Plan one only when a person asked for a
+and one at most for this request. Plan one only when a person asked for a
 new repository in so many words, in something that they wrote above. That the
 change would fit well in a repository of its own is not enough: then plan it
 in a spoke, or ask with `clarify`. Most requests need no new repository.

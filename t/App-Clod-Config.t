@@ -75,17 +75,14 @@ subtest validate => sub {
 };
 
 subtest create_repos => sub {
-    my $config = App::Clod::Config::validate( {%minimal} );
-    is( $config->{create_repos}, { orgs => [], max => 1 }, 'no repository is made unless the configuration names an organization' );
-    my $on = App::Clod::Config::validate( { %minimal, spoke_orgs => ['Test-Org'], create_repos => { orgs => ['Test-Org'] } } );
-    is( $on->{create_repos}, { orgs => ['Test-Org'], max => 1 }, 'an organization of spoke_orgs lives, with one repository a request by default' );
+    ok( !App::Clod::Config::validate( {%minimal} )->{create_repos},                                                 'no repository is made unless the configuration turns it on' );
+    ok( App::Clod::Config::validate( { %minimal, spoke_orgs => ['Test-Org'], create_repos => 1 } )->{create_repos}, 'with spoke_orgs, it can be' );
     like(
-        dies { App::Clod::Config::validate( { %minimal, create_repos => { orgs => ['Test-Org'] } } ) },
-        qr/\Acreate_repos\.orgs\ names\ Test-Org,\ which\ spoke_orgs/,
-        'an organization outside spoke_orgs dies, because its new repositories would not stay spokes'
+        dies { App::Clod::Config::validate( { %minimal, create_repos => 1 } ) },
+        qr/\Acreate_repos\ needs\ spoke_orgs/,
+        'without spoke_orgs it dies, because a new repository would not stay a spoke'
     );
-    refused( { %minimal, create_repos => { max  => 0 } },       '/create_repos/max: 0 < minimum(1)',           'a cap below one dies' );
-    refused( { %minimal, create_repos => { orgs => ['A/b'] } }, '/create_repos/orgs/0: String does not match', 'an organization that is a repository dies' );
+    like( dies { App::Clod::Config::validate( { %minimal, spoke_orgs => ['Test-Org'], create_repos => { orgs => ['Test-Org'] } } ) }, qr{/create_repos:}, 'orgs and max are gone, so the old form dies' );
 };
 
 subtest follow_up_max => sub {

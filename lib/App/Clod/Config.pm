@@ -72,12 +72,7 @@ our %SCHEMA = (
         system_prompts => section( { map { $_ => $TEXT } @App::Clod::Budget::CLAUDE_TASKS } ),
         spoke_prompt   => { type => 'string',  nullable => 1, default => undef },
         follow_up_max  => { type => 'integer', minimum  => 0, default => 3 },
-        create_repos   => section(
-            {
-                orgs => list_of($LOGIN),
-                max  => { type => 'integer', minimum => 1, default => 1 },
-            }
-        ),
+        create_repos   => { type => 'boolean', default  => 0 },
     },
 );
 
@@ -97,11 +92,9 @@ sub validate ($raw) {
     my $validator = JSON::Validator::Schema::Troglodyne->new;
     $validator->coerce( { %{ $validator->coerce }, defaults => 1 } );
     my @errors = $validator->validate( $config, \%SCHEMA );
-    die join( "\n", 'The configuration is not valid:', map { "  $_" } @errors ) . "\n" if @errors;
-    die "The configuration names no spokes and no spoke_orgs\n"                        if !@{ $config->{spokes} } && !@{ $config->{spoke_orgs} };
-    my %swept = map  { $_ => 1 } @{ $config->{spoke_orgs} };
-    my @lost  = grep { !$swept{$_} } @{ $config->{create_repos}{orgs} };
-    die "create_repos.orgs names @lost, which spoke_orgs does not, so a repository made there would stop being a spoke\n" if @lost;
+    die join( "\n", 'The configuration is not valid:', map { "  $_" } @errors ) . "\n"                                     if @errors;
+    die "The configuration names no spokes and no spoke_orgs\n"                                                            if !@{ $config->{spokes} } && !@{ $config->{spoke_orgs} };
+    die "create_repos needs spoke_orgs, because a repository is made in one of them, so that the sweep keeps it a spoke\n" if $config->{create_repos} && !@{ $config->{spoke_orgs} };
 
     $config = Clone::clone($config);
     $config->{minion}             //= "sqlite:$config->{workspace}/minion.db";
@@ -280,16 +273,15 @@ L<App::Clod::Tasks/file_issues>.
 
 =item create_repos
 
-Whether triage may ask the hub to make a new repository, and where.  Default
-off: C<orgs> is empty, and then the hub makes none.
+Whether triage may ask the hub to make a new repository.  Default false.
 
-C<orgs> are the organizations that the hub may make a repository in, each one
-also in C<spoke_orgs>, so that the sweep keeps the new repository a spoke
-after the job that made it.  The configuration dies otherwise.  The token of
-the bot must be allowed to make repositories there.
+The hub makes it in one of the organizations of C<spoke_orgs>, so that the
+sweep keeps it a spoke after the job that made it.  So the configuration dies
+when this is true and C<spoke_orgs> is empty.  The token of the bot must be
+allowed to make repositories there.
 
-C<max> is how many repositories one request may make, counted over every job
-for the same issue or pull request.  Default 1.
+One request makes one repository at most, counted over every job for the same
+issue or pull request.
 
 Every repository that the hub makes is public, and the hub refuses a request
 for a private one.  A bot that serves public and private repositories at once
