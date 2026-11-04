@@ -946,6 +946,11 @@ subtest create_repo => sub {
     $state{issue_comments} = [ { id => 1, user => { login => 'someone' }, body => 'Please make a new repository for this one.' } ];
     answer( {%plan} );
     like( run_job( triage => \%item )->{result}{error}, qr/not\ in\ anything\ that\ trusted\ wrote/, 'triage cannot ask for a repository on the words of someone else' );
+    $state{review_comments} = [ { id => 51, user => { login => 'trusted' }, path => 'lib/X.pm', line => 3, body => "Please make a new repository for\nthis one." } ];
+    answer( {%plan} );
+    my $line = run_job( triage => { %item, is_pr => 1, number => 12 } );
+    is( $line->{state}, 'finished', 'but it can on the words of a trusted user in a line comment of a review' ) or diag Mojo::Util::dumper $line->{result};
+    delete $state{review_comments};
     answer( +{ %plan, new_repos => [ +{ %$new, asked_by => 'someone' } ] } );
     like( run_job( triage => \%item )->{result}{error}, qr/someone\ is\ not\ an\ authorized\ user/, 'nor for someone who is not authorized' );
     $config->{create_repos} = { orgs => [], max => 1 };

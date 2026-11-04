@@ -666,13 +666,15 @@ sub made_for ( $minion, $origin, $except = 0 ) {
 =func written
 
 C<($gh, $item)>.  What each person wrote on the issue or pull request: its
-body and every entry of its L</conversation>, each a C<{by, body}>.
+body, every entry of its L</conversation>, and on a pull request every line
+comment of its review threads, each a C<{by, body}>.
 
 =cut
 
 sub written ( $gh, $item ) {
     my $issue = $gh->issue( $item->{repo}, $item->{number} );
-    return [ map { { by => $_->{user}{login} // q{}, body => $_->{body} // q{} } } $issue, @{ conversation( $gh, $item ) } ];
+    my @lines = $item->{is_pr} ? @{ $gh->review_comments( $item->{repo}, $item->{number} ) } : ();
+    return [ map { { by => $_->{user}{login} // q{}, body => $_->{body} // q{} } } $issue, @{ conversation( $gh, $item ) }, @lines ];
 }
 
 =func asked_for
@@ -690,7 +692,7 @@ the words of somebody else.
 sub asked_for ( $config, $written, $entry ) {
     my $who = $entry->{asked_by};
     die "$who is not an authorized user, so $entry->{repo} cannot be made on their word\n" if !authorized( $config, $who );
-    my $flat  = sub ($text) { return join q{ }, split q{ }, $text };
+    my $flat  = sub ($text) { return $text =~ s/\s+/ /gr =~ s/\A\ |\ \z//gr };
     my $quote = $flat->( $entry->{quote} );
     return 1 if List::Util::any { $_->{by} eq $who && index( $flat->( $_->{body} ), $quote ) >= 0 } @$written;
     die "The quote that asks for $entry->{repo} is not in anything that $who wrote here; make a new repository only when they asked for one\n";
