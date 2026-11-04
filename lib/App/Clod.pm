@@ -146,7 +146,7 @@ bot on the issue with a link to it.  Nothing watches the upstream pull request
 yet, so a change that our code needs after it merges is for a person to make.
 
 If a site turns on C<create_repos>, an authorized user can ask the bot for a
-new repository, in one of the organizations that it names.  Triage plans one
+new repository, in one of the organizations of C<spoke_orgs>.  Triage plans one
 only when that user asked for it in their own words, which the bot checks
 against what they wrote.  The worker makes it, public and with a first commit, as
 the bot: the claude runs never hold a token.  The new repository is a spoke at
@@ -226,7 +226,7 @@ F<git-hooks>, so a commit in a worktree fails when a tool is missing.
 A bot account with write access to every spoke, and a classic token with the
 C<repo> and C<notifications> scopes.  The Overview tab names a missing scope.
 For C<create_repos>, the account must also be allowed to make repositories in
-each organization that it names.
+each organization of C<spoke_orgs>.
 
 =back
 

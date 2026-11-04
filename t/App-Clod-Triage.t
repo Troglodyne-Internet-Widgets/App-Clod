@@ -54,7 +54,7 @@ subtest validate => sub {
 };
 
 subtest 'new repositories' => sub {
-    my %create = ( orgs => ['Test-Org'], max => 1 );
+    my %create = ( orgs => ['Test-Org'] );
     my $new    = { org => 'Test-Org', name => 'Fresh-Dist', description => 'A fresh distribution.', asked_by => 'trusted', quote => 'Make a new repository for this.' };
     my %answer = ( scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/Fresh-Dist', 2 ) ], new_repos => [$new] );
 
@@ -63,6 +63,9 @@ subtest 'new repositories' => sub {
     like( $ok->{new_repos}, [ { repo => 'Test-Org/Fresh-Dist', module => 'Fresh::Dist' } ], 'which comes back with its full name, and a module from its name when triage named none' );
     is( App::Clod::Triage::validate( +{ %answer, new_repos => [ +{ %$new, module => 'Fresh::Thing' } ] }, \@spokes, %create )->{new_repos}[0]{module}, 'Fresh::Thing', 'or the module that triage named' );
     is( App::Clod::Triage::validate( +{ %answer, scope => 'clarify', question => { text => 'Which?' } }, \@spokes, %create )->{new_repos}, [], 'a clarify answer makes no repository, whatever it named' );
+
+    my $second = +{ %$new, name => 'Other-Dist' };
+    like( dies { App::Clod::Triage::validate( +{ %answer, new_repos => [ $new, $second ] }, \@spokes, %create ) }, qr{/new_repos:\ Too\ many\ items:\ 2/1}, 'one answer makes one repository at most' );
 
     my $off = App::Clod::Triage::schema( \@spokes );
     is( $off->{properties}{new_repos}{maxItems}, 0, 'without creation, the schema allows no new repository' );
@@ -99,7 +102,7 @@ subtest 'follow-up issues' => sub {
     is( App::Clod::Triage::validate( +{ scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] }, \@spokes )->{follow_ups},          [],               'an answer that files none has an empty list' );
     my $fresh = { org => 'Test-Org', name => 'Fresh', description => 'd', asked_by => 'trusted', quote => 'Make a new repository for it.' };
     my %both  = ( scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/Fresh', 1 ) ], new_repos => [$fresh], follow_ups => [ +{ %$issue, repo => 'Test-Org/Fresh' } ] );
-    ok( lives { App::Clod::Triage::validate( {%both}, \@spokes, orgs => ['Test-Org'], max => 1, follow_ups => 1 ) }, 'a follow-up issue may go in a new repository of the same answer' );
+    ok( lives { App::Clod::Triage::validate( {%both}, \@spokes, orgs => ['Test-Org'], follow_ups => 1 ) }, 'a follow-up issue may go in a new repository of the same answer' );
 
     my %bad = (
         'filing off'             => [ [ {%only} ],                                                                                                     qr{/follow_ups:\ Too\ many\ items:\ 1/0} ],

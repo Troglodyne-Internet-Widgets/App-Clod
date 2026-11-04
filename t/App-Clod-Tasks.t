@@ -870,7 +870,7 @@ subtest create_repo => sub {
     @calls = ();
     my $config = $app->clod_config;
     $config->{spoke_orgs}   = ['Test-Org'];
-    $config->{create_repos} = { orgs => ['Test-Org'], max => 1 };
+    $config->{create_repos} = 1;
     $state{absent}          = { 'Test-Org/Fresh-Dist' => 1 };
     $state{issue_comments}  = [ { id => 1, user => { login => 'trusted' }, body => "Please make a new repository\nfor this one." } ];
     my $new  = { org => 'Test-Org', name => 'Fresh-Dist', description => 'A fresh distribution.', asked_by => 'trusted', quote => 'Please make a new repository for this one.' };
@@ -881,7 +881,7 @@ subtest create_repo => sub {
     my $triage = run_job( triage => \%item );
     is( $triage->{state}, 'finished', 'a triage that asks for a repository that a trusted user asked for finishes' ) or diag Mojo::Util::dumper $triage->{result};
     my $where = qr/in\ one\ of\ these\ organizations:\ Test-Org,/;
-    like( record_of("$tmp/create-record")->{prompt}, qr/$where\nand\ at\ most\ 1/, 'triage is told where it may ask for one, and how many' );
+    like( record_of("$tmp/create-record")->{prompt}, qr/$where\nand\ one\ at\ most\ for\ this\ request/, 'triage is told where it may ask for one, and that it is one' );
     my @children = map { $minion->job($_)->info } @{ $triage->{result}{children} };
     is( [ map { $_->{task} } @children ], [qw{create_repo spoke_fix spoke_fix report}], 'the repository is made first, then each spoke works, then the report' );
     is( $children[1]{parents},            [ $children[0]{id} ],                         'the first spoke waits for the new repository' );
@@ -915,17 +915,18 @@ subtest create_repo => sub {
     @calls = ();
     $state{absent}{'Test-Org/Second'} = 1;
     my %left = App::Clod::Tasks::creation( $minion, $config, \%item );
-    is( [ @left{qw{orgs max}} ], [ undef, undef ], 'once the origin has made as many as it may, triage may ask for no more' );
+    is( $left{orgs}, undef, 'once the origin has made one, triage may ask for no more' );
     my $second = qr{Test-Org/Second};
+    my $one    = qr/one\ per\ request/;
     my $capped = run_job( create_repo => { item => \%item, org => 'Test-Org', name => 'Second', description => 'd', asked_by => 'trusted' } );
-    like( $capped->{result}, { refused => qr/made\ 1\ already,\ and\ the\ configuration\ allows\ 1/, question => T() }, 'and the hub refuses one more for the same origin' );
+    like( $capped->{result}, { refused => qr/made\ a\ repository\ already,\ and\ I\ make\ $one/, question => T() }, 'and the hub refuses one more for the same origin' );
     is( calls_of('create'), [], 'so it makes nothing' );
     like( calls_of('comment')->[0][2]{body}, qr/\A\@trusted:\ I\ did\ not\ make\ the\ repository\ $second/, 'and gives the origin back with the reason' );
 
     @calls = ();
     my $other = { %item, number => 8 };
     $state{absent}{'Other-Org/Fresh'} = 1;
-    like( run_job( create_repo => { item => $other, org => 'Other-Org', name => 'Fresh', description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/does\ not\ let\ me\ make\ repositories\ in\ Other-Org/ }, 'the hub refuses an organization that the configuration does not name' );
+    like( run_job( create_repo => { item => $other, org => 'Other-Org', name => 'Fresh', description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/does\ not\ let\ me\ make\ repositories\ in\ Other-Org/ }, 'the hub refuses an organization that is not in spoke_orgs' );
     like( run_job( create_repo => { item => $other, org => 'Test-Org',  name => 'two',   description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/Test-Org\/two\ exists\ already/ },                        'and a name that exists' );
     like( run_job( create_repo => { item => $other, org => 'Test-Org',  name => 'x.git', description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/does\ not\ fit\ the\ rule/ },                             'and a name that does not fit the rule' );
     $state{absent}{'Test-Org/Hidden'} = 1;
@@ -960,15 +961,15 @@ subtest create_repo => sub {
     delete $state{review_comments};
     answer( +{ %plan, new_repos => [ +{ %$new, asked_by => 'someone' } ] } );
     like( run_job( triage => \%item )->{result}{error}, qr/someone\ is\ not\ an\ authorized\ user/, 'nor for someone who is not authorized' );
-    $config->{create_repos} = { orgs => [], max => 1 };
+    $config->{create_repos} = 0;
     $state{issue_comments} = [ { id => 1, user => { login => 'trusted' }, body => 'Please make a new repository for this one.' } ];
     answer( {%plan} );
-    like( run_job( triage => \%item )->{result}{error}, qr{/new_repos:\ Too\ many\ items:\ 1/0}, 'nor for any, when the configuration names no organization' );
+    like( run_job( triage => \%item )->{result}{error}, qr{/new_repos:\ Too\ many\ items:\ 1/0}, 'nor for any, when create_repos is false' );
     is( calls_of('create'), [], 'and nothing is made' );
 
     $minion->reset( { all => 1 } );
     delete $config->{spoke_orgs};
-    $config->{create_repos} = { orgs => [], max => 1 };
+    $config->{create_repos} = 0;
     delete $fake{FAKE_CLAUDE_RECORD};
 };
 

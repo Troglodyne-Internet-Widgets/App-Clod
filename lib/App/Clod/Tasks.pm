@@ -630,11 +630,10 @@ sub spoke_briefing ($config) {
 =func creation
 
 C<($minion, $config, $item)>.  What L<App::Clod::Triage/schema> is told that
-the answer for this item may ask the hub to make.  For new repositories,
-C<orgs> from C<create_repos>, and C<max>, how many this request may still
-make, which is C<create_repos.max> less L</made_for> the origin; neither is
-there when C<create_repos> names no organization or none are left.  For
-follow-up issues, C<follow_ups>, how many this request may still file, which
+the answer for this item may ask the hub to make.  For a new repository,
+C<orgs>, which is C<spoke_orgs>.  It is not there when C<create_repos> is
+false, or when the origin made one already, by L</made_for>.  For follow-up
+issues, C<follow_ups>, how many this request may still file, which
 is C<follow_up_max> less L</filed_for> the origin; it is not there when none
 are left.  Empty for a review, which changes nothing.
 
@@ -643,10 +642,9 @@ are left.  Empty for a review, which changes nothing.
 sub creation ( $minion, $config, $item ) {
     return if $item->{kind} eq 'review';
     my $origin = origin_of($item);
-    my $create = $config->{create_repos};
-    my $repos  = @{ $create->{orgs} } ? $create->{max} - made_for( $minion, $origin ) : 0;
+    my $repo   = $config->{create_repos} && !made_for( $minion, $origin );
     my $issues = $config->{follow_up_max} - filed_for( $minion, $origin );
-    return ( ( $repos > 0 ? ( orgs => $create->{orgs}, max => $repos ) : () ), ( $issues > 0 ? ( follow_ups => $issues ) : () ) );
+    return ( ( $repo ? ( orgs => $config->{spoke_orgs} ) : () ), ( $issues > 0 ? ( follow_ups => $issues ) : () ) );
 }
 
 =func made_for
@@ -769,8 +767,8 @@ sub triage ( $job, $config, $item ) {
         owners         => join( q{, }, @{ $config->{owners} } ),
         context        => context( $config, $gh, $item ),
         spoke_briefing => spoke_briefing($config),
-        new_repos      => $create{orgs}       ? prompt( 'triage-new-repos',  orgs => join( q{, }, @{ $create{orgs} } ), max => $create{max} ) : q{},
-        follow_ups     => $create{follow_ups} ? prompt( 'triage-follow-ups', max  => $create{follow_ups} ) : q{},
+        new_repos      => $create{orgs}       ? prompt( 'triage-new-repos',  orgs => join( q{, }, @{ $create{orgs} } ) ) : q{},
+        follow_ups     => $create{follow_ups} ? prompt( 'triage-follow-ups', max  => $create{follow_ups} )               : q{},
     );
 
     my ( @outcomes, $answer, $error );
@@ -1445,23 +1443,22 @@ sub create_repo ( $job, $config, $args ) {
 C<($job, $config, $gh, \%args)>.  Why the C<create_repo> job must not make its
 repository, or undef when it may.  This is the guard of the hub, whatever
 triage said: the repository must not be asked for as private, the
-organization must be in C<create_repos.orgs>, the name must be
-L<App::Clod::Triage/repo_name>, the origin must have made fewer than
-C<create_repos.max> repositories so far, counted by L</made_for>, and the
-repository must not exist.  The bot never takes over a repository that it did
+C<create_repos> must be true and the organization in C<spoke_orgs>, the name
+must be L<App::Clod::Triage/repo_name>, the origin must have made no
+repository so far, counted by L</made_for>, and the repository must not
+exist.  The bot never takes over a repository that it did
 not make, even one of the same organization: it was not asked to change that
 one.  Why it makes no private repository is in L<App::Clod/CAVEATS>.
 
 =cut
 
 sub refusal ( $job, $config, $gh, $args ) {
-    my $create = $config->{create_repos};
     my ( $org, $name ) = @{$args}{qw{org name}};
     return 'it is to be private, and I make public repositories only: a bot that serves public and private repositories at once can leak what is in one into the other' if $args->{private};
-    return "the configuration does not let me make repositories in $org"                                                                                                if !List::Util::any { $_ eq $org } @{ $create->{orgs} };
+    return "the configuration does not let me make repositories in $org"                                                                                                if !$config->{create_repos} || !List::Util::any { $_ eq $org } @{ $config->{spoke_orgs} };
     return 'its name does not fit the rule for a new repository'                                                                                                        if !App::Clod::Triage::repo_name($name);
     my $made = made_for( $job->minion, origin_of( $args->{item} ), $job->id );
-    return "this request has made $made already, and the configuration allows $create->{max}"   if $made >= $create->{max};
+    return 'this request has made a repository already, and I make one per request'             if $made;
     return "$org/$name exists already, and I do not take over a repository that I did not make" if $gh->repo_exists("$org/$name");
     return;
 }

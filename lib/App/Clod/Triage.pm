@@ -26,11 +26,10 @@ C<question.text>.  C<follow_up> needs at least one entry of C<follow_ups> and
 no entry of C<repos>: the request is settled once the issues are filed.  A
 new schema comes back from each call.
 
-C<%allow> says what else the answer may ask the hub to make.  C<orgs> and
-C<max> are for new repositories, in C<new_repos>: the organizations that it
-may make them in, and how many one answer may ask for, default 1.  Without
-C<orgs>, C<new_repos> must be empty, and C<repos> names spokes alone.  With
-them, an entry of C<repos> or of C<follow_ups> may also name C<Org/name>, for
+C<%allow> says what else the answer may ask the hub to make.  C<orgs> is for
+a new repository, in C<new_repos>: the organizations that it may make one in.
+One answer may ask for one at most.  Without C<orgs>, C<new_repos> must be
+empty, and C<repos> names spokes alone.  With it, an entry of C<repos> or of C<follow_ups> may also name C<Org/name>, for
 one of C<orgs> and a name that is L</repo_name>, and L</validate> checks that
 it is one of C<new_repos>.  C<follow_ups> is how many follow-up issues the
 answer may ask for, default none.
@@ -83,10 +82,10 @@ sub schema ( $spokes, %allow ) {
             scope      => { type => 'string', enum => [@SCOPES] },
             reason     => $text->(),
             repos      => { type => 'array' },
-            new_repos  => { type => 'array', maxItems => @orgs ? $allow{max} // 1 : 0, items => $new_repo },
-            follow_ups => { type => 'array', maxItems => $allow{follow_ups}  // 0, items => $follow_up },
+            new_repos  => { type => 'array',  maxItems => @orgs ? 1 : 0,             items      => $new_repo },
+            follow_ups => { type => 'array',  maxItems => $allow{follow_ups} // 0,   items      => $follow_up },
             upstream   => { type => 'object', required => [qw{project explanation}], properties => { project => $text->(), path => { type => 'string' }, explanation => $text->() } },
-            question   => { type => 'object', required => ['text'], properties => { text => $text->(), path => { type => 'string' } } },
+            question   => { type => 'object', required => ['text'],                  properties => { text => $text->(), path => { type => 'string' } } },
         },
         allOf => [
             { if => $scope->('single'),    then => $repos->( minItems => 1, maxItems => 1 ) },
