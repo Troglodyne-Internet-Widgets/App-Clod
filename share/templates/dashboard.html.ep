@@ -127,6 +127,8 @@
         <td>${badge(i.state, stateColor[i.state] || 'secondary')}</td>
         <td>${i.scope ? badge(i.scope, 'info') : ''}<div class="small summary text-body-secondary">${esc(i.reason)}</div></td>
         <td>${i.children.map(c => `<div>${jobLink(c.id)} ${badge(c.state, stateColor[c.state] || 'secondary')} ${esc(c.repo || c.task)}
+          ${c.repo_url ? `${badge('new repository', 'success')} <a href="${esc(c.repo_url)}"><i class="bi bi-box-arrow-up-right"></i></a>` : ''}
+          ${c.release_url ? `<a href="${esc(c.release_url)}" title="release issue"><i class="bi bi-tag"></i></a>` : ''}
           ${c.pr_url ? `<a href="${esc(c.pr_url)}"><i class="bi bi-box-arrow-up-right"></i></a>` : ''}</div>`).join('')}</td>
       </tr>`).join('') || '<tr><td colspan="6" class="text-body-secondary">No items yet.</td></tr>';
       document.getElementById('swept').textContent = d.swept_at ? `as of ${when(d.swept_at)}` : '';

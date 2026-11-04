@@ -1,4 +1,9 @@
 Revision history for App-Clod
 
+0.002 (not yet released)
+    - Make a new repository when an authorized user asks for one, if
+      create_repos names the organizations where the bot may, then work in it
+      like any other spoke and open an issue for its first release.
+
 0.001 2026-10-28 TEODESIAN
     - Initial Release

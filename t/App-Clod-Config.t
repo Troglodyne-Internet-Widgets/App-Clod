@@ -74,6 +74,20 @@ subtest validate => sub {
     ok( lives { App::Clod::Config::validate( { %minimal, auth => { user => 'u', password_sha256 => $HASH } } ) }, 'basic auth with both parts lives' );
 };
 
+subtest create_repos => sub {
+    my $config = App::Clod::Config::validate( {%minimal} );
+    is( $config->{create_repos}, { orgs => [], max => 1, release_assignee => undef }, 'no repository is made unless the configuration names an organization' );
+    my $on = App::Clod::Config::validate( { %minimal, spoke_orgs => ['Test-Org'], create_repos => { orgs => ['Test-Org'], release_assignee => 'releaser' } } );
+    is( [ @{ $on->{create_repos} }{qw{orgs max release_assignee}} ], [ ['Test-Org'], 1, 'releaser' ], 'an organization of spoke_orgs lives, with one repository a request by default' );
+    like(
+        dies { App::Clod::Config::validate( { %minimal, create_repos => { orgs => ['Test-Org'] } } ) },
+        qr/\Acreate_repos\.orgs\ names\ Test-Org,\ which\ spoke_orgs/,
+        'an organization outside spoke_orgs dies, because its new repositories would not stay spokes'
+    );
+    refused( { %minimal, create_repos => { max  => 0 } },       '/create_repos/max: 0 < minimum(1)',           'a cap below one dies' );
+    refused( { %minimal, create_repos => { orgs => ['A/b'] } }, '/create_repos/orgs/0: String does not match', 'an organization that is a repository dies' );
+};
+
 subtest 'the standards of the harness' => sub {
     my $config = App::Clod::Config::validate( {%minimal} );
     is( $config->{harness}{flavor}, 'troglodyne-compat', 'a spoke without .conformance.yml is held to troglodyne-compat' );

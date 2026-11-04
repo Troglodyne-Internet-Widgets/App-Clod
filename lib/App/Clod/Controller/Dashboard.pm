@@ -156,7 +156,9 @@ sub work ($self) {
 
 =method child_job
 
-One child job of an item, as the Work tab shows it.
+One child job of an item, as the Work tab shows it.  A C<create_repo> job
+also has C<repo_url>, the repository that it made, and C<release_url>, the
+issue for its first release.
 
 =cut
 
@@ -165,12 +167,14 @@ sub child_job ( $self, $id ) {
     my $info   = $job->info;
     my $result = ref $info->{result} eq 'HASH' ? $info->{result} : {};
     return {
-        id      => $id,
-        task    => $info->{task},
-        state   => $info->{state},
-        repo    => $info->{notes}{repo},
-        pr_url  => $result->{pr_url} // $result->{review_url},
-        summary => $result->{error}  // $result->{summary},
+        id          => $id,
+        task        => $info->{task},
+        state       => $info->{state},
+        repo        => $info->{notes}{repo},
+        pr_url      => $result->{pr_url} // $result->{review_url},
+        repo_url    => $result->{repo_url},
+        release_url => $result->{release_url},
+        summary     => $result->{error} // $result->{summary},
     };
 }
 

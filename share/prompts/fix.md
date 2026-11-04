@@ -5,6 +5,8 @@ The task comes from {{origin}}. Triage chose this repository with these instruct
 
 {{instructions}}
 
+{{created}}
+
 {{prior}}
 
 {{tools}}

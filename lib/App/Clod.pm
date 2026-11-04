@@ -145,6 +145,15 @@ with C<perl-slop:pull-requests>, opens the pull request there, and mentions the
 bot on the issue with a link to it.  Nothing watches the upstream pull request
 yet, so a change that our code needs after it merges is for a person to make.
 
+If a site turns on C<create_repos>, an authorized user can ask the bot for a
+new repository, in one of the organizations that it names.  Triage plans one
+only when that user asked for it in their own words, which the bot checks
+against what they wrote.  The worker makes it, public and with a first commit, as
+the bot: the claude runs never hold a token.  The new repository is a spoke at
+once, gets its spoke run like any other, and gets an issue for its first
+release, assigned to the person who releases it.  The bot never takes over a
+repository that exists already.
+
 If triage or a spoke cannot go on without an answer from a person, the bot
 changes nothing and does not guess.  It asks the question in a comment, assigns
 the issue to the same person, and removes itself, so that the question reaches
@@ -209,6 +218,8 @@ F<git-hooks>, so a commit in a worktree fails when a tool is missing.
 
 A bot account with write access to every spoke, and a classic token with the
 C<repo> and C<notifications> scopes.  The Overview tab names a missing scope.
+For C<create_repos>, the account must also be allowed to make repositories in
+each organization that it names.
 
 =back
 
