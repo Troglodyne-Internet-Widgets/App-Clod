@@ -88,6 +88,12 @@ subtest create_repos => sub {
     refused( { %minimal, create_repos => { orgs => ['A/b'] } }, '/create_repos/orgs/0: String does not match', 'an organization that is a repository dies' );
 };
 
+subtest follow_up_max => sub {
+    is( App::Clod::Config::validate( {%minimal} )->{follow_up_max},                       3, 'a request may have three follow-up issues filed by default' );
+    is( App::Clod::Config::validate( { %minimal, follow_up_max => 0 } )->{follow_up_max}, 0, 'and 0 lives, which turns filing off' );
+    refused( { %minimal, follow_up_max => -1 }, '/follow_up_max: -1 < minimum(0)', 'a cap below none dies' );
+};
+
 subtest 'the standards of the harness' => sub {
     my $config = App::Clod::Config::validate( {%minimal} );
     is( $config->{harness}{flavor}, 'troglodyne-compat', 'a spoke without .conformance.yml is held to troglodyne-compat' );

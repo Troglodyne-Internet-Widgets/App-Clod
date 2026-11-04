@@ -4,6 +4,8 @@ Revision history for App-Clod
     - Make a new repository when an authorized user asks for one, if
       create_repos names the organizations where the bot may, then work in it
       like any other spoke and open an issue for its first release.
+    - File a follow-up issue in a spoke when an authorized user asks for one,
+      assigned to them, with follow_up_max as the cap of one request.
 
 0.001 2026-10-28 TEODESIAN
     - Initial Release

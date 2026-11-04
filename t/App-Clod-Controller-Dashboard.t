@@ -24,7 +24,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep spoke_sweep spoke_fix triage reply create_repo}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep spoke_sweep spoke_fix triage reply create_repo file_issues}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -70,7 +70,8 @@ subtest overview => sub {
 subtest work => sub {
     my $child = job( spoke_fix   => { pr_url  => 'https://test.test/pull/1', summary => 'done' }, notes => { repo => 'Test-Org/one' } );
     my $made  = job( create_repo => { created => 1, repo_url => 'https://test.test/Test-Org/fresh', release_url => 'https://test.test/Test-Org/fresh/issues/1' }, notes => { repo => 'Test-Org/fresh' } );
-    job( triage => { children => [ $made, $child ] }, args => [ { repo => 'Test-Org/one', number => 5, kind => 'fix', title => 'T' } ], notes => { scope => 'single', children => [ $made, $child ] } );
+    my $filed = job( file_issues => { issues => ['https://test.test/Test-Org/two/issues/3'] } );
+    job( triage => { children => [ $made, $child, $filed ] }, args => [ { repo => 'Test-Org/one', number => 5, kind => 'fix', title => 'T' } ], notes => { scope => 'single', children => [ $made, $child, $filed ] } );
     job( assigned_sweep => { checked_at => 1, issues => [ { repo => 'Test-Org/one', number => 5 }, { repo => 'Test-Org/one', number => 6 } ] } );
     $minion->perform_jobs;
 
@@ -81,7 +82,8 @@ subtest work => sub {
     like( $item->{url}, qr{github\.com/Test-Org/one/issues/5\z}, 'and links to it' );
     is( $item->{children}[1]{pr_url}, 'https://test.test/pull/1', 'its spoke jobs show their pull requests' );
     like( $item->{children}[0], { task => 'create_repo', repo => 'Test-Org/fresh', repo_url => qr{/Test-Org/fresh\z}, release_url => qr{/fresh/issues/1\z} }, 'and a repository that the hub made shows, with its release issue' );
-    is( [ map { $_->{has_job} } @{ $work->{assigned} } ], [ 1, 0 ], 'an assigned issue with no job is shown as waiting' );
+    is( $item->{children}[2]{issue_urls},                 ['https://test.test/Test-Org/two/issues/3'], 'and the follow-up issues that it filed' );
+    is( [ map { $_->{has_job} } @{ $work->{assigned} } ], [ 1, 0 ],                                    'an assigned issue with no job is shown as waiting' );
 };
 
 subtest 'an outage' => sub {

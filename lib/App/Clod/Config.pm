@@ -70,7 +70,8 @@ our %SCHEMA = (
         ),
         otel           => { type => 'object', additionalProperties => $TEXT, default => {} },
         system_prompts => section( { map { $_ => $TEXT } @App::Clod::Budget::CLAUDE_TASKS } ),
-        spoke_prompt   => { type => 'string', nullable => 1, default => undef },
+        spoke_prompt   => { type => 'string',  nullable => 1, default => undef },
+        follow_up_max  => { type => 'integer', minimum  => 0, default => 3 },
         create_repos   => section(
             {
                 orgs => list_of($LOGIN),
@@ -266,6 +267,16 @@ a tool spoke gets no second copy of it.  Triage is told which they are, and to
 put a change to one first in its plan.  For triage to plan a change to a tool
 spoke, it must be a spoke too, in C<spokes> or in C<spoke_orgs>.  See
 L<App::Clod::Tasks/in_worktree>.  Default none.
+
+=item follow_up_max
+
+How many follow-up issues one request may have the hub file, counted over
+every job for the same issue or pull request.  An authorized user asks for one
+in their own words, such as "file a follow-up issue about this", and the hub
+files it in a spoke, assigned to that user.  0 turns it off.  Default 3.  It
+needs no other switch: it makes no repository, and it writes only to spokes,
+where the bot already opens pull requests.  See
+L<App::Clod::Tasks/file_issues>.
 
 =item create_repos
 

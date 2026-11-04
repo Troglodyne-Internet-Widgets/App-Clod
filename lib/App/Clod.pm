@@ -154,6 +154,13 @@ once, gets its spoke run like any other, and gets an issue for its first
 release, assigned to the person who asked for it.  The bot never takes over a
 repository that exists already.
 
+An authorized user can also ask the bot to file a follow-up issue, such as
+"file a follow-up issue about this and we will move on".  Triage plans it on
+the same check of their own words, and the worker files it in a spoke,
+assigned to that user, and links it where they asked.  If filing settles the
+request, nothing else runs.  C<follow_up_max> caps how many one request may
+file.
+
 If triage or a spoke cannot go on without an answer from a person, the bot
 changes nothing and does not guess.  It asks the question in a comment, assigns
 the issue to the same person, and removes itself, so that the question reaches

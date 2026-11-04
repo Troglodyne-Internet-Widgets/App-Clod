@@ -8,7 +8,7 @@ use re '/aasx';
 
 use JSON::Validator::Schema::Draft7 ();
 
-my @SCOPES = qw{single multi upstream clarify};
+my @SCOPES = qw{single multi upstream clarify follow_up};
 
 # The name of a repository that the bot may make, without its organization.
 our $NAME = q{[A-Za-z0-9][A-Za-z0-9_-]{0,99}};
@@ -18,33 +18,39 @@ our $MODULE = q{[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)*};
 
 =func schema
 
-C<(\@spokes, %create)>.  The JSON Schema of an answer, for C<--json-schema>
+C<(\@spokes, %allow)>.  The JSON Schema of an answer, for C<--json-schema>
 and for L</validate>.  Under C<single> and C<multi>, each repository must be
 one of C<@spokes>, and the count of them must fit the scope.  C<upstream>
 needs C<upstream.project> and C<upstream.explanation>, and C<clarify> needs
-C<question.text>.  A new schema comes back from each call.
+C<question.text>.  C<follow_up> needs at least one entry of C<follow_ups> and
+no entry of C<repos>: the request is settled once the issues are filed.  A
+new schema comes back from each call.
 
-C<%create> says which repositories the answer may ask the hub to make, in
-C<new_repos>: C<orgs>, the organizations that it may make them in, and C<max>,
-how many one answer may ask for, default 1.  Without C<orgs>, C<new_repos>
-must be empty, and C<repos> names spokes alone.  With them, an entry of
-C<repos> may also name C<Org/name>, for one of C<orgs> and a name that is
-L</repo_name>, and L</validate> checks that it is one of C<new_repos>.
+C<%allow> says what else the answer may ask the hub to make.  C<orgs> and
+C<max> are for new repositories, in C<new_repos>: the organizations that it
+may make them in, and how many one answer may ask for, default 1.  Without
+C<orgs>, C<new_repos> must be empty, and C<repos> names spokes alone.  With
+them, an entry of C<repos> or of C<follow_ups> may also name C<Org/name>, for
+one of C<orgs> and a name that is L</repo_name>, and L</validate> checks that
+it is one of C<new_repos>.  C<follow_ups> is how many follow-up issues the
+answer may ask for, default none.
 
 Each entry of C<new_repos> has the C<org>, the C<name>, a C<description> of
-one line, the C<module> that the repository will hold if triage knows it,
+one line, the C<module> that the repository will hold if triage knows it, and
 C<private> if the person asked for a private repository, which the hub
-refuses, and C<asked_by> and C<quote>: the login of the person who asked for the
-repository, and their words, as they wrote them.  The schema cannot check that
-those words are theirs: L<App::Clod::Tasks/asked_for> does.
+refuses.  Each entry of C<follow_ups> has the C<repo> to file the issue in, its
+C<title> and its C<body>.  Both kinds have C<asked_by> and C<quote>: the login
+of the person who asked, and their words, as they wrote them.  The schema
+cannot check that those words are theirs: L<App::Clod::Tasks/asked_for> does.
 
 =cut
 
-sub schema ( $spokes, %create ) {
-    my @orgs  = @{ $create{orgs} // [] };
-    my $text  = sub () { return { type => 'string', minLength => 1 } };
-    my $scope = sub ($name) { return { properties => { scope => { const => $name } } } };
-    my $repo  = sub () {
+sub schema ( $spokes, %allow ) {
+    my @orgs   = @{ $allow{orgs} // [] };
+    my $text   = sub () { return { type => 'string', minLength => 1 } };
+    my $scope  = sub ($name) { return { properties => { scope => { const => $name } } } };
+    my $asking = sub () { return ( asked_by => $text->(), quote => { type => 'string', minLength => 10 } ) };
+    my $repo   = sub () {
         my $spoke = { type => 'string', enum => [@$spokes] };
         return $spoke if !@orgs;
         return { anyOf => [ $spoke, { type => 'string', pattern => '^(?:' . join( q{|}, map { s{[.]}{\\.}gr } @orgs ) . ")/$NAME\$" } ] };
@@ -62,26 +68,32 @@ sub schema ( $spokes, %create ) {
             description => { type => 'string', minLength => 1, maxLength => 350 },
             module      => { type => 'string', pattern   => "^$MODULE\$" },
             private     => { type => 'boolean' },
-            asked_by    => $text->(),
-            quote       => { type => 'string', minLength => 10 },
+            $asking->(),
         },
+    };
+    my $follow_up = {
+        type       => 'object',
+        required   => [qw{repo title body asked_by quote}],
+        properties => { repo => $repo->(), title => { type => 'string', minLength => 1, maxLength => 256 }, body => $text->(), $asking->() },
     };
     return {
         type       => 'object',
         required   => [qw{scope reason repos}],
         properties => {
-            scope     => { type => 'string', enum => [@SCOPES] },
-            reason    => $text->(),
-            repos     => { type => 'array' },
-            new_repos => { type => 'array',  maxItems => @orgs ? $create{max} // 1 : 0, items      => $new_repo },
-            upstream  => { type => 'object', required => [qw{project explanation}],     properties => { project => $text->(), path => { type => 'string' }, explanation => $text->() } },
-            question  => { type => 'object', required => ['text'],                      properties => { text => $text->(), path => { type => 'string' } } },
+            scope      => { type => 'string', enum => [@SCOPES] },
+            reason     => $text->(),
+            repos      => { type => 'array' },
+            new_repos  => { type => 'array', maxItems => @orgs ? $allow{max} // 1 : 0, items => $new_repo },
+            follow_ups => { type => 'array', maxItems => $allow{follow_ups}  // 0, items => $follow_up },
+            upstream   => { type => 'object', required => [qw{project explanation}], properties => { project => $text->(), path => { type => 'string' }, explanation => $text->() } },
+            question   => { type => 'object', required => ['text'], properties => { text => $text->(), path => { type => 'string' } } },
         },
         allOf => [
-            { if => $scope->('single'),   then => $repos->( minItems => 1, maxItems => 1 ) },
-            { if => $scope->('multi'),    then => $repos->( minItems => 2 ) },
-            { if => $scope->('upstream'), then => { required => ['upstream'] } },
-            { if => $scope->('clarify'),  then => { required => ['question'] } },
+            { if => $scope->('single'),    then => $repos->( minItems => 1, maxItems => 1 ) },
+            { if => $scope->('multi'),     then => $repos->( minItems => 2 ) },
+            { if => $scope->('upstream'),  then => { required => ['upstream'] } },
+            { if => $scope->('clarify'),   then => { required => ['question'] } },
+            { if => $scope->('follow_up'), then => { required => ['follow_ups'], properties => { repos => { maxItems => 0 }, follow_ups => { minItems => 1 } } } },
         ],
     };
 }
@@ -111,23 +123,24 @@ sub module_of ($entry) { return $entry->{module} // $entry->{name} =~ s/-/::/gr 
 
 =func validate
 
-C<($answer, \@spokes, %create)>.  Returns the answer with C<repos> sorted by
-C<order>, and C<repos> and C<new_repos> empty for C<upstream> and C<clarify>.
-Each entry of C<new_repos> gets C<repo>, as C<Org/name>, and C<module>, from
-L</module_of>.
+C<($answer, \@spokes, %allow)>.  Returns the answer with C<repos> sorted by
+C<order>, and C<repos>, C<new_repos> and C<follow_ups> empty for C<upstream>
+and C<clarify>.  Each entry of C<new_repos> gets C<repo>, as C<Org/name>, and
+C<module>, from L</module_of>.  C<follow_ups> is always there, empty when the
+answer asked for none.
 
 Dies with every way in which the answer breaks L</schema>, or with a
 repository that it names twice.  It dies too with a new repository that is a
 spoke already, that C<repos> does not name, or whose name or description does
-not fit, and with an entry of C<repos> that is neither a spoke nor a new
-repository.  The words can go back to the model as they are.
+not fit, and with an entry of C<repos> or of C<follow_ups> that is neither a
+spoke nor a new repository.  The words can go back to the model as they are.
 
 =cut
 
-sub validate ( $answer, $spokes, %create ) {
-    my @errors = JSON::Validator::Schema::Draft7->new( schema( $spokes, %create ) )->validate($answer);
+sub validate ( $answer, $spokes, %allow ) {
+    my @errors = JSON::Validator::Schema::Draft7->new( schema( $spokes, %allow ) )->validate($answer);
     die join( "\n", 'The answer does not fit the schema:', map { "  $_" } @errors ) . "\n" if @errors;
-    return { %$answer, repos => [], new_repos => [] }                                      if $answer->{scope} eq 'upstream' || $answer->{scope} eq 'clarify';
+    return { %$answer, repos => [], new_repos => [], follow_ups => [] }                    if $answer->{scope} eq 'upstream' || $answer->{scope} eq 'clarify';
     my %seen;
     $seen{ $_->{repo} }++ and die "$_->{repo} is listed twice\n" for @{ $answer->{repos} };
 
@@ -142,10 +155,10 @@ sub validate ( $answer, $spokes, %create ) {
         die "The description of $repo is more than one line\n"                       if index( $entry->{description}, "\n" ) >= 0;
         push @new, { %$entry, repo => $repo, module => module_of($entry) };
     }
-    for my $entry ( @{ $answer->{repos} } ) {
+    for my $entry ( @{ $answer->{repos} }, @{ $answer->{follow_ups} // [] } ) {
         die "$entry->{repo} is not a spoke, and not in new_repos\n" if !$spoke{ $entry->{repo} } && !$new{ $entry->{repo} };
     }
-    return { %$answer, repos => [ sort { $a->{order} <=> $b->{order} } @{ $answer->{repos} } ], new_repos => \@new };
+    return { %$answer, repos => [ sort { $a->{order} <=> $b->{order} } @{ $answer->{repos} } ], new_repos => \@new, follow_ups => [ @{ $answer->{follow_ups} // [] } ] };
 }
 
 =func hub_claude_md
@@ -196,7 +209,8 @@ sub intro ($claude_md) {
 Triage runs before every fix, review and review answer.  It asks one question:
 is this change best made in one repository, in several, or upstream in a
 project that we do not own?  A fourth answer, C<clarify>, says that the request
-cannot be planned without a person's answer to C<question.text>.  L</schema> is
+cannot be planned without a person's answer to C<question.text>, and a fifth,
+C<follow_up>, that filing the issues in C<follow_ups> settles it.  L</schema> is
 the form of an answer and every rule that it must follow, so that claude gets
 the rules as well as the form.  L</validate> checks an answer against it, and
 checks the rules that JSON Schema cannot say: that no repository is named

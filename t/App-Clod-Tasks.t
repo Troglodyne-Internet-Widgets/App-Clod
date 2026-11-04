@@ -914,7 +914,8 @@ subtest create_repo => sub {
 
     @calls = ();
     $state{absent}{'Test-Org/Second'} = 1;
-    is( [ App::Clod::Tasks::creation( $minion, $config, \%item ) ], [], 'once the origin has made as many as it may, triage may ask for no more' );
+    my %left = App::Clod::Tasks::creation( $minion, $config, \%item );
+    is( [ @left{qw{orgs max}} ], [ undef, undef ], 'once the origin has made as many as it may, triage may ask for no more' );
     my $second = qr{Test-Org/Second};
     my $capped = run_job( create_repo => { item => \%item, org => 'Test-Org', name => 'Second', description => 'd', asked_by => 'trusted' } );
     like( $capped->{result}, { refused => qr/made\ 1\ already,\ and\ the\ configuration\ allows\ 1/, question => T() }, 'and the hub refuses one more for the same origin' );
@@ -969,6 +970,64 @@ subtest create_repo => sub {
     delete $config->{spoke_orgs};
     $config->{create_repos} = { orgs => [], max => 1 };
     delete $fake{FAKE_CLAUDE_RECORD};
+};
+
+subtest file_issues => sub {
+    %state = ();
+    @calls = ();
+    my $config = $app->clod_config;
+    my $pr     = { %item, kind => 'address_review', is_pr => 1, number => 11 };
+    my $asked  = 'File a follow-up issue about the logging and we will move on.';
+    $state{issue_comments} = [ { id => 1, user => { login => 'trusted' }, body => $asked } ];
+    my $issue = { repo => 'Test-Org/two', title => 'Log less', body => 'The log says too much.', asked_by => 'trusted', quote => 'File a follow-up issue about the logging' };
+    my %plan  = ( scope => 'follow_up', reason => 'filing settles it', repos => [], follow_ups => [$issue] );
+
+    answer( {%plan} );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/follow-record";
+    my $triage = run_job( triage => $pr );
+    is( $triage->{state}, 'finished', 'a triage that only files a follow-up issue, which a trusted user asked for, finishes' ) or diag Mojo::Util::dumper $triage->{result};
+    like( record_of("$tmp/follow-record")->{prompt}, qr/file\ follow-up\ issues\ in\ the\ spokes,\ at\ most\ 3/, 'triage is told that it may, and how many' );
+    my @children = map { $minion->job($_)->info } @{ $triage->{result}{children} };
+    is( [ map { $_->{task} } @children ], ['file_issues'], 'filing is the whole plan: no spoke runs, and no report' );
+    is( calls_of('issue'),                [],              'triage itself files nothing' );
+
+    my $filed = run_id( $children[0]{id} );
+    is( $filed->{state}, 'finished', 'the hub files the issue' ) or diag Mojo::Util::dumper $filed->{result};
+    my $issues = calls_of('issue');
+    is( [ map { $_->[1] } @$issues ], ['/repos/Test-Org/two/issues'], 'once, in the spoke that triage named' );
+    my $says = qr/\AThe\ log\ says\ too\ much\.\n\n/;
+    my $link = qr{https://test\.test/Test-Org/two/issues/1};
+    like( $issues->[0][2],          { title => 'Log less', assignees => ['trusted'], body => qr/$says\@trusted\ asked\ for\ this\ on\ \S+\/pull\/11\./ },                'with its title and body, assigned to the person who asked' );
+    like( calls_of('comment')->[0], [ 'comment', '/repos/Test-Org/one/issues/11/comments', { body => qr{follow-up\ issues:\n-\ Test-Org/two:\ $link\ \(Log\ less\)} } ], 'and links it on the pull request that asked' );
+
+    @calls = ();
+    $state{refuse_comment} = 1;
+    my $failed = run_job( file_issues => { item => { %$pr, number => 12 }, issues => [ $issue, { %$issue, title => 'Log better' } ] } );
+    is( $failed->{state}, 'failed', 'a job that fails after it filed its issues fails' );
+    delete $state{refuse_comment};
+    $minion->job( $failed->{id} )->retry;
+    is( run_id( $failed->{id} )->{state},                  'finished',                   'and its retry finishes' );
+    is( [ map { $_->[2]{title} } @{ calls_of('issue') } ], [ 'Log less', 'Log better' ], 'without filing either issue twice' );
+
+    @calls = ();
+    $config->{follow_up_max} = 2;
+    my %left = App::Clod::Tasks::creation( $minion, $config, { %$pr, number => 12 } );
+    is( $left{follow_ups}, undef, 'once the origin has filed as many as it may, triage may ask for no more' );
+    like( run_job( file_issues => { item => { %$pr, number => 12 }, issues => [$issue] } )->{result},                                   { refused => qr/filed\ 2\ already/, question => T() }, 'and the hub refuses one more for the same origin' );
+    like( run_job( file_issues => { item => { %$pr, number => 13 }, issues => [ +{ %$issue, repo => 'Elsewhere/repo' } ] } )->{result}, { refused => qr{Elsewhere/repo\ is\ not\ a\ spoke} },  'and an issue in a repository that is not a spoke' );
+    is( calls_of('issue'), [], 'neither of which it files' );
+    $config->{follow_up_max} = 3;
+
+    $state{issue_comments} = [ { id => 1, user => { login => 'someone' }, body => $asked } ];
+    answer( {%plan} );
+    my $theirs = qr/is\ not\ in\ anything\ that\ trusted\ wrote/;
+    like( run_job( triage => { %$pr, number => 14 } )->{result}{error}, qr/follow-up\ issue\ "Log\ less"\ $theirs/, 'triage cannot file on the words of someone else' );
+    $config->{follow_up_max} = 0;
+    answer( {%plan} );
+    like( run_job( triage => { %$pr, number => 14 } )->{result}{error}, qr{/follow_ups:\ Too\ many\ items:\ 1/0}, 'nor at all, when follow_up_max is 0' );
+    $config->{follow_up_max} = 3;
+    delete $fake{FAKE_CLAUDE_RECORD};
+    $minion->reset( { all => 1 } );
 };
 
 subtest made_repos => sub {

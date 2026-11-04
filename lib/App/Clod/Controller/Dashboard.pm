@@ -158,7 +158,8 @@ sub work ($self) {
 
 One child job of an item, as the Work tab shows it.  A C<create_repo> job
 also has C<repo_url>, the repository that it made, and C<release_url>, the
-issue for its first release.
+issue for its first release.  A C<file_issues> job has C<issue_urls>, the
+follow-up issues that it filed.
 
 =cut
 
@@ -174,7 +175,8 @@ sub child_job ( $self, $id ) {
         pr_url      => $result->{pr_url} // $result->{review_url},
         repo_url    => $result->{repo_url},
         release_url => $result->{release_url},
-        summary     => $result->{error} // $result->{summary},
+        issue_urls  => $result->{issues} // [],
+        summary     => $result->{error}  // $result->{summary},
     };
 }
 

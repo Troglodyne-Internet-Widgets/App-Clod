@@ -90,6 +90,33 @@ subtest 'new repositories' => sub {
     ok( !App::Clod::Triage::repo_name( 'a' x 101 ), 'and one of a hundred and one does not' );
 };
 
+subtest 'follow-up issues' => sub {
+    my $issue = { repo => 'Test-Org/two', title => 'Log less', body => 'The log says too much.', asked_by => 'trusted', quote => 'File a follow-up issue about it.' };
+    my %only  = ( scope => 'follow_up', reason => 'filing settles it', repos => [], follow_ups => [$issue] );
+    my $filed = App::Clod::Triage::validate( {%only}, \@spokes, follow_ups => 1 );
+    is( [ $filed->{repos}, $filed->{follow_ups} ],                                                                                                      [ [], [$issue] ], 'an answer that only files a follow-up issue is valid' );
+    is( App::Clod::Triage::validate( +{ %only, scope => 'single', repos => [ entry( 'Test-Org/one', 1 ) ] }, \@spokes, follow_ups => 1 )->{follow_ups}, [$issue],         'and so is one that files it beside spoke work' );
+    is( App::Clod::Triage::validate( +{ scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] }, \@spokes )->{follow_ups},          [],               'an answer that files none has an empty list' );
+    my $fresh = { org => 'Test-Org', name => 'Fresh', description => 'd', asked_by => 'trusted', quote => 'Make a new repository for it.' };
+    my %both  = ( scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/Fresh', 1 ) ], new_repos => [$fresh], follow_ups => [ +{ %$issue, repo => 'Test-Org/Fresh' } ] );
+    ok( lives { App::Clod::Triage::validate( {%both}, \@spokes, orgs => ['Test-Org'], max => 1, follow_ups => 1 ) }, 'a follow-up issue may go in a new repository of the same answer' );
+
+    my %bad = (
+        'filing off'             => [ [ {%only} ],                                                                                                     qr{/follow_ups:\ Too\ many\ items:\ 1/0} ],
+        'over the cap'           => [ [ +{ %only, follow_ups => [ $issue, $issue ] }, follow_ups => 1 ],                                               qr{/follow_ups:\ Too\ many\ items:\ 2/1} ],
+        'none to file'           => [ [ +{ %only, follow_ups => [] }, follow_ups => 1 ],                                                               qr{/follow_ups:\ \S+\ Not\ enough\ items:\ 0/1} ],
+        'spoke work too'         => [ [ +{ %only, repos => [ entry( 'Test-Org/one', 1 ) ] }, follow_ups => 1 ],                                        qr{/repos:\ \S+\ Too\ many\ items:\ 1/0} ],
+        'not a spoke'            => [ [ +{ %only, follow_ups => [ +{ %$issue, repo => 'Other/repo' } ] }, follow_ups => 1 ],                           qr{/follow_ups/0/repo:\ Not\ in\ enum\ list} ],
+        'a repo that is not new' => [ [ +{ %only, follow_ups => [ +{ %$issue, repo => 'Test-Org/Fresh' } ] }, orgs => ['Test-Org'], follow_ups => 1 ], qr{Test-Org/Fresh\ is\ not\ a\ spoke,\ and\ not} ],
+        'no quote'               => [ [ +{ %only, follow_ups => [ +{ %$issue, quote => 'yes' } ] }, follow_ups => 1 ],                                 qr{/follow_ups/0/quote:\ String\ is\ too\ short} ],
+    );
+    for my $case ( sort keys %bad ) {
+        my ( $args,   $error ) = @{ $bad{$case} };
+        my ( $answer, %how )   = @$args;
+        like( dies { App::Clod::Triage::validate( $answer, \@spokes, %how ) }, $error, "rejects: $case" );
+    }
+};
+
 subtest intro => sub {
     is( App::Clod::Triage::intro("# CLAUDE.md\n\nFirst para\nstill first.\n\nSecond."), "First para\nstill first.", 'the first paragraph that is not a heading' );
     is( App::Clod::Triage::intro(undef),                                                undef,                      'no file, no intro' );
