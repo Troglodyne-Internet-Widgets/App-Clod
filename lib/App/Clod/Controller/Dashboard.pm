@@ -81,8 +81,16 @@ sub action_items ( $self, $budget, $outages = [] ) {
 
     my $inbox = App::Clod::Tasks::last_result( $minion, 'inbox_poll' );
 
+    if ( $inbox && $inbox->{no_spokes_since} ) {
+        my $waited = time - $inbox->{no_spokes_since};
+        push @actions,
+          $waited > $STALE_INBOX
+          ? { level => 'danger', text => 'No repository has been a spoke for ' . int( $waited / 60 ) . ' minutes, so the inbox is not read. Make sure that spoke_orgs names an organization with public repositories, or name spokes.' }
+          : { level => 'info',   text => 'The inbox waits for the first spoke sweep.' };
+    }
+
     # During a GitHub outage, the outage says why the inbox is not read.
-    if ( !$out{github} && ( !$inbox || time - ( $inbox->{polled_at} // 0 ) > $STALE_INBOX ) ) {
+    elsif ( !$out{github} && ( !$inbox || time - ( $inbox->{polled_at} // 0 ) > $STALE_INBOX ) ) {
         push @actions, { level => 'danger', text => 'The inbox has not been read in 15 minutes. Is a worker running?' };
     }
     elsif ( $inbox && defined $inbox->{scopes} ) {

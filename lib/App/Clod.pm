@@ -220,8 +220,8 @@ C<repo> and C<notifications> scopes.  The Overview tab names a missing scope.
 
 Jobs by state, the Claude Code quota used in the five-hour and seven-day
 windows, and the action items: an outage, a marketplace pin older than the
-plugin, failed jobs, harness checks that fail, and token scopes that are
-missing.
+plugin, failed jobs, harness checks that fail, token scopes that are missing,
+and an inbox that waits because no repository is a spoke.
 
 =item Work
 

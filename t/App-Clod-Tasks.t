@@ -61,7 +61,7 @@ my $r      = $fake->routes;
 my $record = sub ($what) {
     return sub ($c) { push @calls, [ $what, path_of($c), $c->req->json ]; $c->render( json => $state{$what} // {}, status => 201 ) };
 };
-$r->get('/notifications')->to( cb => sub ($c) { $c->render( json => $state{threads} // [] ) } );
+$r->get('/notifications')->to( cb => sub ($c) { $state{inbox_reads}++; $c->render( json => $state{threads} // [] ) } );
 $r->patch('/notifications/threads/:id')->to( cb => $record->('read') );
 $r->get('/repos/:o/:n/issues/:num/events')->to( cb => sub ($c) { $c->render( json => $state{events} // [] ) } );
 $r->get('/repos/:o/:n/issues/:num/comments')->to( cb => sub ($c) { $c->render( json => $state{issue_comments} // [ { id => 1, user => { login => 'someone' }, body => 'a comment' } ] ) } );
@@ -799,6 +799,37 @@ subtest spoke_sweep => sub {
     my $failed = run_job('spoke_sweep');
     like( $failed->{result}{errors}{'Test-Org'}, qr/404/, 'a listing that fails is recorded' );
     is( $failed->{result}{repos}, [qw{Test-Org/new Test-Org/one}], 'and the repositories of the sweep before stay spokes' );
+    delete $config->{spoke_orgs};
+    $minion->reset( { all => 1 } );
+};
+
+subtest 'inbox_poll before the first spoke_sweep' => sub {
+    %state = ();
+    @calls = ();
+    my $config = $app->clod_config;
+    my $spokes = $config->{spokes};
+    $config->{spokes}     = [];
+    $config->{spoke_orgs} = ['Test-Org'];
+    $state{threads}       = [ { id => 1, reason => 'assign', updated_at => 't1', repository => { full_name => 'Test-Org/one' }, subject => { type => 'Issue', url => "$api/repos/Test-Org/one/issues/7" } } ];
+    $state{events}        = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'trusted' } } ];
+    my $sweeps = sub { $minion->jobs( { tasks => ['spoke_sweep'], states => ['inactive'] } )->total };
+
+    my $first = run_job('inbox_poll');
+    is( $state{inbox_reads}, undef, 'with no spoke known, the poll does not read the inbox' );
+    is( calls_of('read'),    [],    'so it marks no thread read' );
+    ok( $first->{result}{no_spokes_since}, 'and says since when it has waited' ) or diag Mojo::Util::dumper $first->{result};
+    is( $sweeps->(), 1, 'and queues a sweep, rather than wait for the next quarter hour' );
+
+    my $second = run_job('inbox_poll');
+    is( $second->{result}{no_spokes_since}, $first->{result}{no_spokes_since}, 'a second poll keeps the time that the wait began' );
+    is( $sweeps->(),                        1,                                 'and queues no second sweep while one waits' );
+
+    run_id( $minion->jobs( { tasks => ['spoke_sweep'], states => ['inactive'] } )->next->{id} );
+    my $after = run_job('inbox_poll');
+    is( $state{inbox_reads},                  1, 'once the sweep finished, the poll reads the inbox' );
+    is( scalar @{ $after->{result}{queued} }, 1, 'and the thread that waited becomes work' ) or diag Mojo::Util::dumper $after->{result};
+    ok( !exists $after->{result}{no_spokes_since}, 'and the wait is over' );
+    $config->{spokes} = $spokes;
     delete $config->{spoke_orgs};
     $minion->reset( { all => 1 } );
 };

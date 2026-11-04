@@ -365,6 +365,13 @@ thread and its update time, so a second poll does not enqueue it twice.  A
 notification on a closed issue or pull request makes no work, because closing
 it settled the matter.
 
+While no repository is a spoke, the poll does not read GitHub, and leaves every
+notification unread for a later poll.  Its result is then the cursor before it,
+with C<no_spokes_since>, the time that it first found no spoke.  If
+C<spoke_orgs> names any organization, it also queues a C<spoke_sweep>, unless one
+already waits or runs, so the first start does not wait for the sweep of the
+next quarter hour.
+
 =cut
 
 sub inbox_poll ( $job, $config ) {
@@ -374,6 +381,13 @@ sub inbox_poll ( $job, $config ) {
     my $interval = List::Util::max( $config->{poll_interval}, $cursor->{poll_interval} // 0 );
     if ( $cursor->{polled_at} && time - $cursor->{polled_at} < $interval ) {
         return $job->finish( { %$cursor, skipped => 1 } );
+    }
+
+    # A thread that is read before the spokes are known is marked read as "not a spoke", and lost.
+    if ( !@{ spokes( $minion, $config ) } ) {
+        my $sweeping = $minion->jobs( { tasks => ['spoke_sweep'], states => [qw{inactive active}] } )->total;
+        $minion->enqueue('spoke_sweep') if @{ $config->{spoke_orgs} // [] } && !$sweeping;
+        return $job->finish( { %$cursor, no_spokes_since => $cursor->{no_spokes_since} // time } );
     }
 
     my $gh = github($config);

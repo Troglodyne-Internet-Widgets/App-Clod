@@ -33,6 +33,11 @@ sub action_texts () {
     return join "\n", map { $_->{text} } @{ $json->{actions} };
 }
 
+sub action_about ($pattern) {
+    my $json = $t->tx->res->json;
+    return ( grep { $_->{text} =~ $pattern } @{ $json->{actions} } )[0];
+}
+
 sub job ( $task, $result, %opt ) {
     return $minion->enqueue( $task => $opt{args} // [], { notes => { result => $result, $opt{fail} ? ( fail => 1 ) : (), %{ $opt{notes} // {} } } } );
 }
@@ -94,6 +99,23 @@ subtest 'an outage' => sub {
     like( $first->{text}, qr/$when$error All\ work\ waits/, 'with the error and what it holds' );
     unlike( action_texts(), qr/inbox\ has\ not\ been\ read/, 'and it replaces the warning about the inbox' );
     $minion->unlock( App::Clod::Outage::lock_name('github') );
+};
+
+subtest 'an inbox that waits for spokes' => sub {
+    job( inbox_poll => { no_spokes_since => time - 60 } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    my $item = action_about(qr/spoke/);
+    is( $item->{level}, 'info', 'a short wait for the first sweep is only information' );
+    like( $item->{text}, qr/waits\ for\ the\ first\ spoke\ sweep/, 'and says what it waits for' );
+    unlike( action_texts(), qr/inbox\ has\ not\ been\ read/, 'and does not ask whether a worker runs' );
+
+    job( inbox_poll => { no_spokes_since => time - 1200 } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    $item = action_about(qr/spoke/);
+    is( $item->{level}, 'danger', 'a wait of more than 15 minutes needs a person' );
+    like( $item->{text}, qr/No\ repository\ has\ been\ a\ spoke\ for\ 20\ minutes/, 'and says how long it waited' );
 };
 
 subtest harness => sub {
