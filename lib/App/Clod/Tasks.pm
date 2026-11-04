@@ -40,6 +40,8 @@ our %TASKS = (
     harness_scan   => \&harness_scan,
     assigned_sweep => \&assigned_sweep,
     spoke_sweep    => \&spoke_sweep,
+    create_repo    => \&create_repo,
+    file_issues    => \&file_issues,
 );
 
 # Each Minion schedule: its cron line and its task.
@@ -325,15 +327,41 @@ sub origin_url ( $config, $item ) {
 
 =func spokes
 
-C<($minion, $config)>.  The spokes: C<spokes> from the configuration, and the
-repositories that the last C<spoke_sweep> found in C<spoke_orgs>, sorted and
-each once.  Before the first sweep finishes, only the configured ones.
+C<($minion, $config)>.  The spokes: C<spokes> from the configuration, the
+repositories that the last C<spoke_sweep> found in C<spoke_orgs>, and the
+L</made_repos>, sorted and each once.  Before the first sweep finishes, only
+the configured ones and the made ones.
 
 =cut
 
 sub spokes ( $minion, $config ) {
     my $swept = @{ $config->{spoke_orgs} // [] } ? last_result( $minion, 'spoke_sweep' ) // {} : {};
-    return [ sort( List::Util::uniq( @{ $config->{spokes} }, @{ $swept->{repos} // [] } ) ) ];
+    return [ sort( List::Util::uniq( @{ $config->{spokes} }, @{ $swept->{repos} // [] }, made_repos( $minion, $swept ) ) ) ];
+}
+
+=func made_repos
+
+C<($minion, $swept)>.  The repositories that a C<create_repo> job made, until
+the sweep C<$swept> knows them.  A sweep knows a repository when it started
+after the repository was made and listed its organization without an error.
+From then on that sweep alone says whether it is a spoke, so a repository
+that was archived later stops being one.  Until then, a notification about the
+new repository, such as a review of its first pull request, is not lost as
+"not a spoke".
+
+=cut
+
+sub made_repos ( $minion, $swept ) {
+    my $jobs = $minion->jobs( { tasks => ['create_repo'], states => ['finished'] } );
+    my @made;
+    while ( my $info = $jobs->next ) {
+        my $result = $info->{result};
+        next if ref $result ne 'HASH' || !$result->{created};
+        my ($org) = split m{/}, $result->{repo};
+        next if ( $swept->{started_at} // 0 ) > $result->{created_at} && !( $swept->{errors} // {} )->{$org};
+        push @made, $result->{repo};
+    }
+    return @made;
 }
 
 =func is_spoke
@@ -599,6 +627,114 @@ sub spoke_briefing ($config) {
     return join "\n", @parts;
 }
 
+=func creation
+
+C<($minion, $config, $item)>.  What L<App::Clod::Triage/schema> is told that
+the answer for this item may ask the hub to make.  For new repositories,
+C<orgs> from C<create_repos>, and C<max>, how many this request may still
+make, which is C<create_repos.max> less L</made_for> the origin; neither is
+there when C<create_repos> names no organization or none are left.  For
+follow-up issues, C<follow_ups>, how many this request may still file, which
+is C<follow_up_max> less L</filed_for> the origin; it is not there when none
+are left.  Empty for a review, which changes nothing.
+
+=cut
+
+sub creation ( $minion, $config, $item ) {
+    return if $item->{kind} eq 'review';
+    my $origin = origin_of($item);
+    my $create = $config->{create_repos};
+    my $repos  = @{ $create->{orgs} } ? $create->{max} - made_for( $minion, $origin ) : 0;
+    my $issues = $config->{follow_up_max} - filed_for( $minion, $origin );
+    return ( ( $repos > 0 ? ( orgs => $create->{orgs}, max => $repos ) : () ), ( $issues > 0 ? ( follow_ups => $issues ) : () ) );
+}
+
+=func made_for
+
+C<($minion, $origin, $except)>.  How many repositories the C<create_repo>
+jobs for the origin have made, whatever their state now, leaving out the job
+C<$except>.  A job counts from the moment that it notes C<created>, so a job
+that made its repository and then failed still counts.
+
+=cut
+
+sub made_for ( $minion, $origin, $except = 0 ) {
+    my $jobs = $minion->jobs( { tasks => ['create_repo'] } );
+    my $made = 0;
+    while ( my $info = $jobs->next ) {
+        $made++ if $info->{id} != $except && item_origin($info) eq $origin && $info->{notes}{created};
+    }
+    return $made;
+}
+
+=func filed_for
+
+C<($minion, $origin, $except)>.  How many follow-up issues the
+C<file_issues> jobs for the origin have filed, whatever their state now,
+leaving out the job C<$except>.  Each issue counts from the moment that its
+job notes it in C<filed>.
+
+=cut
+
+sub filed_for ( $minion, $origin, $except = 0 ) {
+    my $jobs  = $minion->jobs( { tasks => ['file_issues'] } );
+    my $filed = 0;
+    while ( my $info = $jobs->next ) {
+        next if $info->{id} == $except || item_origin($info) ne $origin;
+        $filed += keys %{ $info->{notes}{filed} // {} };
+    }
+    return $filed;
+}
+
+=func item_origin
+
+C<($info)>.  The L</origin_of> the C<item> in the arguments of a job, from its
+Minion info, or the empty string for a job without one.  The arguments say it
+for every job that a change made, whether triage enqueued it or a person did.
+
+=cut
+
+sub item_origin ($info) {
+    my $item = ( $info->{args}[0] // {} )->{item};
+    return ref $item eq 'HASH' ? origin_of($item) : q{};
+}
+
+=func written
+
+C<($gh, $item)>.  What each person wrote on the issue or pull request: its
+body, every entry of its L</conversation>, and on a pull request every line
+comment of its review threads, each a C<{by, body}>.
+
+=cut
+
+sub written ( $gh, $item ) {
+    my $issue = $gh->issue( $item->{repo}, $item->{number} );
+    my @lines = $item->{is_pr} ? @{ $gh->review_comments( $item->{repo}, $item->{number} ) } : ();
+    return [ map { { by => $_->{user}{login} // q{}, body => $_->{body} // q{} } } $issue, @{ conversation( $gh, $item ) }, @lines ];
+}
+
+=func asked_for
+
+C<($config, \@written, $entry, $what)>.  Dies unless the entry of
+C<new_repos> or C<follow_ups>, which C<$what> names in the message, was asked
+for by an authorized user: C<asked_by> must be in C<authorized_users>, and
+C<quote> must be in something that C<asked_by> wrote, from L</written>, with
+every run of white space as one space and none at either end.  So the hub
+makes a repository or files an issue only when a person who may ask for one
+did, in their own words.  The model cannot make that up from a task that
+seems to want one, nor take it from the words of somebody else.
+
+=cut
+
+sub asked_for ( $config, $written, $entry, $what ) {
+    my $who = $entry->{asked_by};
+    die "$who is not an authorized user, so $what cannot be made on their word\n" if !authorized( $config, $who );
+    my $flat  = sub ($text) { return $text =~ s/\s+/ /gr =~ s/\A\ |\ \z//gr };
+    my $quote = $flat->( $entry->{quote} );
+    return 1 if List::Util::any { $_->{by} eq $who && index( $flat->( $_->{body} ), $quote ) >= 0 } @$written;
+    die "The quote that asks for $what is not in anything that $who wrote here; ask for it only when they did\n";
+}
+
 =func triage
 
 Refreshes a reference worktree of every spoke, writes the hub CLAUDE.md, and
@@ -609,13 +745,23 @@ enqueues the work: C<kickback> for upstream or clarify, one C<spoke_review> for
 a review, and otherwise a chain of C<spoke_fix> or C<spoke_address> jobs, each
 the parent of the next, and a C<report> after them all.
 
+When L</creation> allows it, the answer may also ask for new repositories, in
+C<new_repos>, and for follow-up issues, in C<follow_ups>.  Each one must pass
+L</asked_for> as well, or the answer is rejected like one that breaks the
+schema.  Then a C<create_repo> job for each new repository comes before the
+chain, as the parents of its first job, and one C<file_issues> job files the
+follow-up issues after the new repositories are made.  An answer of scope
+C<follow_up> has no chain and no C<report>: filing the issues settles it.
+
 =cut
 
 sub triage ( $job, $config, $item ) {
     my $gh     = github($config);
     my $spokes = spokes( $job->minion, $config );
     my ( $hub, $ref ) = prepare_hub( $config, $gh, $spokes );
-    my %vars = (
+    my %create  = creation( $job->minion, $config, $item );
+    my $written = %create ? written( $gh, $item ) : [];
+    my %vars    = (
         kind           => $item->{kind},
         origin         => origin_of($item),
         repo           => $item->{repo},
@@ -623,6 +769,8 @@ sub triage ( $job, $config, $item ) {
         owners         => join( q{, }, @{ $config->{owners} } ),
         context        => context( $config, $gh, $item ),
         spoke_briefing => spoke_briefing($config),
+        new_repos      => $create{orgs}       ? prompt( 'triage-new-repos',  orgs => join( q{, }, @{ $create{orgs} } ), max => $create{max} ) : q{},
+        follow_ups     => $create{follow_ups} ? prompt( 'triage-follow-ups', max  => $create{follow_ups} ) : q{},
     );
 
     my ( @outcomes, $answer, $error );
@@ -634,11 +782,16 @@ sub triage ( $job, $config, $item ) {
             tools           => $config->{claude}{read_tools},
             permission_mode => 'default',
             add_dirs        => [ map { "$_" } values %$ref ],
-            schema          => App::Clod::Triage::schema($spokes),
+            schema          => App::Clod::Triage::schema( $spokes, %create ),
         ) // return;
         push @outcomes, $outcome;
         return $job->fail( { error => "the triage run failed: $outcome->{stderr}", usage_of(@outcomes) } ) if !$outcome->{ok};
-        $answer = eval { App::Clod::Triage::validate( $outcome->{structured}, $spokes ) };
+        $answer = eval {
+            my $valid = App::Clod::Triage::validate( $outcome->{structured}, $spokes, %create );
+            asked_for( $config, $written, $_, $_->{repo} )                            for @{ $valid->{new_repos} };
+            asked_for( $config, $written, $_, qq{the follow-up issue "$_->{title}"} ) for @{ $valid->{follow_ups} };
+            $valid;
+        };
         last if $answer;
         $error = $@;
     }
@@ -673,24 +826,35 @@ sub plan_children ( $job, $item, $answer ) {
         return $minion->enqueue( spoke_review => [$args], { notes => { %notes, repo => $item->{repo} } } );
     }
 
-    # Answering a review starts in the pull request's own repository.
-    if ( $item->{kind} eq 'address_review' ) {
+    # Answering a review starts in the pull request's own repository, unless filing settles it.
+    if ( $item->{kind} eq 'address_review' && $answer->{scope} ne 'follow_up' ) {
         my ($own) = grep { $_->{repo} eq $item->{repo} } @repos;
         @repos = ( $own // { repo => $item->{repo}, instructions => $answer->{reason} }, grep { $_->{repo} ne $item->{repo} } @repos );
     }
 
+    # Every new repository is made before the first spoke runs.
+    my @new  = @{ $answer->{new_repos} // [] };
+    my %new  = map { $_->{repo} => 1 } @new;
+    my @made = map {
+        my %args = ( item => $item, %$_{qw{org name description module private asked_by}} );
+        $minion->enqueue( create_repo => [ \%args ], { notes => { %notes, repo => $_->{repo} } } );
+    } @new;
+    my @issues = @{ $answer->{follow_ups} // [] };
+    my @filing = @issues ? $minion->enqueue( file_issues => [ { item => $item, issues => \@issues } ], { notes => \%notes, @made ? ( parents => [@made] ) : () } ) : ();
+
     my ( @ids, $parent );
     for my $entry (@repos) {
-        my $task = $item->{kind} eq 'address_review' && $entry->{repo} eq $item->{repo} ? 'spoke_address' : 'spoke_fix';
-        my $id   = $minion->enqueue(
-            $task => [ { item => $item, repo => $entry->{repo}, instructions => $entry->{instructions} } ],
-            { notes => { %notes, repo => $entry->{repo} }, $parent ? ( parents => [$parent] ) : () }
+        my $task    = $item->{kind} eq 'address_review' && $entry->{repo} eq $item->{repo} ? 'spoke_address' : 'spoke_fix';
+        my @parents = $parent                                                              ? ($parent)       : @made;
+        my $id      = $minion->enqueue(
+            $task => [ { item => $item, repo => $entry->{repo}, instructions => $entry->{instructions}, $new{ $entry->{repo} } ? ( created => 1 ) : () } ],
+            { notes => { %notes, repo => $entry->{repo} }, @parents ? ( parents => \@parents ) : () }
         );
         push @ids, $id;
         $parent = $id;
     }
-    push @ids, $minion->enqueue( report => [ { item => $item } ], { parents => [@ids], lax => 1, notes => \%notes } );
-    return @ids;
+    push @ids, $minion->enqueue( report => [ { item => $item } ], { parents => [@ids], lax => 1, notes => \%notes } ) if @ids;
+    return ( @made, @filing, @ids );
 }
 
 =func parent_results
@@ -834,6 +998,8 @@ Works on a new branch in a worktree of one spoke.  The spoke commits, and the
 job pushes and opens the pull request.  If the spoke asks a question instead,
 the job gives the origin to a person through C<hand_back>.  A job whose parent
 asked a question, or waits for one, does not run the spoke, and waits too.
+When C<created> is in its arguments, the hub made the repository for this
+change, and the prompt says so.
 
 =cut
 
@@ -856,7 +1022,7 @@ sub spoke_fix ( $job, $config, $args ) {
             my $outcome = run_claude(
                 $job, $config,
                 dir      => $tree,
-                prompt   => prompt( fix => repo => $repo, branch => $branch, origin => origin_url( $config, $item ), instructions => $args->{instructions}, prior => $prior, tools => $tools->{note}, context => context( $config, $gh, $item ) ),
+                prompt   => prompt( fix => repo => $repo, branch => $branch, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $prior, tools => $tools->{note}, context => context( $config, $gh, $item ) ),
                 add_dirs => $tools->{add_dirs},
                 schema   => {
                     type       => 'object',
@@ -1105,7 +1271,7 @@ sub report ( $job, $config, $args ) {
     my $gh      = github($config);
     my @results = parent_results($job);
     my @done    = grep { $_->{pr_url} } @results;
-    my $asked   = grep { $_->{question} } @results;
+    my $asked   = grep { $_->{question} || $_->{waiting} } @results;
     my $total   = scalar @{ $job->info->{parents} // [] };
     return $job->finish( { prs => [], of => $total, waiting => 1 } ) if $asked && !@done;
     my @elsewhere = grep { $_->{repo} ne $item->{repo} || ( $_->{pr} // 0 ) != $item->{number} } @done;
@@ -1163,8 +1329,7 @@ sub hand_back ( $job, $config, $gh, $item, $path, @paragraphs ) {
         $person = $info->{owner}{type} eq 'User' ? $info->{owner}{login} : $item->{requester};
     }
 
-    my $issue    = $gh->assign( $repo, $number, $person );
-    my $assigned = List::Util::any { ( $_->{login} // q{} ) eq $person } @{ $issue->{assignees} // [] };
+    my $assigned = assigned( $gh->assign( $repo, $number, $person ), $person );
     $gh->unassign( $repo, $number, $config->{bot} );
     $gh->comment( $repo, $number, join( q{ }, map { "\@$_" } $person, @teams ) . q{: } . join( "\n\n", @paragraphs ) );
     log_note( $job, "gave $repo#$number to $person" . ( $assigned ? q{} : ', but GitHub did not assign them; the mention still reaches them' ) );
@@ -1213,6 +1378,195 @@ sub kickback ( $job, $config, $args ) {
         "To fix it there, run claude yourself in a clone of $up->{project}, with perl-slop:pull-requests, and open the pull request. Then mention \@$config->{bot} here with a link to it, so that this issue records it.",
     );
     return $job->finish( { %$asked, scope => 'upstream', project => $up->{project}, summary => $up->{explanation} } );
+}
+
+=func create_repo
+
+Makes one repository that triage planned, as the bot, and is a parent of the
+first spoke job of the change.  Its arguments are C<item>, and C<org>,
+C<name>, C<description>, C<module>, C<private> and C<asked_by> from the entry
+of C<new_repos>.
+
+First it asks L</refusal> whether it may.  If not, it makes nothing and gives
+the origin to a person through C<hand_back>, with the reason.  Its result then
+has C<question>, so the spoke jobs after it wait, as they do after a spoke
+that asked.
+
+Otherwise it makes a public repository with C<auto_init>, opens its
+L</release_issue>, and comments on the origin with both.  It notes C<created>
+as soon as GitHub has made the repository, and C<release_issue> as soon as
+the issue is open, so a retry after a failure later on makes neither again.
+Its result has C<created>, C<created_at>, C<repo_url> and C<release_url>, and
+from then on the repository is a spoke, see L</made_repos>.
+
+If GitHub refuses to make the repository, for example because a private
+repository that the bot cannot see has the name, the job fails with GitHub's
+reason, and the spoke jobs after it wait for a person.
+
+=cut
+
+sub create_repo ( $job, $config, $args ) {
+    my ( $item, $org, $name ) = @{$args}{qw{item org name}};
+    my $repo = "$org/$name";
+    my $gh   = github($config);
+    my $made = $job->info->{notes}{created};
+    if ( !$made ) {
+        if ( my $why = refusal( $job, $config, $gh, $args ) ) {
+            log_note( $job, "did not make $repo: $why" );
+            my $asked = hand_back(
+                $job, $config, $gh, $item, undef,
+                "I did not make the repository $repo, because $why. I changed nothing.",
+                'Say which repository the work belongs in, or ask for one with another name.',
+                how_to_resume($config),
+            );
+            return $job->finish( { repo => $repo, refused => $why, question => $why, summary => "Did not make $repo: $why.", %$asked } );
+        }
+        my $new = $gh->create_org_repo( $org, { name => $name, description => $args->{description}, visibility => 'public', auto_init => Mojo::JSON::true } );
+        $made = { url => $new->{html_url}, at => time };
+        $job->note( created => $made );
+        log_note( $job, "made $repo" );
+    }
+    my $release = $job->info->{notes}{release_issue};
+    if ( !$release ) {
+        $release = release_issue( $config, $gh, $args );
+        $job->note( release_issue => $release );
+        log_note( $job, "opened $release->{url} for $release->{assignee}" . ( $release->{assigned} ? q{} : ', but GitHub did not assign them' ) );
+    }
+    $gh->comment(
+        $item->{repo}, $item->{number},
+        join "\n\n",   "I made the repository $repo for this: $made->{url}",
+        "The work on it follows, in a pull request there. Its first release is $release->{url}, for $release->{assignee}."
+    );
+    return $job->finish( { repo => $repo, created => 1, created_at => $made->{at}, repo_url => $made->{url}, release_url => $release->{url}, summary => "Made $repo: $args->{description}" } );
+}
+
+=func refusal
+
+C<($job, $config, $gh, \%args)>.  Why the C<create_repo> job must not make its
+repository, or undef when it may.  This is the guard of the hub, whatever
+triage said: the repository must not be asked for as private, the
+organization must be in C<create_repos.orgs>, the name must be
+L<App::Clod::Triage/repo_name>, the origin must have made fewer than
+C<create_repos.max> repositories so far, counted by L</made_for>, and the
+repository must not exist.  The bot never takes over a repository that it did
+not make, even one of the same organization: it was not asked to change that
+one.  Why it makes no private repository is in L<App::Clod/CAVEATS>.
+
+=cut
+
+sub refusal ( $job, $config, $gh, $args ) {
+    my $create = $config->{create_repos};
+    my ( $org, $name ) = @{$args}{qw{org name}};
+    return 'it is to be private, and I make public repositories only: a bot that serves public and private repositories at once can leak what is in one into the other' if $args->{private};
+    return "the configuration does not let me make repositories in $org"                                                                                                if !List::Util::any { $_ eq $org } @{ $create->{orgs} };
+    return 'its name does not fit the rule for a new repository'                                                                                                        if !App::Clod::Triage::repo_name($name);
+    my $made = made_for( $job->minion, origin_of( $args->{item} ), $job->id );
+    return "this request has made $made already, and the configuration allows $create->{max}"   if $made >= $create->{max};
+    return "$org/$name exists already, and I do not take over a repository that I did not make" if $gh->repo_exists("$org/$name");
+    return;
+}
+
+=func release_issue
+
+C<($config, $gh, \%args)>.  Opens the issue "Release I<Module>" in the new
+repository, where the module is L<App::Clod::Triage/module_of> the arguments,
+and assigns it to C<asked_by>, the person who asked for the repository.  The
+assignment puts it in that person's notifications, and the body mentions them
+as well, for the case that GitHub drops the assignment.  Returns C<{url,
+number, module, assignee, assigned}>.
+
+The module is the one that triage named, else the one that the name of the
+repository gives.  The issue is opened before the spoke run, so a module name
+that the run settles on later does not change it.
+
+=cut
+
+sub release_issue ( $config, $gh, $args ) {
+    my $item   = $args->{item};
+    my $repo   = "$args->{org}/$args->{name}";
+    my $module = App::Clod::Triage::module_of($args);
+    my $who    = $args->{asked_by};
+    my $body   = join "\n\n",
+      "\@$who: I made $repo at your request, on " . origin_url( $config, $item ) . ": $args->{description}",
+      "It is to hold $module. The work on it comes in pull requests here. The first release of $module is yours to make, once they have merged.";
+    my $issue = $gh->create_issue( $repo, { title => "Release $module", body => $body, assignees => [$who] } );
+    return { url => $issue->{html_url}, number => $issue->{number}, module => $module, assignee => $who, assigned => assigned( $issue, $who ) ? 1 : 0 };
+}
+
+=func assigned
+
+C<($issue, $login)>.  True when the issue, as GitHub returned it, is assigned
+to the login.  GitHub drops an assignee who cannot be assigned without an
+error, so this is how to tell.
+
+=cut
+
+sub assigned ( $issue, $login ) {
+    return List::Util::any { ( $_->{login} // q{} ) eq $login } @{ $issue->{assignees} // [] };
+}
+
+=func file_issues
+
+Files the follow-up issues that triage planned, as the bot.  Its arguments are
+C<item>, and C<issues>, the entries of C<follow_ups>, each with C<repo>,
+C<title>, C<body> and C<asked_by>.  Its parents are the C<create_repo> jobs of
+the change, if there are any; if one of them refused, it files nothing and
+waits, as a spoke does after a question.
+
+First it asks L</filing_refusal> whether it may.  If not, it files nothing and
+gives the origin to a person through C<hand_back>, with the reason.
+Otherwise it opens each issue in its repository, assigned to C<asked_by>, and
+comments on the origin with a link to each.  It notes each issue in C<filed>
+as soon as it is open, so a retry after a failure later on files none twice.
+Its result has C<filed>, each a C<{repo, title, url, number, assignee,
+assigned}>, and C<issues>, their URLs.
+
+=cut
+
+sub file_issues ( $job, $config, $args ) {
+    my $item      = $args->{item};
+    my @issues    = @{ $args->{issues} };
+    my ($waiting) = grep { $_->{question} || $_->{waiting} } parent_results($job);
+    return $job->finish( { waiting => 1, summary => "Waits for the answer about $waiting->{repo}." } ) if $waiting;
+
+    my $gh    = github($config);
+    my $filed = $job->info->{notes}{filed} // {};
+    if ( !%$filed && ( my $why = filing_refusal( $job, $config, $item, \@issues ) ) ) {
+        log_note( $job, "filed no follow-up issue: $why" );
+        my $asked = hand_back( $job, $config, $gh, $item, undef, "I filed none of the follow-up issues, because $why. I changed nothing.", how_to_resume($config) );
+        return $job->finish( { refused => $why, question => $why, summary => "Filed no follow-up issue: $why.", %$asked } );
+    }
+    for my $n ( 0 .. $#issues ) {
+        next if $filed->{$n};
+        my $want  = $issues[$n];
+        my $who   = $want->{asked_by};
+        my $body  = join "\n\n", $want->{body}, "\@$who asked for this on " . origin_url( $config, $item ) . q{.};
+        my $issue = $gh->create_issue( $want->{repo}, { title => $want->{title}, body => $body, assignees => [$who] } );
+        $filed->{$n} = { repo => $want->{repo}, title => $want->{title}, url => $issue->{html_url}, number => $issue->{number}, assignee => $who, assigned => assigned( $issue, $who ) ? 1 : 0 };
+        $job->note( filed => $filed );
+        log_note( $job, "filed $issue->{html_url} for $who" );
+    }
+    my @done = map { $filed->{$_} } 0 .. $#issues;
+    $gh->comment( $item->{repo}, $item->{number}, join "\n", 'I filed these follow-up issues:', map { "- $_->{repo}: $_->{url} ($_->{title})" } @done );
+    return $job->finish( { filed => \@done, issues => [ map { $_->{url} } @done ], summary => 'Filed ' . scalar(@done) . ' follow-up issue(s).' } );
+}
+
+=func filing_refusal
+
+C<($job, $config, $item, \@issues)>.  Why the C<file_issues> job must not file its
+issues, or undef when it may.  This is the guard of the hub, whatever triage
+said: the origin must have filed no more than C<follow_up_max> follow-up
+issues with these, counted by L</filed_for>, and each repository must be a
+spoke, which a repository that this change made is by now.
+
+=cut
+
+sub filing_refusal ( $job, $config, $item, $issues ) {
+    my $filed = filed_for( $job->minion, origin_of($item), $job->id );
+    return "this request has filed $filed already, and the configuration allows $config->{follow_up_max} in all" if $filed + @$issues > $config->{follow_up_max};
+    my @strangers = grep { !is_spoke( $job->minion, $config, $_ ) } List::Util::uniq( map { $_->{repo} } @$issues );
+    return "@strangers is not a spoke" if @strangers;
+    return;
 }
 
 =func harness_scan
@@ -1275,15 +1629,18 @@ sub assigned_sweep ( $job, $config ) {
 =func spoke_sweep
 
 Every fifteen minutes, when C<spoke_orgs> names any.  Lists the public
-repositories of each one, without forks and archived ones.  If listing an
+repositories of each one, without forks and archived ones.  Its result has
+C<started_at>, the time before the first listing, so that L</made_repos> can
+tell whether it saw a repository made since.  If listing an
 organization fails, its repositories from the sweep before stay spokes, so one
 failed request does not drop them.
 
 =cut
 
 sub spoke_sweep ( $job, $config ) {
-    my $minion = $job->minion;
-    my $before = last_result( $minion, 'spoke_sweep' ) // {};
+    my $minion  = $job->minion;
+    my $started = time;
+    my $before  = last_result( $minion, 'spoke_sweep' ) // {};
     prune_history( $minion, q{spoke_sweep} );
     my $gh = github($config);
     my ( %by_org, %errors );
@@ -1296,7 +1653,7 @@ sub spoke_sweep ( $job, $config ) {
         }
         $by_org{$org} = [ sort map { $_->{full_name} } grep { !$_->{fork} && !$_->{archived} } @$list ];
     }
-    return $job->finish( { checked_at => time, by_org => \%by_org, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
+    return $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
 }
 
 =head1 SYNOPSIS

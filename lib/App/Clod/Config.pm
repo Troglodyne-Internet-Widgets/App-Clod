@@ -70,7 +70,14 @@ our %SCHEMA = (
         ),
         otel           => { type => 'object', additionalProperties => $TEXT, default => {} },
         system_prompts => section( { map { $_ => $TEXT } @App::Clod::Budget::CLAUDE_TASKS } ),
-        spoke_prompt   => { type => 'string', nullable => 1, default => undef },
+        spoke_prompt   => { type => 'string',  nullable => 1, default => undef },
+        follow_up_max  => { type => 'integer', minimum  => 0, default => 3 },
+        create_repos   => section(
+            {
+                orgs => list_of($LOGIN),
+                max  => { type => 'integer', minimum => 1, default => 1 },
+            }
+        ),
     },
 );
 
@@ -92,6 +99,9 @@ sub validate ($raw) {
     my @errors = $validator->validate( $config, \%SCHEMA );
     die join( "\n", 'The configuration is not valid:', map { "  $_" } @errors ) . "\n" if @errors;
     die "The configuration names no spokes and no spoke_orgs\n"                        if !@{ $config->{spokes} } && !@{ $config->{spoke_orgs} };
+    my %swept = map  { $_ => 1 } @{ $config->{spoke_orgs} };
+    my @lost  = grep { !$swept{$_} } @{ $config->{create_repos}{orgs} };
+    die "create_repos.orgs names @lost, which spoke_orgs does not, so a repository made there would stop being a spoke\n" if @lost;
 
     $config = Clone::clone($config);
     $config->{minion}             //= "sqlite:$config->{workspace}/minion.db";
@@ -257,6 +267,39 @@ a tool spoke gets no second copy of it.  Triage is told which they are, and to
 put a change to one first in its plan.  For triage to plan a change to a tool
 spoke, it must be a spoke too, in C<spokes> or in C<spoke_orgs>.  See
 L<App::Clod::Tasks/in_worktree>.  Default none.
+
+=item follow_up_max
+
+How many follow-up issues one request may have the hub file, counted over
+every job for the same issue or pull request.  An authorized user asks for one
+in their own words, such as "file a follow-up issue about this", and the hub
+files it in a spoke, assigned to that user.  0 turns it off.  Default 3.  It
+needs no other switch: it makes no repository, and it writes only to spokes,
+where the bot already opens pull requests.  See
+L<App::Clod::Tasks/file_issues>.
+
+=item create_repos
+
+Whether triage may ask the hub to make a new repository, and where.  Default
+off: C<orgs> is empty, and then the hub makes none.
+
+C<orgs> are the organizations that the hub may make a repository in, each one
+also in C<spoke_orgs>, so that the sweep keeps the new repository a spoke
+after the job that made it.  The configuration dies otherwise.  The token of
+the bot must be allowed to make repositories there.
+
+C<max> is how many repositories one request may make, counted over every job
+for the same issue or pull request.  Default 1.
+
+Every repository that the hub makes is public, and the hub refuses a request
+for a private one.  A bot that serves public and private repositories at once
+can carry what is in a private one into a public one: into a prompt, a pull
+request or a comment.  So an installation serves public repositories or
+private ones, never both, and one that makes repositories serves public ones.
+Nothing in the configuration changes that.  See L<App::Clod/CAVEATS>.
+
+The release issue of each new repository is assigned to the person who asked
+for the repository.  See L<App::Clod::Tasks/create_repo>.
 
 =item otel
 

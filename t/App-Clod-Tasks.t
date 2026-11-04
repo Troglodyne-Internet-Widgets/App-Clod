@@ -35,17 +35,20 @@ sub git (@args) {
 
 # Each spoke is a bare repository on disk, standing in for GitHub's git side.
 my $remote = $tmp->child('remote');
-for my $repo (@SPOKES) {
+
+sub seed ( $repo, $name, $text ) {
     my $bare = $remote->child("$repo.git");
     $bare->dirname->make_path;
     git( qw{init --quiet --bare --initial-branch=main}, "$bare" );
     my $seed = $tmp->child( 'seed', $repo )->make_path;
     git( q{-C}, "$seed", qw{init --quiet --initial-branch=main} );
-    $seed->child('CLAUDE.md')->spew("# CLAUDE.md\n\n$repo is a test spoke.\n");
+    $seed->child($name)->spew($text);
     git( '-C',  "$seed", 'add', q{.} );
     git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet -m seed} );
     git( '-C',  "$seed", 'push', '--quiet', "$bare", 'main' );
+    return;
 }
+seed( $_, 'CLAUDE.md', "# CLAUDE.md\n\n$_ is a test spoke.\n" ) for @SPOKES;
 
 sub path_of ($c) {
     my $url = $c->req->url;
@@ -59,7 +62,11 @@ $fake->log->level('fatal');
 $fake->hook( before_dispatch => sub ($c) { $c->render( json => { message => 'Bad credentials' }, status => 401 ) if $state{bad_token} } );
 my $r      = $fake->routes;
 my $record = sub ($what) {
-    return sub ($c) { push @calls, [ $what, path_of($c), $c->req->json ]; $c->render( json => $state{$what} // {}, status => 201 ) };
+    return sub ($c) {
+        return $c->render( json => { message => 'Server Error' }, status => 500 ) if $state{"refuse_$what"};
+        push @calls, [ $what, path_of($c), $c->req->json ];
+        $c->render( json => $state{$what} // {}, status => 201 );
+    };
 };
 $r->get('/notifications')->to( cb => sub ($c) { $state{inbox_reads}++; $c->render( json => $state{threads} // [] ) } );
 $r->patch('/notifications/threads/:id')->to( cb => $record->('read') );
@@ -110,7 +117,31 @@ $r->get('/orgs/:o/repos')->to(
     }
 );
 $r->get('/repos/:o/:n/issues')->to( cb => sub ($c) { $c->render( json => [ { number => 5, title => 'Assigned', html_url => 'https://test.test/5', updated_at => 'today' } ] ) } );
-$r->get('/repos/:o/:n')->to( cb => sub ($c) { $c->render( json => { default_branch => 'main', owner => { type => 'Organization', login => $c->param('o') } } ) } );
+$r->get('/repos/:o/:n')->to(
+    cb => sub ($c) {
+        return $c->render( json => { message => 'Not Found' }, status => 404 ) if $state{absent}{ $c->param('o') . q{/} . $c->param('n') };
+        $c->render( json => { default_branch => 'main', owner => { type => 'Organization', login => $c->param('o') } } );
+    }
+);
+
+# Making a repository puts it on disk, with the README that auto_init writes.
+$r->post('/orgs/:o/repos')->to(
+    cb => sub ($c) {
+        my $full = $c->param('o') . q{/} . $c->req->json->{name};
+        push @calls, [ 'create', path_of($c), $c->req->json ];
+        delete $state{absent}{$full};
+        seed( $full, 'README.md', "# $full\n" );
+        $c->render( json => { full_name => $full, html_url => "https://test.test/$full", default_branch => 'main' }, status => 201 );
+    }
+);
+$r->post('/repos/:o/:n/issues')->to(
+    cb => sub ($c) {
+        push @calls, [ 'issue', path_of($c), $c->req->json ];
+        my @assignees = $state{drop_assignee} ? () : map { { login => $_ } } @{ $c->req->json->{assignees} // [] };
+        $c->render( json => { number => 1, html_url => 'https://test.test/' . $c->param('o') . q{/} . $c->param('n') . '/issues/1', assignees => \@assignees }, status => 201 );
+    }
+);
+
 $r->get('/comment')->to( cb => sub ($c) { $c->render( json => { user => { login => $state{commenter} } } ) } );
 
 my $fake_ua = Mojo::UserAgent->new;
@@ -831,6 +862,187 @@ subtest 'inbox_poll before the first spoke_sweep' => sub {
     ok( !exists $after->{result}{no_spokes_since}, 'and the wait is over' );
     $config->{spokes} = $spokes;
     delete $config->{spoke_orgs};
+    $minion->reset( { all => 1 } );
+};
+
+subtest create_repo => sub {
+    %state = ();
+    @calls = ();
+    my $config = $app->clod_config;
+    $config->{spoke_orgs}   = ['Test-Org'];
+    $config->{create_repos} = { orgs => ['Test-Org'], max => 1 };
+    $state{absent}          = { 'Test-Org/Fresh-Dist' => 1 };
+    $state{issue_comments}  = [ { id => 1, user => { login => 'trusted' }, body => "Please make a new repository\nfor this one." } ];
+    my $new  = { org => 'Test-Org', name => 'Fresh-Dist', description => 'A fresh distribution.', asked_by => 'trusted', quote => 'Please make a new repository for this one.' };
+    my %plan = ( scope => 'multi', reason => 'asked for', repos => [ { repo => 'Test-Org/one', order => 1, instructions => 'first' }, { repo => 'Test-Org/Fresh-Dist', order => 2, instructions => 'fill it' } ], new_repos => [$new] );
+
+    answer( {%plan} );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/create-record";
+    my $triage = run_job( triage => \%item );
+    is( $triage->{state}, 'finished', 'a triage that asks for a repository that a trusted user asked for finishes' ) or diag Mojo::Util::dumper $triage->{result};
+    my $where = qr/in\ one\ of\ these\ organizations:\ Test-Org,/;
+    like( record_of("$tmp/create-record")->{prompt}, qr/$where\nand\ at\ most\ 1/, 'triage is told where it may ask for one, and how many' );
+    my @children = map { $minion->job($_)->info } @{ $triage->{result}{children} };
+    is( [ map { $_->{task} } @children ], [qw{create_repo spoke_fix spoke_fix report}], 'the repository is made first, then each spoke works, then the report' );
+    is( $children[1]{parents},            [ $children[0]{id} ],                         'the first spoke waits for the new repository' );
+    is( $children[2]{args}[0]{created},   1,                                            'and the run in the new one is told that it is new' );
+    is( calls_of('create'),               [],                                           'triage itself makes nothing' );
+    ok( !App::Clod::Tasks::is_spoke( $minion, $config, 'Test-Org/Fresh-Dist' ), 'before it is made, it is not a spoke' );
+
+    my $made = run_id( $children[0]{id} );
+    is( $made->{state},                                      'finished',                                                                                                              'the hub makes the repository' ) or diag Mojo::Util::dumper $made->{result};
+    is( [ map { [ @$_[ 0, 1 ] ] } @{ calls_of('create') } ], [ [ 'create', '/orgs/Test-Org/repos' ] ],                                                                                'once, in the organization' );
+    is( calls_of('create')->[0][2],                          { name => 'Fresh-Dist', description => 'A fresh distribution.', visibility => 'public', auto_init => Mojo::JSON::true }, 'public, so that the sweep finds it, and with a first commit, so that it has a branch to work from' );
+    my $issues = calls_of('issue');
+    my $yours  = qr/first\ release\ of\ Fresh::Dist\ is\ yours/;
+    my $fresh  = qr{https://test\.test/Test-Org/Fresh-Dist};
+    my $named  = qr{repository\ Test-Org/Fresh-Dist\ for\ this:\ $fresh};
+    is( [ map { $_->[1] } @$issues ], ['/repos/Test-Org/Fresh-Dist/issues'], 'it opens one issue in the new repository' );
+    like( $issues->[0][2],          { title => 'Release Fresh::Dist', assignees => ['trusted'], body => qr/\A\@trusted:\ .*Test-Org\/one\/issues\/7.*$yours/s }, 'to release the module that its name gives, assigned to the person who asked' );
+    like( calls_of('comment')->[0], [ 'comment', '/repos/Test-Org/one/issues/7/comments', { body => qr{$named.*/issues/1}s } ],                                  'and says on the origin what it made' );
+    is( $minion->jobs( { tasks => ['spoke_sweep'] } )->total, 0, 'with no sweep' );
+    ok( App::Clod::Tasks::is_spoke( $minion, $config, 'Test-Org/Fresh-Dist' ), 'the new repository is a spoke at once' );
+
+    answer( { title => 'One', summary => 'Done in one.' }, commit => 1 );
+    is( run_id( $children[1]{id} )->{state}, 'finished', 'the spoke before it works' );
+    answer( { title => 'Fresh', summary => 'Filled it.' }, commit => 1 );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/create-record";
+    my $fix = run_id( $children[2]{id} );
+    is( $fix->{state}, 'finished', 'and so does the run in the new repository' ) or diag Mojo::Util::dumper $fix->{result};
+    like( record_of("$tmp/create-record")->{prompt}, qr/Test-Org\/Fresh-Dist\ is\ new:\ the\ hub\ made\ it/, 'which is told that it is new' );
+    is( calls_of('pull')->[-1][1], '/repos/Test-Org/Fresh-Dist/pulls', 'and the hub opens its pull request there' );
+
+    @calls = ();
+    $state{absent}{'Test-Org/Second'} = 1;
+    my %left = App::Clod::Tasks::creation( $minion, $config, \%item );
+    is( [ @left{qw{orgs max}} ], [ undef, undef ], 'once the origin has made as many as it may, triage may ask for no more' );
+    my $second = qr{Test-Org/Second};
+    my $capped = run_job( create_repo => { item => \%item, org => 'Test-Org', name => 'Second', description => 'd', asked_by => 'trusted' } );
+    like( $capped->{result}, { refused => qr/made\ 1\ already,\ and\ the\ configuration\ allows\ 1/, question => T() }, 'and the hub refuses one more for the same origin' );
+    is( calls_of('create'), [], 'so it makes nothing' );
+    like( calls_of('comment')->[0][2]{body}, qr/\A\@trusted:\ I\ did\ not\ make\ the\ repository\ $second/, 'and gives the origin back with the reason' );
+
+    @calls = ();
+    my $other = { %item, number => 8 };
+    $state{absent}{'Other-Org/Fresh'} = 1;
+    like( run_job( create_repo => { item => $other, org => 'Other-Org', name => 'Fresh', description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/does\ not\ let\ me\ make\ repositories\ in\ Other-Org/ }, 'the hub refuses an organization that the configuration does not name' );
+    like( run_job( create_repo => { item => $other, org => 'Test-Org',  name => 'two',   description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/Test-Org\/two\ exists\ already/ },                        'and a name that exists' );
+    like( run_job( create_repo => { item => $other, org => 'Test-Org',  name => 'x.git', description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/does\ not\ fit\ the\ rule/ },                             'and a name that does not fit the rule' );
+    $state{absent}{'Test-Org/Hidden'} = 1;
+    my $private = run_job( create_repo => { item => $other, org => 'Test-Org', name => 'Hidden', description => 'd', private => 1, asked_by => 'trusted' } );
+    my $public  = qr/I\ make\ public\ repositories\ only/;
+    my $leak    = qr/can\ leak\ what\ is\ in\ one/;
+    like( $private->{result},                 { refused => qr/to\ be\ private,\ and\ $public/ }, 'and a repository that is to be private' );
+    like( calls_of('comment')->[-1][2]{body}, qr/\A\@trusted:\ .*$leak\ into\ the\ other/s,      'and tells the person why' );
+    is( calls_of('create'), [], 'none of which it makes' );
+
+    $state{absent}{'Test-Org/Retried'} = 1;
+    $state{refuse_comment} = 1;
+    my %retried = ( item => $other, org => 'Test-Org', name => 'Retried', description => 'd', module => 'Retried::Module', asked_by => 'trusted' );
+    my $failed  = run_job( create_repo => \%retried );
+    is( $failed->{state}, 'failed', 'a job that fails after it made the repository fails' );
+    delete $state{refuse_comment};
+    $minion->job( $failed->{id} )->retry;
+    is( run_id( $failed->{id} )->{state},                  'finished',                  'and its retry finishes' );
+    is( scalar @{ calls_of('create') },                    1,                           'without making the repository again' );
+    is( [ map { $_->[2]{title} } @{ calls_of('issue') } ], ['Release Retried::Module'], 'or a second release issue, named for the module that triage gave' );
+
+    @calls = ();
+    $minion->reset( { all => 1 } );
+    $state{absent}         = { 'Test-Org/Fresh-Dist' => 1 };
+    $state{issue_comments} = [ { id => 1, user => { login => 'someone' }, body => 'Please make a new repository for this one.' } ];
+    answer( {%plan} );
+    like( run_job( triage => \%item )->{result}{error}, qr/not\ in\ anything\ that\ trusted\ wrote/, 'triage cannot ask for a repository on the words of someone else' );
+    $state{review_comments} = [ { id => 51, user => { login => 'trusted' }, path => 'lib/X.pm', line => 3, body => "Please make a new repository for\nthis one." } ];
+    answer( {%plan} );
+    my $line = run_job( triage => { %item, is_pr => 1, number => 12 } );
+    is( $line->{state}, 'finished', 'but it can on the words of a trusted user in a line comment of a review' ) or diag Mojo::Util::dumper $line->{result};
+    delete $state{review_comments};
+    answer( +{ %plan, new_repos => [ +{ %$new, asked_by => 'someone' } ] } );
+    like( run_job( triage => \%item )->{result}{error}, qr/someone\ is\ not\ an\ authorized\ user/, 'nor for someone who is not authorized' );
+    $config->{create_repos} = { orgs => [], max => 1 };
+    $state{issue_comments} = [ { id => 1, user => { login => 'trusted' }, body => 'Please make a new repository for this one.' } ];
+    answer( {%plan} );
+    like( run_job( triage => \%item )->{result}{error}, qr{/new_repos:\ Too\ many\ items:\ 1/0}, 'nor for any, when the configuration names no organization' );
+    is( calls_of('create'), [], 'and nothing is made' );
+
+    $minion->reset( { all => 1 } );
+    delete $config->{spoke_orgs};
+    $config->{create_repos} = { orgs => [], max => 1 };
+    delete $fake{FAKE_CLAUDE_RECORD};
+};
+
+subtest file_issues => sub {
+    %state = ();
+    @calls = ();
+    my $config = $app->clod_config;
+    my $pr     = { %item, kind => 'address_review', is_pr => 1, number => 11 };
+    my $asked  = 'File a follow-up issue about the logging and we will move on.';
+    $state{issue_comments} = [ { id => 1, user => { login => 'trusted' }, body => $asked } ];
+    my $issue = { repo => 'Test-Org/two', title => 'Log less', body => 'The log says too much.', asked_by => 'trusted', quote => 'File a follow-up issue about the logging' };
+    my %plan  = ( scope => 'follow_up', reason => 'filing settles it', repos => [], follow_ups => [$issue] );
+
+    answer( {%plan} );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/follow-record";
+    my $triage = run_job( triage => $pr );
+    is( $triage->{state}, 'finished', 'a triage that only files a follow-up issue, which a trusted user asked for, finishes' ) or diag Mojo::Util::dumper $triage->{result};
+    like( record_of("$tmp/follow-record")->{prompt}, qr/file\ follow-up\ issues\ in\ the\ spokes,\ at\ most\ 3/, 'triage is told that it may, and how many' );
+    my @children = map { $minion->job($_)->info } @{ $triage->{result}{children} };
+    is( [ map { $_->{task} } @children ], ['file_issues'], 'filing is the whole plan: no spoke runs, and no report' );
+    is( calls_of('issue'),                [],              'triage itself files nothing' );
+
+    my $filed = run_id( $children[0]{id} );
+    is( $filed->{state}, 'finished', 'the hub files the issue' ) or diag Mojo::Util::dumper $filed->{result};
+    my $issues = calls_of('issue');
+    is( [ map { $_->[1] } @$issues ], ['/repos/Test-Org/two/issues'], 'once, in the spoke that triage named' );
+    my $says = qr/\AThe\ log\ says\ too\ much\.\n\n/;
+    my $link = qr{https://test\.test/Test-Org/two/issues/1};
+    like( $issues->[0][2],          { title => 'Log less', assignees => ['trusted'], body => qr/$says\@trusted\ asked\ for\ this\ on\ \S+\/pull\/11\./ },                'with its title and body, assigned to the person who asked' );
+    like( calls_of('comment')->[0], [ 'comment', '/repos/Test-Org/one/issues/11/comments', { body => qr{follow-up\ issues:\n-\ Test-Org/two:\ $link\ \(Log\ less\)} } ], 'and links it on the pull request that asked' );
+
+    @calls = ();
+    $state{refuse_comment} = 1;
+    my $failed = run_job( file_issues => { item => { %$pr, number => 12 }, issues => [ $issue, { %$issue, title => 'Log better' } ] } );
+    is( $failed->{state}, 'failed', 'a job that fails after it filed its issues fails' );
+    delete $state{refuse_comment};
+    $minion->job( $failed->{id} )->retry;
+    is( run_id( $failed->{id} )->{state},                  'finished',                   'and its retry finishes' );
+    is( [ map { $_->[2]{title} } @{ calls_of('issue') } ], [ 'Log less', 'Log better' ], 'without filing either issue twice' );
+
+    @calls = ();
+    $config->{follow_up_max} = 2;
+    my %left = App::Clod::Tasks::creation( $minion, $config, { %$pr, number => 12 } );
+    is( $left{follow_ups}, undef, 'once the origin has filed as many as it may, triage may ask for no more' );
+    like( run_job( file_issues => { item => { %$pr, number => 12 }, issues => [$issue] } )->{result},                                   { refused => qr/filed\ 2\ already/, question => T() }, 'and the hub refuses one more for the same origin' );
+    like( run_job( file_issues => { item => { %$pr, number => 13 }, issues => [ +{ %$issue, repo => 'Elsewhere/repo' } ] } )->{result}, { refused => qr{Elsewhere/repo\ is\ not\ a\ spoke} },  'and an issue in a repository that is not a spoke' );
+    is( calls_of('issue'), [], 'neither of which it files' );
+    $config->{follow_up_max} = 3;
+
+    $state{issue_comments} = [ { id => 1, user => { login => 'someone' }, body => $asked } ];
+    answer( {%plan} );
+    my $theirs = qr/is\ not\ in\ anything\ that\ trusted\ wrote/;
+    like( run_job( triage => { %$pr, number => 14 } )->{result}{error}, qr/follow-up\ issue\ "Log\ less"\ $theirs/, 'triage cannot file on the words of someone else' );
+    $config->{follow_up_max} = 0;
+    answer( {%plan} );
+    like( run_job( triage => { %$pr, number => 14 } )->{result}{error}, qr{/follow_ups:\ Too\ many\ items:\ 1/0}, 'nor at all, when follow_up_max is 0' );
+    $config->{follow_up_max} = 3;
+    delete $fake{FAKE_CLAUDE_RECORD};
+    $minion->reset( { all => 1 } );
+};
+
+subtest made_repos => sub {
+    my $made   = { repo => 'Test-Org/Fresh', created => 1, created_at => 100 };
+    my $finish = sub ($result) {
+        my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('create_repo') } );
+        $job->finish($result);
+        $minion->worker->unregister;
+    };
+    $finish->($made);
+    $finish->( { repo => 'Test-Org/Refused', refused => 'it exists' } );
+    is( [ App::Clod::Tasks::made_repos( $minion, {} ) ], ['Test-Org/Fresh'], 'a repository that was made is a spoke before any sweep, and a refused one is not' );
+    is( [ App::Clod::Tasks::made_repos( $minion, { started_at => 99 } ) ],                                   ['Test-Org/Fresh'], 'and after a sweep that started before it was made' );
+    is( [ App::Clod::Tasks::made_repos( $minion, { started_at => 101 } ) ],                                  [],                 'a sweep that started after it was made says alone whether it is a spoke' );
+    is( [ App::Clod::Tasks::made_repos( $minion, { started_at => 101, errors => { 'Test-Org' => 'x' } } ) ], ['Test-Org/Fresh'], 'unless that sweep could not list its organization' );
     $minion->reset( { all => 1 } );
 };
 

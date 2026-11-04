@@ -177,6 +177,37 @@ C<($repo)>.  The repository, as C<Owner/Name>.
 
 sub repo ( $self, $repo ) { return $self->get("/repos/$repo") }
 
+=method repo_exists
+
+C<($repo)>.  False when GitHub answers 404 for the repository.  A repository
+that was renamed answers with a redirect to its new name, so its old name
+exists too.  A private repository that the token cannot see answers 404 as
+well, so it shows only when making it fails.
+
+=cut
+
+sub repo_exists ( $self, $repo ) { return $self->request( GET => "/repos/$repo", ok => [404] )->code != 404 }
+
+=method create_org_repo
+
+C<($org, \%repo)>.  Makes a repository in the organization, as the bot, with
+the fields of C<%repo>, such as C<name>, C<description>, C<visibility> and
+C<auto_init>.  Returns the new repository.
+
+=cut
+
+sub create_org_repo ( $self, $org, $repo ) { return $self->post( "/orgs/$org/repos", $repo ) }
+
+=method create_issue
+
+C<($repo, \%issue)>, where C<%issue> has C<title>, C<body> and optionally
+C<assignees>.  Returns the issue, whose C<assignees> say whom GitHub really
+assigned.
+
+=cut
+
+sub create_issue ( $self, $repo, $issue ) { return $self->post( "/repos/$repo/issues", $issue ) }
+
 =method issue
 
 C<($repo, $number)>.

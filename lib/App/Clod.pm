@@ -145,6 +145,22 @@ with C<perl-slop:pull-requests>, opens the pull request there, and mentions the
 bot on the issue with a link to it.  Nothing watches the upstream pull request
 yet, so a change that our code needs after it merges is for a person to make.
 
+If a site turns on C<create_repos>, an authorized user can ask the bot for a
+new repository, in one of the organizations that it names.  Triage plans one
+only when that user asked for it in their own words, which the bot checks
+against what they wrote.  The worker makes it, public and with a first commit, as
+the bot: the claude runs never hold a token.  The new repository is a spoke at
+once, gets its spoke run like any other, and gets an issue for its first
+release, assigned to the person who asked for it.  The bot never takes over a
+repository that exists already.
+
+An authorized user can also ask the bot to file a follow-up issue, such as
+"file a follow-up issue about this and we will move on".  Triage plans it on
+the same check of their own words, and the worker files it in a spoke,
+assigned to that user, and links it where they asked.  If filing settles the
+request, nothing else runs.  C<follow_up_max> caps how many one request may
+file.
+
 If triage or a spoke cannot go on without an answer from a person, the bot
 changes nothing and does not guess.  It asks the question in a comment, assigns
 the issue to the same person, and removes itself, so that the question reaches
@@ -209,6 +225,8 @@ F<git-hooks>, so a commit in a worktree fails when a tool is missing.
 
 A bot account with write access to every spoke, and a classic token with the
 C<repo> and C<notifications> scopes.  The Overview tab names a missing scope.
+For C<create_repos>, the account must also be allowed to make repositories in
+each organization that it names.
 
 =back
 
@@ -263,6 +281,14 @@ An assignment or a review request made by the account has the bot as its
 actor, and the bot is not an authorized user, so the poll ignores it.
 
 =back
+
+One installation must serve public repositories or private ones, never both.
+Triage reads every spoke, and a spoke run reads its tool spokes and the
+summaries of the spokes before it.  So what a private repository holds can
+reach a prompt about a public one, and from there a public pull request or
+comment.  Run a second installation, with a bot account of its own, for
+private repositories.  For the same reason C<create_repos> makes public
+repositories only, and the bot refuses a request for a private one.
 
 An edit to a comment that the bot has already answered is not seen.  GitHub
 sends no notification for an edit, and the comment keeps its place before the

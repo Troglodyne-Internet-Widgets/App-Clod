@@ -74,6 +74,26 @@ subtest validate => sub {
     ok( lives { App::Clod::Config::validate( { %minimal, auth => { user => 'u', password_sha256 => $HASH } } ) }, 'basic auth with both parts lives' );
 };
 
+subtest create_repos => sub {
+    my $config = App::Clod::Config::validate( {%minimal} );
+    is( $config->{create_repos}, { orgs => [], max => 1 }, 'no repository is made unless the configuration names an organization' );
+    my $on = App::Clod::Config::validate( { %minimal, spoke_orgs => ['Test-Org'], create_repos => { orgs => ['Test-Org'] } } );
+    is( $on->{create_repos}, { orgs => ['Test-Org'], max => 1 }, 'an organization of spoke_orgs lives, with one repository a request by default' );
+    like(
+        dies { App::Clod::Config::validate( { %minimal, create_repos => { orgs => ['Test-Org'] } } ) },
+        qr/\Acreate_repos\.orgs\ names\ Test-Org,\ which\ spoke_orgs/,
+        'an organization outside spoke_orgs dies, because its new repositories would not stay spokes'
+    );
+    refused( { %minimal, create_repos => { max  => 0 } },       '/create_repos/max: 0 < minimum(1)',           'a cap below one dies' );
+    refused( { %minimal, create_repos => { orgs => ['A/b'] } }, '/create_repos/orgs/0: String does not match', 'an organization that is a repository dies' );
+};
+
+subtest follow_up_max => sub {
+    is( App::Clod::Config::validate( {%minimal} )->{follow_up_max},                       3, 'a request may have three follow-up issues filed by default' );
+    is( App::Clod::Config::validate( { %minimal, follow_up_max => 0 } )->{follow_up_max}, 0, 'and 0 lives, which turns filing off' );
+    refused( { %minimal, follow_up_max => -1 }, '/follow_up_max: -1 < minimum(0)', 'a cap below none dies' );
+};
+
 subtest 'the standards of the harness' => sub {
     my $config = App::Clod::Config::validate( {%minimal} );
     is( $config->{harness}{flavor}, 'troglodyne-compat', 'a spoke without .conformance.yml is held to troglodyne-compat' );
