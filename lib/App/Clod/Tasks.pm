@@ -794,7 +794,7 @@ sub plan_children ( $job, $item, $answer ) {
     my @new  = @{ $answer->{new_repos} // [] };
     my %new  = map { $_->{repo} => 1 } @new;
     my @made = map {
-        my %args = ( item => $item, %$_{qw{org name description module asked_by}} );
+        my %args = ( item => $item, %$_{qw{org name description module private asked_by}} );
         $minion->enqueue( create_repo => [ \%args ], { notes => { %notes, repo => $_->{repo} } } );
     } @new;
 
@@ -1340,8 +1340,8 @@ sub kickback ( $job, $config, $args ) {
 
 Makes one repository that triage planned, as the bot, and is a parent of the
 first spoke job of the change.  Its arguments are C<item>, and C<org>,
-C<name>, C<description>, C<module> and C<asked_by> from the entry of
-C<new_repos>.
+C<name>, C<description>, C<module>, C<private> and C<asked_by> from the entry
+of C<new_repos>.
 
 First it asks L</refusal> whether it may.  If not, it makes nothing and gives
 the origin to a person through C<hand_back>, with the reason.  Its result then
@@ -1400,20 +1400,22 @@ sub create_repo ( $job, $config, $args ) {
 
 C<($job, $config, $gh, \%args)>.  Why the C<create_repo> job must not make its
 repository, or undef when it may.  This is the guard of the hub, whatever
-triage said: the organization must be in C<create_repos.orgs>, the name must
-be L<App::Clod::Triage/repo_name>, the origin must have made fewer than
+triage said: the repository must not be asked for as private, the
+organization must be in C<create_repos.orgs>, the name must be
+L<App::Clod::Triage/repo_name>, the origin must have made fewer than
 C<create_repos.max> repositories so far, counted by L</made_for>, and the
 repository must not exist.  The bot never takes over a repository that it did
 not make, even one of the same organization: it was not asked to change that
-one.
+one.  Why it makes no private repository is in L<App::Clod/CAVEATS>.
 
 =cut
 
 sub refusal ( $job, $config, $gh, $args ) {
     my $create = $config->{create_repos};
     my ( $org, $name ) = @{$args}{qw{org name}};
-    return "the configuration does not let me make repositories in $org" if !List::Util::any { $_ eq $org } @{ $create->{orgs} };
-    return 'its name does not fit the rule for a new repository'         if !App::Clod::Triage::repo_name($name);
+    return 'it is to be private, and I make public repositories only: a bot that serves public and private repositories at once can leak what is in one into the other' if $args->{private};
+    return "the configuration does not let me make repositories in $org"                                                                                                if !List::Util::any { $_ eq $org } @{ $create->{orgs} };
+    return 'its name does not fit the rule for a new repository'                                                                                                        if !App::Clod::Triage::repo_name($name);
     my $made = made_for( $job->minion, origin_of( $args->{item} ), $job->id );
     return "this request has made $made already, and the configuration allows $create->{max}"   if $made >= $create->{max};
     return "$org/$name exists already, and I do not take over a repository that I did not make" if $gh->repo_exists("$org/$name");
@@ -1424,10 +1426,10 @@ sub refusal ( $job, $config, $gh, $args ) {
 
 C<($config, $gh, \%args)>.  Opens the issue "Release I<Module>" in the new
 repository, where the module is L<App::Clod::Triage/module_of> the arguments,
-and assigns it to C<create_repos.release_assignee>, else to the person who
-asked for the repository.  The assignment puts it in that person's
-notifications, and the body mentions them as well, for the case that GitHub
-drops the assignment.  Returns C<{url, number, module, assignee, assigned}>.
+and assigns it to C<asked_by>, the person who asked for the repository.  The
+assignment puts it in that person's notifications, and the body mentions them
+as well, for the case that GitHub drops the assignment.  Returns C<{url,
+number, module, assignee, assigned}>.
 
 The module is the one that triage named, else the one that the name of the
 repository gives.  The issue is opened before the spoke run, so a module name
@@ -1439,9 +1441,9 @@ sub release_issue ( $config, $gh, $args ) {
     my $item   = $args->{item};
     my $repo   = "$args->{org}/$args->{name}";
     my $module = App::Clod::Triage::module_of($args);
-    my $who    = $config->{create_repos}{release_assignee} // $args->{asked_by} // $item->{requester};
+    my $who    = $args->{asked_by};
     my $body   = join "\n\n",
-      "\@$who: I made $repo at the request of $args->{asked_by}, on " . origin_url( $config, $item ) . ": $args->{description}",
+      "\@$who: I made $repo at your request, on " . origin_url( $config, $item ) . ": $args->{description}",
       "It is to hold $module. The work on it comes in pull requests here. The first release of $module is yours to make, once they have merged.";
     my $issue = $gh->create_issue( $repo, { title => "Release $module", body => $body, assignees => [$who] } );
     return { url => $issue->{html_url}, number => $issue->{number}, module => $module, assignee => $who, assigned => assigned( $issue, $who ) ? 1 : 0 };

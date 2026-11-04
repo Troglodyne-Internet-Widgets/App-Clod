@@ -151,7 +151,7 @@ only when that user asked for it in their own words, which the bot checks
 against what they wrote.  The worker makes it, public and with a first commit, as
 the bot: the claude runs never hold a token.  The new repository is a spoke at
 once, gets its spoke run like any other, and gets an issue for its first
-release, assigned to the person who releases it.  The bot never takes over a
+release, assigned to the person who asked for it.  The bot never takes over a
 repository that exists already.
 
 If triage or a spoke cannot go on without an answer from a person, the bot
@@ -274,6 +274,14 @@ An assignment or a review request made by the account has the bot as its
 actor, and the bot is not an authorized user, so the poll ignores it.
 
 =back
+
+One installation must serve public repositories or private ones, never both.
+Triage reads every spoke, and a spoke run reads its tool spokes and the
+summaries of the spokes before it.  So what a private repository holds can
+reach a prompt about a public one, and from there a public pull request or
+comment.  Run a second installation, with a bot account of its own, for
+private repositories.  For the same reason C<create_repos> makes public
+repositories only, and the bot refuses a request for a private one.
 
 An edit to a comment that the bot has already answered is not seen.  GitHub
 sends no notification for an edit, and the comment keeps its place before the

@@ -32,8 +32,9 @@ C<repos> may also name C<Org/name>, for one of C<orgs> and a name that is
 L</repo_name>, and L</validate> checks that it is one of C<new_repos>.
 
 Each entry of C<new_repos> has the C<org>, the C<name>, a C<description> of
-one line, the C<module> that the repository will hold if triage knows it, and
-C<asked_by> and C<quote>: the login of the person who asked for the
+one line, the C<module> that the repository will hold if triage knows it,
+C<private> if the person asked for a private repository, which the hub
+refuses, and C<asked_by> and C<quote>: the login of the person who asked for the
 repository, and their words, as they wrote them.  The schema cannot check that
 those words are theirs: L<App::Clod::Tasks/asked_for> does.
 
@@ -60,6 +61,7 @@ sub schema ( $spokes, %create ) {
             name        => { type => 'string', pattern   => "^$NAME\$" },
             description => { type => 'string', minLength => 1, maxLength => 350 },
             module      => { type => 'string', pattern   => "^$MODULE\$" },
+            private     => { type => 'boolean' },
             asked_by    => $text->(),
             quote       => { type => 'string', minLength => 10 },
         },

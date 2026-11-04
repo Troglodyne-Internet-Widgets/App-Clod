@@ -76,9 +76,9 @@ subtest validate => sub {
 
 subtest create_repos => sub {
     my $config = App::Clod::Config::validate( {%minimal} );
-    is( $config->{create_repos}, { orgs => [], max => 1, release_assignee => undef }, 'no repository is made unless the configuration names an organization' );
-    my $on = App::Clod::Config::validate( { %minimal, spoke_orgs => ['Test-Org'], create_repos => { orgs => ['Test-Org'], release_assignee => 'releaser' } } );
-    is( [ @{ $on->{create_repos} }{qw{orgs max release_assignee}} ], [ ['Test-Org'], 1, 'releaser' ], 'an organization of spoke_orgs lives, with one repository a request by default' );
+    is( $config->{create_repos}, { orgs => [], max => 1 }, 'no repository is made unless the configuration names an organization' );
+    my $on = App::Clod::Config::validate( { %minimal, spoke_orgs => ['Test-Org'], create_repos => { orgs => ['Test-Org'] } } );
+    is( $on->{create_repos}, { orgs => ['Test-Org'], max => 1 }, 'an organization of spoke_orgs lives, with one repository a request by default' );
     like(
         dies { App::Clod::Config::validate( { %minimal, create_repos => { orgs => ['Test-Org'] } } ) },
         qr/\Acreate_repos\.orgs\ names\ Test-Org,\ which\ spoke_orgs/,

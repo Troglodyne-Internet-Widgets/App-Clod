@@ -870,7 +870,7 @@ subtest create_repo => sub {
     @calls = ();
     my $config = $app->clod_config;
     $config->{spoke_orgs}   = ['Test-Org'];
-    $config->{create_repos} = { orgs => ['Test-Org'], max => 1, release_assignee => 'releaser' };
+    $config->{create_repos} = { orgs => ['Test-Org'], max => 1 };
     $state{absent}          = { 'Test-Org/Fresh-Dist' => 1 };
     $state{issue_comments}  = [ { id => 1, user => { login => 'trusted' }, body => "Please make a new repository\nfor this one." } ];
     my $new  = { org => 'Test-Org', name => 'Fresh-Dist', description => 'A fresh distribution.', asked_by => 'trusted', quote => 'Please make a new repository for this one.' };
@@ -898,8 +898,8 @@ subtest create_repo => sub {
     my $fresh  = qr{https://test\.test/Test-Org/Fresh-Dist};
     my $named  = qr{repository\ Test-Org/Fresh-Dist\ for\ this:\ $fresh};
     is( [ map { $_->[1] } @$issues ], ['/repos/Test-Org/Fresh-Dist/issues'], 'it opens one issue in the new repository' );
-    like( $issues->[0][2],          { title => 'Release Fresh::Dist', assignees => ['releaser'], body => qr/\A\@releaser:\ .*Test-Org\/one\/issues\/7.*$yours/s }, 'to release the module that its name gives, assigned to the configured login' );
-    like( calls_of('comment')->[0], [ 'comment', '/repos/Test-Org/one/issues/7/comments', { body => qr{$named.*/issues/1}s } ],                                    'and says on the origin what it made' );
+    like( $issues->[0][2],          { title => 'Release Fresh::Dist', assignees => ['trusted'], body => qr/\A\@trusted:\ .*Test-Org\/one\/issues\/7.*$yours/s }, 'to release the module that its name gives, assigned to the person who asked' );
+    like( calls_of('comment')->[0], [ 'comment', '/repos/Test-Org/one/issues/7/comments', { body => qr{$named.*/issues/1}s } ],                                  'and says on the origin what it made' );
     is( $minion->jobs( { tasks => ['spoke_sweep'] } )->total, 0, 'with no sweep' );
     ok( App::Clod::Tasks::is_spoke( $minion, $config, 'Test-Org/Fresh-Dist' ), 'the new repository is a spoke at once' );
 
@@ -927,6 +927,12 @@ subtest create_repo => sub {
     like( run_job( create_repo => { item => $other, org => 'Other-Org', name => 'Fresh', description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/does\ not\ let\ me\ make\ repositories\ in\ Other-Org/ }, 'the hub refuses an organization that the configuration does not name' );
     like( run_job( create_repo => { item => $other, org => 'Test-Org',  name => 'two',   description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/Test-Org\/two\ exists\ already/ },                        'and a name that exists' );
     like( run_job( create_repo => { item => $other, org => 'Test-Org',  name => 'x.git', description => 'd', asked_by => 'trusted' } )->{result}, { refused => qr/does\ not\ fit\ the\ rule/ },                             'and a name that does not fit the rule' );
+    $state{absent}{'Test-Org/Hidden'} = 1;
+    my $private = run_job( create_repo => { item => $other, org => 'Test-Org', name => 'Hidden', description => 'd', private => 1, asked_by => 'trusted' } );
+    my $public  = qr/I\ make\ public\ repositories\ only/;
+    my $leak    = qr/can\ leak\ what\ is\ in\ one/;
+    like( $private->{result},                 { refused => qr/to\ be\ private,\ and\ $public/ }, 'and a repository that is to be private' );
+    like( calls_of('comment')->[-1][2]{body}, qr/\A\@trusted:\ .*$leak\ into\ the\ other/s,      'and tells the person why' );
     is( calls_of('create'), [], 'none of which it makes' );
 
     $state{absent}{'Test-Org/Retried'} = 1;

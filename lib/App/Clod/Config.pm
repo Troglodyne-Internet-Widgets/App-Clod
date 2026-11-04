@@ -73,9 +73,8 @@ our %SCHEMA = (
         spoke_prompt   => { type => 'string', nullable => 1, default => undef },
         create_repos   => section(
             {
-                orgs             => list_of($LOGIN),
-                max              => { type => 'integer', minimum => 1, default => 1 },
-                release_assignee => { %$LOGIN, nullable => 1, default => undef },
+                orgs => list_of($LOGIN),
+                max  => { type => 'integer', minimum => 1, default => 1 },
             }
         ),
     },
@@ -281,11 +280,15 @@ the bot must be allowed to make repositories there.
 C<max> is how many repositories one request may make, counted over every job
 for the same issue or pull request.  Default 1.
 
-C<release_assignee> is the login that the release issue of each new
-repository is assigned to, so that it reaches that person's notifications.
-Default none, and then it is the person who asked for the repository.
+Every repository that the hub makes is public, and the hub refuses a request
+for a private one.  A bot that serves public and private repositories at once
+can carry what is in a private one into a public one: into a prompt, a pull
+request or a comment.  So an installation serves public repositories or
+private ones, never both, and one that makes repositories serves public ones.
+Nothing in the configuration changes that.  See L<App::Clod/CAVEATS>.
 
-See L<App::Clod::Tasks/create_repo>.
+The release issue of each new repository is assigned to the person who asked
+for the repository.  See L<App::Clod::Tasks/create_repo>.
 
 =item otel
 

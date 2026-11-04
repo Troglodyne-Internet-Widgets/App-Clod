@@ -12,5 +12,9 @@ words that ask for it, copied exactly, in `quote`. Name it in `repos` too, as
 checked out here, because it does not exist yet. Its run starts in a
 repository that holds only a README.
 
+The bot makes public repositories only. If the person asked for a private
+one, plan it anyway with `private` set to true, so that the bot can tell them
+why it refuses.
+
 A name has letters, digits, `-` and `_`, and no dot. The bot refuses a name
 that is taken already, so do not name a repository that you can see.
