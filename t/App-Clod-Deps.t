@@ -72,6 +72,7 @@ subtest policies => sub {
         [qw{Perl::Critic::Policy::ProhibitPipeOpen Perl::Critic::Policy::Variables::RequireNoAutovivification}],
         'each policy that a profile turns on, a short name too, once each, and none that it turns off'
     );
+    like( dies { App::Clod::Deps::policies("[Variables::RequireNoAutovivification\n") }, qr/\AA\ critic\ profile\ does\ not\ parse:\ /, 'and a profile that does not parse dies, and says so' );
 };
 
 subtest missing => sub {

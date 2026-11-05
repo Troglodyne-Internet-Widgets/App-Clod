@@ -6,7 +6,9 @@ use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
 
-use IPC::Run ();
+use Config::Tiny        ();
+use IPC::Run            ();
+use Perl::Critic::Utils ();
 
 # The programs, found on the PATH.  A test points them at fakes.
 our @DZIL     = ('dzil');
@@ -50,14 +52,20 @@ sub install ( $lib, @modules ) {
 =func policies
 
 C<(@profiles)>, the texts of F<.perlcriticrc> files.  The module of each policy
-that a profile turns on, sorted and once each: a section C<[X]> names
-C<Perl::Critic::Policy::X>, a short name included, and a section C<[-X]> turns
-X off.
+that a profile turns on, sorted and once each.  Config::Tiny reads a profile,
+as Perl::Critic does, and each section names a policy,
+which C<policy_long_name> of L<Perl::Critic::Utils> turns into its module, a
+short name too.  A section C<[-X]> turns X off.  Dies with the error of
+Config::Tiny when a profile does not parse.
 
 =cut
 
 sub policies (@profiles) {
-    my %on       = map { ( "Perl::Critic::Policy::$_" => 1 ) } grep { !m{\A-} } map { m{^\[([^\]\s]+)\]\s*$}mg } @profiles;
+    my %on;
+    for my $text (@profiles) {
+        my $ini = Config::Tiny->read_string($text) // die 'A critic profile does not parse: ' . Config::Tiny->errstr . "\n";
+        $on{ Perl::Critic::Utils::policy_long_name($_) } = 1 for grep { $_ ne q{_} && !m{\A-} } keys %$ini;
+    }
     my @policies = sort keys %on;
     return @policies;
 }
