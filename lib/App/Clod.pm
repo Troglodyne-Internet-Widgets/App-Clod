@@ -76,6 +76,7 @@ sub startup ($self) {
     $self->helper( clod_config => sub { $config } );
     my $running = running_commit();
     $self->helper( running => sub { $running } );
+    push @{ $self->commands->namespaces }, 'App::Clod::Command';
 
     $self->renderer->paths( [ share_dir()->child('templates')->to_string ] );
     $self->plugin( Minion => { SQLite => $config->{minion} } );
@@ -103,6 +104,7 @@ sub startup ($self) {
     $act->post('/harness/fix')->to('dashboard#harness_fix');
     $act->post('/self/update')->to('dashboard#self_update');
     $act->post('/plugins/update')->to('dashboard#plugin_update');
+    $act->post('/deps/upgrade')->to('dashboard#deps_upgrade');
     return;
 }
 
@@ -325,6 +327,10 @@ L<App::Clod::Tasks/self_check> finds that out every half hour.
 
 =item * Update plugins, when a plugin of the account that claude runs as is
 behind its marketplace, queues L<App::Clod::Tasks/plugin_update>.
+
+=item * Upgrade modules, when a Perl module in C<local_lib> has a newer
+release on CPAN, queues L<App::Clod::Tasks/deps_upgrade>, which upgrades them
+there and restarts the bot.
 
 =back
 

@@ -24,7 +24,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -135,10 +135,15 @@ subtest 'an update of the bot' => sub {
     $t->get_ok('/api/overview')->status_is(200);
     like( action_about(qr/out\ of\ date/)->{text}, qr/at\ eeeeeee,\ which\ it\ does\ not\ run\ yet/, 'a pulled checkout that the bot does not run yet can be updated too' );
 
-    job( self_check => { checked_at => time, running => $running, checkout => { head => $running->{sha}, upstream => $running->{sha}, behind => 0, ahead => 0 }, plugins => [] } );
+    job( self_check => { checked_at => time, running => $running, checkout => { head => $running->{sha}, upstream => $running->{sha}, behind => 0, ahead => 0 }, plugins => [], deps => [ { module => 'Try::Tiny', version => '0.30', latest => '0.32' } ] } );
     $minion->perform_jobs;
     $t->get_ok('/api/overview')->status_is(200);
     ok( !action_about(qr/out\ of\ date|Plugins/), 'and an up-to-date bot is no action item' );
+    like( action_about(qr/Perl\ modules/), { text => qr/Try::Tiny\ 0\.30\ to\ 0\.32/, buttons => [ { label => 'Upgrade modules', act => 'deps/upgrade' } ] }, 'a module with a newer release can be upgraded' );
+    $t->post_ok( '/act/deps/upgrade' => \%act )->status_is(200);
+    $res = $t->tx->res;
+    is( $minion->job( $res->json->{queued} )->info->{task}, 'deps_upgrade', 'Upgrade modules queues deps_upgrade' );
+    $minion->perform_jobs;
 };
 
 subtest work => sub {

@@ -1123,6 +1123,32 @@ subtest 'self_check and self_update' => sub {
     is( run_job('self_update')->{state}, 'failed', 'a checkout with commits of its own is not merged, and the update fails' );
     is( \@restarted,                     [],       'and restarts nothing' );
 
+    # With a local lib, the update installs what the new commit needs before
+    # it restarts, and an upgrade of the modules restarts too.
+    my @deps;
+    my $deps = Test::MockModule->new('App::Clod::Deps');
+    $deps->redefine( listdeps => sub ($dir) { push @deps, "listdeps $dir";                     return qw{Foo Bar} } );
+    $deps->redefine( install  => sub ( $lib, @modules ) { push @deps, "install $lib @modules"; return } );
+    $deps->redefine( outdated => sub ($lib) { return [ { module => 'Foo', version => '1', latest => '2' } ] } );
+    $deps->redefine( upgrade  => sub ($lib) { push @deps, "upgrade $lib"; return [ { module => 'Foo', version => '1', latest => '2' } ] } );
+    $app->clod_config->{local_lib} = '/bogus/perl5';
+    git( q{-C}, "$checkout", qw{reset --quiet --hard}, '@{upstream}' );
+    $commit->('four');
+    @restarted = ();
+    my $with_lib = run_job('self_update');
+    is( [ $with_lib->{state}, \@deps ], [ 'finished', [ "listdeps $checkout", 'install /bogus/perl5 Foo Bar' ] ], 'with a local lib, the update installs what the checkout needs' ) or diag Mojo::Util::dumper $with_lib->{result};
+    is( scalar @restarted,              2,                                                                        'and then restarts' );
+
+    is( run_job('self_check')->{result}{deps}, [ { module => 'Foo', version => '1', latest => '2' } ], 'the check lists the modules with a newer release' );
+    @deps      = ();
+    @restarted = ();
+    run_job('deps_upgrade');
+    is( [ \@deps, scalar @restarted ], [ ['upgrade /bogus/perl5'], 2 ], 'an upgrade of the modules upgrades them in the local lib, and restarts' );
+    $deps->redefine( upgrade => sub ($lib) { return [] } );
+    @restarted = ();
+    is( [ run_job('deps_upgrade')->{result}, \@restarted ], [ { upgraded => [] }, [] ], 'and with nothing to upgrade, restarts nothing' );
+    delete $app->clod_config->{local_lib};
+
     my $plugins = run_job('plugin_update');
     is( $plugins->{result}{updated}, ['kit@m'],                     'the plugins that are behind are updated' );
     is( \@updated,                   [ [qw{plugin update kit@m}] ], 'with claude plugin update, and the others are not' );

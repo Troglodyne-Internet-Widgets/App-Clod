@@ -74,6 +74,7 @@ our %SCHEMA = (
         follow_up_max  => { type => 'integer', minimum  => 0, default => 3 },
         create_repos   => { type => 'boolean', default  => 0 },
         restart_units  => list_of( { type => 'string', pattern => '\A[\w@.:-]+[.]service\z' } ),
+        local_lib      => { type => 'string', nullable => 1, default => undef },
     },
 );
 
@@ -305,6 +306,15 @@ restarts after it pulls new code.  Default none: then the dashboard says that
 a person must restart them.  The service user must be allowed to run
 C</usr/bin/systemctl restart $unit> with sudo and no password, for each unit.
 The clod recipe of trog-provisioner grants that, and fills this in.
+
+=item local_lib
+
+A local lib, such as F</opt/domains/example.test/perl5>, that the service user
+owns and that comes first on the C<PERL5LIB> of the units.  Default none.
+With one, L<App::Clod::Deps> keeps every module of the bot there:
+L<App::Clod::Tasks/self_update> installs what a new version needs, and the
+dashboard can upgrade what has a newer release, with no sudo.  The clod recipe
+of trog-provisioner makes it, and fills this in.
 
 =item otel
 
