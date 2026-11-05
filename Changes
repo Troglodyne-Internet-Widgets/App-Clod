@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Tell an answer to a review the base branch of its pull request.  A
+      request to rebase that names no branch goes onto that branch, and a
+      rewrite of the branch gets conflicts resolved on both sides and the
+      tests run, because no pre-commit hook checks it.  The sort writes
+      out what a short request, such as "rebase", means.
     - Sort what waits on the bot's own pull request before changing it.  A
       run that can only read answers each question in its thread, and only
       a request for a change goes on to a run that can commit.  A mention on

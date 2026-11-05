@@ -21,9 +21,13 @@ you are not sure whether it asks for a change, the verdict is `change`.
 
 If `comments` is empty, give `comments` the verdict `answer` and no `body`.
 
+A request to rebase, merge or otherwise move the branch is a `change`.
+
 Answer with `summary`, `threads` with one entry per thread `id`, and
 `comments`. If any verdict is `change` or `elsewhere`, also answer with
-`instructions`: what to change, for the run that changes it.
+`instructions`: what to change, for the run that changes it. People write
+short requests, such as "rebase". Write out in `instructions` what the request
+means here: what to change, where, and how to know that it worked.
 
 {{tools}}
 

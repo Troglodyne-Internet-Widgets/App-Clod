@@ -1327,7 +1327,9 @@ Answers what authorized users said on the bot's own pull request since the bot
 last answered: the review threads whose last message is theirs, and the plain
 comments and review bodies after the last comment of the bot.  It pushes the
 fixes, replies in each thread, and answers the plain comments in one comment.
-The prompt also holds the whole conversation of the pull request.
+The prompt also holds the whole conversation of the pull request, and the base
+branch of the pull request, which a rebase that names no branch goes onto.  The
+push is forced with a lease, so a rebase reaches the pull request.
 
 =cut
 
@@ -1353,6 +1355,7 @@ sub spoke_address ( $job, $config, $args ) {
                 prompt => prompt(
                     address      => repo => $repo,
                     branch       => $branch,
+                    base         => $pull->{base}{ref},
                     origin       => origin_url( $config, $item ),
                     instructions => $args->{instructions},
                     tools        => $tools->{note},

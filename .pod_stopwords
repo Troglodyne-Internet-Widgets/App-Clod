@@ -185,6 +185,7 @@ provisioner
 proxied
 proxying
 readdir
+rebase
 recurse
 recursed
 recurses

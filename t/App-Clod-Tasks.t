@@ -563,7 +563,7 @@ subtest spoke_address => sub {
     @calls = ();
     my $bare = $remote->child('Test-Org/one.git')->to_string;
     git( q{--git-dir}, $bare, qw{branch clod/1-ours main} );
-    $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/1-ours', repo => { full_name => 'Test-Org/one' } }, html_url => 'https://test.test/pull/11' };
+    $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/1-ours', repo => { full_name => 'Test-Org/one' } }, base => { ref => 'stacked-on' }, html_url => 'https://test.test/pull/11' };
     $state{review_comments} = [ { id => 21, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'rename this' } ];
     answer( { summary => 'Renamed.', replies => [ { id => 21, body => 'Done.' }, { id => 99, body => 'not a thread' } ] }, commit => 1 );
     my $pr   = { %item, kind => 'address_review', is_pr => 1, number => 11 };
@@ -607,6 +607,7 @@ subtest spoke_address => sub {
     is( $reviewed->{result}{nothing}, undef, 'a review with a body and no line comments is answered' ) or diag Mojo::Util::dumper $reviewed->{result};
     my $entry = Mojo::JSON::encode_json( [ { body => 'Rename it throughout.', by => 'trusted', id => 41, review => 1 } ] );
     ok( index( $asked, qq{"comments":$entry} ) >= 0, 'the run gets its body as a comment to answer' ) or diag $asked;
+    like( $asked, qr{rebase\ onto\s+`origin/stacked-on`}, 'and a rebase that names no branch goes onto the base of the pull request, not the default branch' );
     is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Renamed it throughout.'], 'and answers it with a comment' );
     delete @state{qw{issue_comments reviews}};
 
