@@ -96,7 +96,7 @@ subtest 'the buttons of the action items' => sub {
     my $res  = $t->tx->res;
     my $fix  = $res->json->{queued};
     my $info = $minion->job($fix)->info;
-    is( [ $info->{task}, $info->{args}[0] ], [ 'harness_fix', { repo => 'Test-Org/one', checks => [ { check => 'CLAUDE.md', detail => undef } ] } ], 'Fix queues a harness fix, with the failing checks' );
+    is( [ $info->{task}, $info->{args}[0] ], [ 'harness_fix', { repo => 'Test-Org/one', checks => [ { check => 'CLAUDE.md', detail => undef } ], by => 'tester' } ], 'Fix queues a harness fix, with the failing checks, and who pressed it' );
     $t->post_ok( '/act/harness/fix' => \%act => json => { repo => 'Test-Org/one' } )->status_is(200)->json_is( '/queued' => $fix, 'and a second press queues no second one' );
     $t->get_ok('/api/overview')->status_is(200);
     like( action_about(qr/harness\ check/), { job => $fix, text => qr/A\ harness\ fix\ of\ it\ is\ queued/ }, 'and while it waits, the item says so, with no button' );

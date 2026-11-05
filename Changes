@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Assign each pull request that the hub opens, so that it reaches
+      somebody's notifications: a fix to its requester, and a harness fix,
+      with its issue, to who pressed the button.  A login that is not in
+      authorized_users gives every authorized user.  No pull request of the
+      hub had an assignee, and one from the dashboard reached nobody.
     - Draw a button of an action item in the color of the text of its item.
       It was dark on the dark tint of an item, and could hardly be seen.
     - Keep the Perl modules of the bot in local_lib, a local lib that the

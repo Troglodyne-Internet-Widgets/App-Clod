@@ -1026,6 +1026,33 @@ sub slug ($text) {
     return substr( $slug, 0, 40 ) =~ s/-+\z//r;
 }
 
+=func reviewers
+
+C<($config, $who)>.  Whom a pull request that the hub opens is assigned to, so
+that it reaches somebody's notifications: C<$who>, the person who asked for
+it, if that login is in C<authorized_users>, else every one of them.  The
+login of the dashboard need not be one of GitHub.
+
+=cut
+
+sub reviewers ( $config, $who ) {
+    return authorized( $config, $who ) ? ($who) : @{ $config->{authorized_users} };
+}
+
+=func assign_to
+
+C<($job, $gh, $repo, $number, @logins)>.  Assigns the issue or pull request to
+C<@logins>.  A failure goes to the log of the job and does not fail it,
+because what it assigns is open by then.
+
+=cut
+
+sub assign_to ( $job, $gh, $repo, $number, @logins ) {
+    return                                                                                   if !@logins;
+    log_note( $job, "could not assign $repo#$number to @logins: " . ( split m{\n}, $@ )[0] ) if !eval { $gh->assign( $repo, $number, @logins ); 1 };
+    return;
+}
+
 =func kept_ref
 
 C<($job)>.  The ref in the bare clone that holds the commits of the job while
@@ -1083,7 +1110,8 @@ sub push_or_keep ( $job, $spoke, $tree, $branch, $work ) {
 =func spoke_fix
 
 Works on a new branch in a worktree of one spoke.  The spoke commits, and the
-job pushes and opens the pull request.  If the spoke asks a question instead,
+job pushes, opens the pull request, and assigns it to the L</reviewers> of the
+requester.  If the spoke asks a question instead,
 the job gives the origin to a person through C<hand_back>.  A job whose parent
 asked a question, or waits for one, does not run the spoke, and waits too.
 When C<created> is in its arguments, the hub made the repository for this
@@ -1118,6 +1146,7 @@ sub spoke_fix ( $job, $config, $args ) {
             my $body   = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior );
             my $pull   = $gh->create_pull( $repo, { title => $answer->{title} || $item->{title}, head => $branch, base => $base, body => $body } );
             log_note( $job, "opened $pull->{html_url}" );
+            assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $item->{requester} ) );
             return $job->finish( { repo => $repo, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, summary => $answer->{summary}, commits => $work->{commits}, %{ $work->{usage} } } );
         }
     );
@@ -1929,8 +1958,10 @@ sub harness_scan ( $job, $config ) {
 
 =func harness_fix
 
-C<($job, $config, $args)>, where C<$args> has C<repo> and C<checks>, the
-failing checks of the last harness scan, each with C<check> and C<detail>.
+C<($job, $config, $args)>, where C<$args> has C<repo>, C<checks>, the failing
+checks of the last harness scan, each with C<check> and C<detail>, and C<by>,
+who pressed the button.  The issue and the pull request go to L</reviewers> of
+C<by>.
 Brings the spoke to the harness standards with no claude run, from the
 dashboard.  It files an issue that names the failing checks, and runs the
 update of L<App::Clod::Harness/update> on a new branch.  If that changes a
@@ -1954,7 +1985,7 @@ sub harness_fix ( $job, $config, $args ) {
 
     my @failing = map { "- `$_->{check}`: " . ( $_->{detail} // q{} ) } @{ $args->{checks} // [] };
     my $issue   = $job->info->{notes}{issue} // do {
-        my $made = $gh->create_issue( $repo, { title => $HARNESS_TITLE, body => join( "\n", 'The harness scan finds that this repository fails these checks:', q{}, @failing, q{}, 'Asked for on the dashboard of the bot.' ) } );
+        my $made = $gh->create_issue( $repo, { title => $HARNESS_TITLE, body => join( "\n", 'The harness scan finds that this repository fails these checks:', q{}, @failing, q{}, 'Asked for on the dashboard of the bot.' ), assignees => [ reviewers( $config, $args->{by} ) ] } );
         my %made = ( number => $made->{number}, url => $made->{html_url} );
         $job->note( issue => \%made );
         \%made;
@@ -1987,6 +2018,7 @@ sub harness_fix ( $job, $config, $args ) {
             $spoke->push_branch( $tree, $branch );
             my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, "Closes #$issue->{number}" ) } );
             log_note( $job, "opened $pull->{html_url}" );
+            assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $args->{by} ) );
             return $job->finish( { repo => $repo, issue_url => $issue->{url}, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, changes => \@changes, manual => \@manual } );
         }
     );
