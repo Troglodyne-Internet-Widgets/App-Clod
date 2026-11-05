@@ -524,8 +524,10 @@ sub queued_address ( $minion, $origin ) {
 
 =func requester
 
-Who caused the notification: the actor of the assignment or review request, or
-the author of the latest comment.
+Who caused the notification: the user who made the assignment or the review
+request, or the author of the latest comment.  The events API puts the assignee
+in C<actor> of an assignment, so that user is in C<assigner>, and the one who
+asked for a review is in C<review_requester>.
 
 =cut
 
@@ -534,8 +536,9 @@ sub requester ( $config, $gh, $repo, $number, $reason, $subject ) {
     if ( $reason eq 'assign' || $reason eq 'review_requested' ) {
         my $wanted  = $reason eq 'assign' ? 'assigned' : 'review_requested';
         my $field   = $reason eq 'assign' ? 'assignee' : 'requested_reviewer';
+        my $by      = $reason eq 'assign' ? 'assigner' : 'review_requester';
         my ($event) = grep { ( $_->{event} // q{} ) eq $wanted && ( $_->{$field}{login} // q{} ) eq $bot } reverse @{ $gh->issue_events( $repo, $number ) };
-        return $event ? $event->{actor}{login} : undef;
+        return $event ? $event->{$by}{login} : undef;
     }
     return if !$subject->{latest_comment_url};
     return $gh->get( $subject->{latest_comment_url} )->{user}{login};

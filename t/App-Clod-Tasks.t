@@ -220,7 +220,10 @@ subtest inbox_poll => sub {
         +{ %thread, id => 2, repository => { full_name => 'Elsewhere/repo' } },
         +{ %thread, id => 3, repository => { full_name => 'Test-Org/two' }, reason => 'subscribed' },
     ];
-    $state{events} = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'trusted' } } ];
+
+    # As GitHub sends it: the events API puts the assignee in actor, and the
+    # user who assigned in assigner.
+    $state{events} = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => $BOT }, assigner => { login => 'trusted' } } ];
 
     my $info = run_job('inbox_poll');
     is( $info->{state},                      'finished', 'the poll finishes' ) or diag Mojo::Util::dumper $info->{result};
@@ -237,9 +240,15 @@ subtest inbox_poll => sub {
     is( $again->{result}{queued}, [], 'a thread seen before at the same update is not queued twice' );
 
     $state{threads} = [ +{ %thread, id => 4, updated_at => 't2', repository => { full_name => 'Test-Org/one' } } ];
-    $state{events}  = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'stranger' } } ];
+    $state{events}  = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => $BOT }, assigner => { login => 'stranger' } } ];
     my $stranger = run_job('inbox_poll');
     like( $stranger->{result}{ignored}, [qr/requested\ by\ stranger,\ who\ is\ not\ authorized/], 'an assignment by someone not authorized is left alone' );
+
+    # The events API names who asked for the review in review_requester.
+    $state{threads} = [ { id    => 6, reason => 'review_requested', updated_at => 't5', repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/9", title => 'Look at this' } } ];
+    $state{events}  = [ { event => 'review_requested', requested_reviewer => { login => $BOT }, actor => { login => 'stranger' }, review_requester => { login => 'trusted' } } ];
+    my $review = run_job('inbox_poll');
+    is( scalar @{ $review->{result}{queued} }, 1, 'a review that an authorized user asks for becomes work' ) or diag Mojo::Util::dumper $review->{result};
 
     $state{threads}   = [ { id => 5, reason => 'mention', updated_at => 't3', repository => { full_name => 'Test-Org/one' }, subject => { type => 'Issue', url => "$api/repos/Test-Org/one/issues/8", latest_comment_url => "$api/comment" } } ];
     $state{commenter} = 'trusted';
@@ -842,7 +851,7 @@ subtest 'inbox_poll before the first spoke_sweep' => sub {
     $config->{spokes}     = [];
     $config->{spoke_orgs} = ['Test-Org'];
     $state{threads}       = [ { id => 1, reason => 'assign', updated_at => 't1', repository => { full_name => 'Test-Org/one' }, subject => { type => 'Issue', url => "$api/repos/Test-Org/one/issues/7" } } ];
-    $state{events}        = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => 'trusted' } } ];
+    $state{events}        = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => $BOT }, assigner => { login => 'trusted' } } ];
     my $sweeps = sub { $minion->jobs( { tasks => ['spoke_sweep'], states => ['inactive'] } )->total };
 
     my $first = run_job('inbox_poll');
