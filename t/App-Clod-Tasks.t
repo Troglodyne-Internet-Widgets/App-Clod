@@ -405,6 +405,7 @@ subtest spoke_fix => sub {
     my $pull = calls_of('pull')->[0][2];
     is( [ @$pull{qw{title head base}} ], [ 'A title', $info->{result}{branch}, 'main' ], 'the pull request has the title, the branch and the base' );
     like( $pull->{body}, qr/What\ changed\..*issues\/7/s, 'and a body with the summary and the origin' );
+    is( calls_of('assign'), [ [ 'assign', '/repos/Test-Org/one/issues/101/assignees', { assignees => ['trusted'] } ] ], 'and is assigned to the requester, so that it reaches them' );
     ok( !-e $tmp->child( "workspace", "work", $info->{id} ), "the worktree and its directory are gone afterwards" );
 
     my $mock = Test::MockModule->new('App::Clod::Spoke');
@@ -1031,12 +1032,14 @@ subtest harness_fix => sub {
     # The worker sets none of these, and a shell that does would name its own author.
     delete local @ENV{qw{GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL}};
     my $bare = $remote->child('Test-Org/two.git')->to_string;
-    my $args = { repo => 'Test-Org/two', checks => [ { check => 'GitHooks', detail => 'there is no git-hooks/pre-commit' } ] };
+    my $args = { repo => 'Test-Org/two', checks => [ { check => 'GitHooks', detail => 'there is no git-hooks/pre-commit' } ], by => 'trusted' };
     my $info = run_job( harness_fix => $args );
     is( $info->{state}, 'finished', 'a harness fix finishes' ) or diag Mojo::Util::dumper $info->{result};
     my ($issue) = map { $_->[2] } @{ calls_of('issue') };
     is( $issue->{title}, 'Meet the harness standards', 'it files an issue' );
     like( $issue->{body}, qr/`GitHooks`:\ there\ is\ no\ git-hooks\/pre-commit/, 'that names each failing check' );
+    is( $issue->{assignees},                                    ['trusted'],     'assigned to who pressed the button' );
+    is( [ map { $_->[2]{assignees} } @{ calls_of('assign') } ], [ ['trusted'] ], 'and so is the pull request' );
     my $pull = calls_of('pull')->[0][2];
     like( $pull,         { title => 'Meet the harness standards', head => $info->{result}{branch}, base => 'main', body => qr/Closes\ \#1/ }, 'and opens a pull request that closes it' );
     like( $pull->{body}, qr/`GitHooks`:\ \w+\ `git-hooks\/pre-commit`/,                                                                       'and says what the update changed' );
@@ -1051,6 +1054,20 @@ subtest harness_fix => sub {
     is( $again->{result},                                  { repo => 'Test-Org/two', pr_url => 'https://test.test/pull/7', open_already => 1 }, 'with that pull request open, a second fix does nothing' );
     is( [ @{ calls_of('issue') }, @{ calls_of('pull') } ], [],                                                                                  'and files nothing' );
     delete $state{open_pulls};
+
+    # The login of the dashboard need not be one of GitHub, nor authorized.
+    $app->clod_config->{authorized_users} = [qw{trusted other}];
+    is( [ App::Clod::Tasks::reviewers( $app->clod_config, 'other' ) ],           ['other'],           'a pull request goes to an authorized user who asked' );
+    is( [ App::Clod::Tasks::reviewers( $app->clod_config, 'dashboard-admin' ) ], [qw{trusted other}], 'and for anyone else, to every authorized user' );
+    is( [ App::Clod::Tasks::reviewers( $app->clod_config, undef ) ],             [qw{trusted other}], 'as for nobody known' );
+    $app->clod_config->{authorized_users} = ['trusted'];
+
+    @calls = ();
+    $state{refuse_assign} = 1;
+    my $refused = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( $refused->{state}, 'finished', 'an assignment that GitHub refuses does not fail the job' ) or diag Mojo::Util::dumper $refused->{result};
+    like( $refused->{notes}{log}, [ { message => qr/opened/ }, { message => qr/could\ not\ assign\ Test-Org\/one\#\d+\ to\ trusted/ } ], 'and says so in its log' );
+    delete $state{refuse_assign};
 
     my $harness = Test::MockModule->new('App::Clod::Harness');
     $harness->redefine( update => sub (@) { return [ { check => 'ClaudeMd', changes => [], manual => ['Say what the repository is for.'] } ] } );

@@ -295,7 +295,8 @@ sub failed_job ($self) {
 =method harness_fix
 
 Queues a L<App::Clod::Tasks/harness_fix> of the C<repo> of the JSON body, with
-its failing checks from the last harness scan.  A spoke that fails no check is
+its failing checks from the last harness scan, and C<by>, the
+L<App::Clod/viewer> who pressed the button.  A spoke that fails no check is
 a 404.  If one waits or runs already, it queues no second one, and says which.
 
 =cut
@@ -306,7 +307,7 @@ sub harness_fix ($self) {
     my $scan    = App::Clod::Tasks::last_result( $minion, 'harness_scan' ) // {};
     my @failing = map { { check => $_->{check}, detail => $_->{detail} } } grep { $_->{status} eq 'fail' } @{ ( $scan->{repos}{$repo} // {} )->{checks} // [] };
     return $self->render( json => { error => "$repo fails no harness check" }, status => 404 ) if !@failing;
-    my $id = pending_harness_fix( $minion, $repo ) // $minion->enqueue( harness_fix => [ { repo => $repo, checks => \@failing } ], { notes => { repo => $repo } } );
+    my $id = pending_harness_fix( $minion, $repo ) // $minion->enqueue( harness_fix => [ { repo => $repo, checks => \@failing, by => $self->viewer } ], { notes => { repo => $repo } } );
     return $self->render( json => { queued => $id } );
 }
 

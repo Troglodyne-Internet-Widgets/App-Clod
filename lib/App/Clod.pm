@@ -76,6 +76,7 @@ sub startup ($self) {
     $self->helper( clod_config => sub { $config } );
     my $running = running_commit();
     $self->helper( running => sub { $running } );
+    $self->helper( viewer  => sub ($c) { viewer( $c, $config->{auth} ) } );
     push @{ $self->commands->namespaces }, 'App::Clod::Command';
 
     $self->renderer->paths( [ share_dir()->child('templates')->to_string ] );
@@ -117,19 +118,38 @@ C<password_sha256>.  Otherwise it renders a 401 and returns false.
 =cut
 
 sub authorized ( $c, $auth ) {
-    my $req = $c->req;
-    if ( my $header = $auth->{trusted_header} ) {
-        return 1 if ( $req->headers->header($header) // q{} ) ne q{};
+    my $who = viewer( $c, $auth );
+    if ( $auth->{trusted_header} ) {
+        return 1 if defined $who;
     }
-    elsif ( my $userinfo = $req->url->to_abs->userinfo ) {
-        my ( $user, $password ) = split /:/, $userinfo, 2;
+    elsif ( defined $who ) {
+        my $url      = $c->req->url->to_abs;
+        my $password = ( split /:/, $url->userinfo, 2 )[1];
         return 1
-          if Mojo::Util::secure_compare( $user // q{},                                $auth->{user} )
+          if Mojo::Util::secure_compare( $who,                                        $auth->{user} )
           && Mojo::Util::secure_compare( Digest::SHA::sha256_hex( $password // q{} ), $auth->{password_sha256} );
     }
     $c->res->headers->www_authenticate('Basic realm="clod"');
     $c->render( text => 'Authentication required', status => 401 );
     return;
+}
+
+=func viewer
+
+C<($c, $auth)>.  Who is logged in to the page: the value of the trusted header,
+or the user of the basic credentials.  Undef when L</authorized> would refuse
+the request.  The helper C<viewer> calls it with the C<auth> configuration.
+
+=cut
+
+sub viewer ( $c, $auth ) {
+    my $req = $c->req;
+    if ( my $header = $auth->{trusted_header} ) {
+        my $who = $req->headers->header($header) // q{};
+        return $who ne q{} ? $who : undef;
+    }
+    my $userinfo = $req->url->to_abs->userinfo // return;
+    return ( split /:/, $userinfo, 2 )[0];
 }
 
 =head1 SYNOPSIS
