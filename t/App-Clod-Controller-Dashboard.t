@@ -224,6 +224,14 @@ subtest 'an inbox that waits for spokes' => sub {
     like( $item->{text}, qr/No\ repository\ has\ been\ a\ spoke\ for\ 20\ minutes/, 'and says how long it waited' );
 };
 
+subtest 'the filter of the action items' => sub {
+    $t->get_ok('/')->status_is(200);
+    for my $pair ( [ danger => 'Failures' ], [ warning => 'Warnings' ], [ info => 'Info' ] ) {
+        my ( $level, $label ) = @$pair;
+        $t->element_exists( qq{#action-filter button.active[data-level="$level"][aria-pressed="true"]}, "the $level button is on by default" )->text_is( qq{#action-filter button[data-level="$level"]} => $label, "and reads $label" );
+    }
+};
+
 subtest harness => sub {
     $t->get_ok('/api/harness')->status_is(200)->json_is( '/checks' => [ 'CLAUDE.md', 'git hooks' ], 'the last scan comes back as it is' );
 };

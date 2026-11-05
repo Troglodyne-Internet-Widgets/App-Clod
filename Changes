@@ -1,6 +1,10 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Filter the action items of the dashboard by type.  Three buttons in
+      the header, Failures, Warnings and Info, each switch one level on or
+      off, and all are on by default.  A person could not hide the harness
+      warnings to see only the failures.
     - Allow a run that changes a spoke perlcritic, perltidy, make,
       nytprofhtml and nytprofmerge by default.  The hooks criticize and
       tidy only what a commit stages, so a change to the profile could not

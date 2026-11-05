@@ -43,7 +43,14 @@
       <section class="tab-pane fade show active" id="overview">
         <div class="row g-3 mb-3" id="cards"></div>
         <div class="card">
-          <div class="card-header"><i class="bi bi-exclamation-triangle"></i> Action items</div>
+          <div class="card-header d-flex align-items-center gap-2">
+            <span class="text-nowrap"><i class="bi bi-exclamation-triangle"></i> Action items</span>
+            <span class="btn-group btn-group-sm" id="action-filter" role="group" aria-label="Filter the action items by type">
+              <button type="button" class="btn btn-outline-danger active" data-level="danger" aria-pressed="true">Failures</button>
+              <button type="button" class="btn btn-outline-warning active" data-level="warning" aria-pressed="true">Warnings</button>
+              <button type="button" class="btn btn-outline-info active" data-level="info" aria-pressed="true">Info</button>
+            </span>
+          </div>
           <ul class="list-group list-group-flush" id="actions"></ul>
         </div>
       </section>
@@ -118,12 +125,34 @@
         card('Quota, 7 days', seven[0], seven[1], 'calendar-week') +
         card('Cost, 7 days', `$${b.cost_7d.toFixed(2)}`, `${b.runs_7d} runs, $${b.cost_24h.toFixed(2)} today`, 'currency-dollar');
       document.getElementById('running').textContent = d.running ? d.running.short : '';
-      const level = { info: 'info', warning: 'warning', danger: 'danger' };
-      document.getElementById('actions').innerHTML = d.actions.length
-        ? d.actions.map(a => `<li class="list-group-item list-group-item-${level[a.level] || 'secondary'} d-flex align-items-start gap-2">
-            <div class="flex-grow-1">${a.job ? jobLink(a.job) + ' ' : ''}${esc(a.text)}${a.link ? ` <a href="${esc(a.link.url)}">${esc(a.link.label)}</a>` : ''}</div>${buttons(a)}</li>`).join('')
-        : '<li class="list-group-item text-success"><i class="bi bi-check-circle"></i> Nothing needs you.</li>';
+      actions = d.actions;
+      drawActions();
     }
+
+    // The server sends every action item.  The page keeps the list and the
+    // types that are switched off, so a refresh draws the same choice again.
+    let actions = [];
+    const hiddenLevels = new Set();
+    const level = { info: 'info', warning: 'warning', danger: 'danger' };
+
+    function drawActions() {
+      const shown = actions.filter(a => !hiddenLevels.has(a.level));
+      document.getElementById('actions').innerHTML = shown.length
+        ? shown.map(a => `<li class="list-group-item list-group-item-${level[a.level] || 'secondary'} d-flex align-items-start gap-2">
+            <div class="flex-grow-1">${a.job ? jobLink(a.job) + ' ' : ''}${esc(a.text)}${a.link ? ` <a href="${esc(a.link.url)}">${esc(a.link.label)}</a>` : ''}</div>${buttons(a)}</li>`).join('')
+        : actions.length
+          ? '<li class="list-group-item text-body-secondary"><i class="bi bi-funnel"></i> The filter hides every action item.</li>'
+          : '<li class="list-group-item text-success"><i class="bi bi-check-circle"></i> Nothing needs you.</li>';
+    }
+
+    document.getElementById('action-filter').addEventListener('click', e => {
+      const button = e.target.closest('button[data-level]');
+      if (!button) return;
+      const off = button.classList.toggle('active') === false;
+      button.setAttribute('aria-pressed', String(!off));
+      off ? hiddenLevels.add(button.dataset.level) : hiddenLevels.delete(button.dataset.level);
+      drawActions();
+    });
 
     const buttons = a => (a.buttons || []).map(b => `<button type="button" class="btn btn-sm act text-nowrap"
       data-act="${esc(b.act)}" data-body="${esc(JSON.stringify(b.body || {}))}">${esc(b.label)}</button>`).join('');
