@@ -64,6 +64,8 @@ sub pattern_regex ($pattern) {
     return qr{$re};
 }
 
+1;
+
 =head1 SYNOPSIS
 
     use 5.040;

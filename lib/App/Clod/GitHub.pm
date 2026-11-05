@@ -453,6 +453,8 @@ sub file ( $self, $repo, $path, $ref = undef ) {
     return $res->body;
 }
 
+1;
+
 =head1 SYNOPSIS
 
     use 5.040;

@@ -438,6 +438,8 @@ sub harness ($self) {
     return $self->render( json => $result // { repos => {}, checks => [] } );
 }
 
+1;
+
 =head1 DESCRIPTION
 
 The controller behind F</> and F</api>.  Everything it shows comes from Minion:

@@ -164,6 +164,8 @@ sub marketplace_check ( $plugin_json, $marketplace_json, $plugin ) {
     return { %result, status => 'pass', detail => "the marketplace pins $pinned" };
 }
 
+1;
+
 =head1 SYNOPSIS
 
     use 5.040;

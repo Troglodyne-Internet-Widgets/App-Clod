@@ -73,6 +73,8 @@ sub summary ( $minion, $now = time ) {
     return \%summary;
 }
 
+1;
+
 =head1 SYNOPSIS
 
     use 5.040;

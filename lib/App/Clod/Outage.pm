@@ -101,6 +101,8 @@ sub last_note ( $minion, $service ) {
     return;
 }
 
+1;
+
 =head1 SYNOPSIS
 
     use 5.040;
