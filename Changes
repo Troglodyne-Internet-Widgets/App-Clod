@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Drop from the spokes a repository of the spokes key that GitHub says is
+      not public, as the spoke sweep does for spoke_orgs, and show a danger
+      action item on the Overview tab that names it and says why.  Nothing
+      kept a private repository that a site listed by hand out of a public
+      installation.
     - With run_as, the account that claude runs as brings its own Claude
       token.  sudo logged the token of the worker, which went through
       --preserve-env, with its value.

@@ -329,14 +329,16 @@ sub origin_url ( $config, $item ) {
 
 C<($minion, $config)>.  The spokes: C<spokes> from the configuration, the
 repositories that the last C<spoke_sweep> found in C<spoke_orgs>, and the
-L</made_repos>, sorted and each once.  Before the first sweep finishes, only
-the configured ones and the made ones.
+L</made_repos>, sorted and each once.  A configured spoke that the last sweep
+dropped, because it is not public, is left out.  Before the first sweep
+finishes, only the configured ones and the made ones.
 
 =cut
 
 sub spokes ( $minion, $config ) {
-    my $swept = @{ $config->{spoke_orgs} // [] } ? last_result( $minion, 'spoke_sweep' ) // {} : {};
-    return [ sort( List::Util::uniq( @{ $config->{spokes} }, @{ $swept->{repos} // [] }, made_repos( $minion, $swept ) ) ) ];
+    my $swept   = last_result( $minion, 'spoke_sweep' ) // {};
+    my $dropped = $swept->{dropped}                     // {};
+    return [ sort( List::Util::uniq( ( grep { !$dropped->{$_} } @{ $config->{spokes} } ), @{ $swept->{repos} // [] }, made_repos( $minion, $swept ) ) ) ];
 }
 
 =func made_repos
@@ -1635,6 +1637,12 @@ tell whether it saw a repository made since.  If listing an
 organization fails, its repositories from the sweep before stay spokes, so one
 failed request does not drop them.
 
+It also asks GitHub for the visibility of each repository in C<spokes>.  One
+that is not public goes into C<dropped>, a hash of the repository to the reason
+that it is not a spoke, and L</spokes> leaves it out: one installation serves
+public repositories or private ones, never both (L<App::Clod/CAVEATS>).  If the
+lookup fails, the verdict of the sweep before stands.
+
 =cut
 
 sub spoke_sweep ( $job, $config ) {
@@ -1653,7 +1661,17 @@ sub spoke_sweep ( $job, $config ) {
         }
         $by_org{$org} = [ sort map { $_->{full_name} } grep { !$_->{fork} && !$_->{archived} } @$list ];
     }
-    return $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
+    my %dropped;
+    for my $repo ( @{ $config->{spokes} } ) {
+        my $info = eval { $gh->repo($repo) };
+        if ( !$info ) {
+            $dropped{$repo} = $before->{dropped}{$repo} if $before->{dropped}{$repo};
+            next;
+        }
+        my $visibility = $info->{visibility} // ( $info->{private} ? 'private' : 'public' );
+        $dropped{$repo} = "it is $visibility, and this installation serves public repositories only: a run sees the summaries of the other spokes, so what a $visibility repository holds could reach a public one" if $visibility ne 'public';
+    }
+    return $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, repos => [ sort map { @$_ } values %by_org ], errors => \%errors, dropped => \%dropped } );
 }
 
 =head1 SYNOPSIS

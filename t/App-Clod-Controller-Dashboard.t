@@ -52,7 +52,7 @@ subtest 'overview, with nothing done yet' => sub {
 subtest overview => sub {
     job( harness_scan => { repos     => { 'Test-Org/one' => { checks => [ { check => 'CLAUDE.md', status => 'fail' }, { check => 'git hooks', status => 'pass' } ] } }, errors => { 'Test-Org/two' => 'no response' }, marketplace => { status => 'fail', detail => 'the marketplace pins 0.1; the plugin is at 0.2' }, checks => [ 'CLAUDE.md', 'git hooks' ] } );
     job( inbox_poll   => { polled_at => time, scopes => 'notifications, read:org' } );
-    job( spoke_sweep  => { repos     => [], errors => { 'Test-Org' => 'GitHub GET /orgs/Test-Org/repos: 404' } } );
+    job( spoke_sweep  => { repos     => [], errors => { 'Test-Org' => 'GitHub GET /orgs/Test-Org/repos: 404' }, dropped => { 'Test-Org/hidden' => 'it is private, and this installation serves public repositories only' } } );
     job( spoke_fix    => { error     => 'it broke', cost => 2 }, fail => 1, notes => { origin => 'Test-Org/one#3' } );
     $minion->perform_jobs;
 
@@ -63,7 +63,11 @@ subtest overview => sub {
     like( $texts, qr/Harness\ scan\ of\ Test-Org\/two\ failed:\ no\ response/,    'and a scan that failed' );
     like( $texts, qr/lacks\ the\ scopes:\ repo\./,                                'and a missing token scope' );
     like( $texts, qr/repositories\ of\ Test-Org\ failed:\ GitHub\ GET\ \S+\ 404/, 'and an organization that could not be listed' );
-    like( $texts, qr/\(spoke_fix\ for\ Test-Org\/one\#3\)\ failed:\ it\ broke/,   'and a failed job, with its origin and error' );
+    my $dropped = action_about(qr{Test-Org/hidden});
+    is( $dropped->{level}, 'danger', 'a configured spoke that is private is a danger item' );
+    like( $dropped->{text}, qr{\ATest-Org/hidden\ is\ not\ a\ spoke:\ it\ is\ private}, 'that names it and says why' );
+    unlike( $texts, qr{Test-Org/one\ is\ not\ a\ spoke}, 'and a public one is not named' );
+    like( $texts, qr/\(spoke_fix\ for\ Test-Org\/one\#3\)\ failed:\ it\ broke/, 'and a failed job, with its origin and error' );
     unlike( $texts, qr/inbox\ has\ not\ been\ read/, 'a recent poll is not an action item' );
 };
 

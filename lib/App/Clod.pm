@@ -290,7 +290,9 @@ summaries of the spokes before it.  So what a private repository holds can
 reach a prompt about a public one, and from there a public pull request or
 comment.  Run a second installation, with a bot account of its own, for
 private repositories.  For the same reason C<create_repos> makes public
-repositories only, and the bot refuses a request for a private one.
+repositories only, and the bot refuses a request for a private one.  The spoke
+sweep asks GitHub about each repository in C<spokes> as well, and drops one
+that is not public: it is not a spoke, and the Overview tab says so.
 
 An edit to a comment that the bot has already answered is not seen.  GitHub
 sends no notification for an edit, and the comment keeps its place before the

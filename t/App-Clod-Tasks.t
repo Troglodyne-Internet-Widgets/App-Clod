@@ -25,6 +25,7 @@ END { $tmp->remove_tree if $tmp }
 
 my $BOT    = 'test-bot';
 my @SPOKES = qw{Test-Org/one Test-Org/two};
+my $HIDDEN = 'Test-Org/hidden';
 
 sub git (@args) {
     my ( $out, $err );
@@ -120,7 +121,8 @@ $r->get('/repos/:o/:n/issues')->to( cb => sub ($c) { $c->render( json => [ { num
 $r->get('/repos/:o/:n')->to(
     cb => sub ($c) {
         return $c->render( json => { message => 'Not Found' }, status => 404 ) if $state{absent}{ $c->param('o') . q{/} . $c->param('n') };
-        $c->render( json => { default_branch => 'main', owner => { type => 'Organization', login => $c->param('o') } } );
+        my $private = $c->param('o') . q{/} . $c->param('n') eq $HIDDEN;
+        $c->render( json => { default_branch => 'main', visibility => $private ? 'private' : 'public', private => $private ? Mojo::JSON->true : Mojo::JSON->false, owner => { type => 'Organization', login => $c->param('o') } } );
     }
 );
 
@@ -841,6 +843,16 @@ subtest spoke_sweep => sub {
     like( $failed->{result}{errors}{'Test-Org'}, qr/404/, 'a listing that fails is recorded' );
     is( $failed->{result}{repos}, [qw{Test-Org/new Test-Org/one}], 'and the repositories of the sweep before stay spokes' );
     delete $config->{spoke_orgs};
+    $minion->reset( { all => 1 } );
+
+    my $configured = $config->{spokes};
+    $config->{spokes} = [ @SPOKES, $HIDDEN ];
+    my $swept = run_job('spoke_sweep');
+    like( $swept->{result}{dropped}, { $HIDDEN => qr/it\ is\ private.*public\ repositories\ only/ }, 'a configured spoke that GitHub says is private is dropped, with the reason' );
+    is( [ keys %{ $swept->{result}{dropped} } ],      [$HIDDEN], 'and the public ones are not' );
+    is( App::Clod::Tasks::spokes( $minion, $config ), \@SPOKES,  'so it is not a spoke, and the public configured ones stay' );
+    ok( !App::Clod::Tasks::is_spoke( $minion, $config, $HIDDEN ), 'and is_spoke says no' );
+    $config->{spokes} = $configured;
     $minion->reset( { all => 1 } );
 };
 
