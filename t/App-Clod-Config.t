@@ -7,6 +7,7 @@ use Test2::Plugin::NoWarnings;
 use FindBin::libs;
 
 use App::Clod::Config();
+use App::Clod::Tasks();
 
 my %minimal = (
     bot       => 'test-bot',
@@ -72,6 +73,18 @@ subtest validate => sub {
     refused( { %minimal, auth       => { user => 'u' } },                              '/auth/password_sha256: /anyOf/1 Missing',      'basic auth without a password hash dies' );
     refused( { %minimal, auth       => { user => 'u', password_sha256 => uc $HASH } }, '/auth/password_sha256: String does not match', 'and so does a hash that is not lowercase hex, which no password matches' );
     ok( lives { App::Clod::Config::validate( { %minimal, auth => { user => 'u', password_sha256 => $HASH } } ) }, 'basic auth with both parts lives' );
+};
+
+subtest 'the tools of a run that changes a spoke' => sub {
+    my $config  = App::Clod::Config::validate( {%minimal} );
+    my $cmd     = App::Clod::Tasks::claude($config)->command;
+    my ($i)     = grep { $cmd->[$_] eq '--allowedTools' } 0 .. $#$cmd;
+    my %allowed = map  { $_ => 1 } split /,/, $cmd->[ $i + 1 ];
+    for my $program (qw{perlcritic perltidy make nytprofhtml nytprofmerge}) {
+        ok( $allowed{"Bash($program:*)"} && $allowed{"Bash(rtk $program:*)"}, "claude may run $program, also through rtk" );
+    }
+    my %read = map { $_ => 1 } @{ $config->{claude}{read_tools} };
+    ok( !$read{'Bash(perltidy:*)'}, 'and a run that only reads may not, because perltidy rewrites files' );
 };
 
 subtest create_repos => sub {

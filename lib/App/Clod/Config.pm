@@ -52,7 +52,7 @@ our %SCHEMA = (
                 model         => { type => 'string', nullable => 1, default => undef },
                 run_as        => { type => 'string', nullable => 1, default => undef, pattern => '\A[a-z_][a-z0-9_-]*\z' },
                 timeout       => seconds(3600),
-                allowed_tools => list_of( $TEXT, default => [qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*)}] ),
+                allowed_tools => list_of( $TEXT, default => [qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*) Bash(perlcritic:*) Bash(perltidy:*) Bash(make:*) Bash(nytprofhtml:*) Bash(nytprofmerge:*)}] ),
                 read_tools    => list_of( $TEXT, default => [ qw{Read Grep Glob}, 'Bash(git log:*)', 'Bash(git grep:*)', 'Bash(git show:*)', 'Bash(git diff:*)' ] ),
                 extra_tools   => list_of($TEXT),
             }
@@ -207,6 +207,15 @@ page come from them.  Default 30.
 
 C<bin>, C<model>, C<timeout> in seconds, C<allowed_tools> for runs that change
 a repository, and C<read_tools> for runs that only read.
+
+The default C<allowed_tools> are the tools of the files and the Perl
+programs that a spoke is built and checked with: C<Read>, C<Edit>, C<Write>,
+C<Grep> and C<Glob>, and C<git>, C<prove>, C<perl>, C<dzil>, C<podchecker>,
+C<perlcritic>, C<perltidy>, C<make>, C<nytprofhtml> and C<nytprofmerge>.  So a
+run can criticize and tidy the whole tree, and not only what the hooks of a
+commit see, and profile with C<perl -d:NYTProf> and read the profile.  The
+default C<read_tools> are C<Read>, C<Grep> and C<Glob>, and C<git log>, C<git
+grep>, C<git show> and C<git diff>.
 
 C<run_as> is the account that every C<claude> run runs as, through C<sudo>.
 Unset, claude runs as the worker, and can read the token of the bot in the

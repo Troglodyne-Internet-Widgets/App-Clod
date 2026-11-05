@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Allow a run that changes a spoke perlcritic, perltidy, make,
+      nytprofhtml and nytprofmerge by default.  The hooks criticize and
+      tidy only what a commit stages, so a change to the profile could not
+      be checked against the whole tree, and a profile could be made with
+      perl -d:NYTProf but not read.
     - A spoke whose harness fix waits for review says so on the dashboard,
       with a link to the pull request, and offers no second Fix.  The
       harness scan records that pull request while it is open.  The item
