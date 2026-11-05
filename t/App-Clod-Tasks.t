@@ -268,7 +268,7 @@ subtest inbox_poll => sub {
     $state{issue_comments} = [ { id => 1, user => { login => 'trusted' }, body => 'Rename the sub.', created_at => '1' } ];
     my $own = $assign_pull->( 20, 12 );
     is( scalar @{ $own->{queued} }, 1, 'an assignment to the bot\'s own pull request becomes work' ) or diag Mojo::Util::dumper $own;
-    like( $minion->job( $own->{queued}[0] )->info, { task => 'triage', args => [ { kind => 'address_review', number => 12 } ] }, 'on its review comments, on that pull request' );
+    like( $minion->job( $own->{queued}[0] )->info, { task => 'sort_review', args => [ { kind => 'address_review', number => 12 } ] }, 'which sorts its review comments, on that pull request' );
 
     @calls = ();
     $state{issue_comments} = [ { id => 1, user => { login => 'trusted' }, body => 'Rename the sub.', created_at => '1' }, { id => 2, user => { login => $BOT }, body => 'Done.', created_at => '2' } ];
@@ -615,6 +615,77 @@ subtest spoke_address => sub {
     $minion->reset( { all => 1 } );
 };
 
+subtest sort_review => sub {
+    %state = ();
+    @calls = ();
+    my $bare = $remote->child('Test-Org/one.git')->to_string;
+    git( q{--git-dir}, $bare, qw{branch clod/2-sort main} );
+    $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/2-sort', repo => { full_name => 'Test-Org/one' } }, html_url => 'https://test.test/pull/12' };
+    $state{issue_comments}  = [ { id => 31, user => { login => 'trusted' }, body => 'Why a hash here?', created_at => '2026-11-01T10:00:00Z' } ];
+    $state{review_comments} = [ { id => 21, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'What does this line do?' } ];
+    my $pr   = { %item, kind => 'address_review', is_pr => 1, number => 12 };
+    my $head = git( q{--git-dir}, $bare, qw{rev-parse clod/2-sort} );
+
+    answer( { summary => 'Two questions.', threads => [ { id => 21, verdict => 'answer', body => 'It names the file.' } ], comments => { verdict => 'answer', body => 'Lookup by name.' } } );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/sort-record";
+    my $asked = run_job( sort_review => $pr );
+    delete $fake{FAKE_CLAUDE_RECORD};
+    is( $asked->{state},                                    'finished',                                           'questions are sorted' ) or diag Mojo::Util::dumper $asked->{result};
+    is( [ map { $_->[1] } @{ calls_of('reply') } ],         ['/repos/Test-Org/one/pulls/12/comments/21/replies'], 'a question in a thread is answered in that thread' );
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Lookup by name.'],                                  'and the plain comments in one comment' );
+    is( $asked->{result}{next},                             undef,                                                'and with nothing left, no job comes after' );
+    my $run  = record_of("$tmp/sort-record");
+    my @read = ( qw{Read Grep Glob}, map { "Bash(git $_:*)" } qw{log grep show diff} );
+    is( $run->{flags}{'--allowedTools'}, [ join q{,}, map { App::Clod::Claude::rtk_too($_) } @read ], 'the run has the read tools alone' );
+    like( $run->{prompt}, qr/What\ does\ this\ line\ do\?/, 'and gets the threads' );
+    is( git( q{--git-dir}, $bare, qw{rev-parse clod/2-sort} ), $head, 'and the branch is as it was' );
+
+    @calls = ();
+    $state{review_comments} = [ @{ $state{review_comments} }, { id => 22, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 2, body => 'Rename this.' }, { id => 23, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 3, body => 'Hmm.' } ];
+    answer( { summary => 'One question, one change.', threads => [ { id => 21, verdict => 'answer', body => 'It names the file.' }, { id => 22, verdict => 'change' } ], comments => { verdict => 'change' }, instructions => 'Rename it.' } );
+    my $mixed = run_job( sort_review => $pr );
+    is( [ map { $_->[1] } @{ calls_of('reply') } ], ['/repos/Test-Org/one/pulls/12/comments/21/replies'], 'with a change asked for as well, only the question is answered' );
+    is( calls_of('comment'),                        [],                                                   'and plain comments that ask for a change are left to the change' );
+    is( $mixed->{result}{answered},                 [21],                                                 'which it says' );
+    my $next = $minion->job( $mixed->{result}{next}{id} // -1 );
+    like( $next ? $next->info : {}, { task => 'spoke_address', args => [ { repo => 'Test-Org/one', instructions => 'Rename it.', item => { number => 12 } } ], notes => { origin => 'Test-Org/one#12' } }, 'the change goes to spoke_address, with the instructions' );
+
+    answer( { summary => 'Needs the other spoke.', threads => [ { id => 22, verdict => 'elsewhere' } ], comments => { verdict => 'answer', body => 'Lookup by name.' } } );
+    my $wide   = run_job( sort_review => $pr );
+    my $triage = $minion->job( $wide->{result}{next}{id} // -1 );
+    like( $triage ? $triage->info : {}, { task => 'triage', args => [ { kind => 'address_review', number => 12 } ], notes => { kind => 'address_review' } }, 'a change in another spoke goes to triage' );
+    is( $wide->{result}{next}{task}, 'triage', 'even beside a thread that has no verdict' );
+
+    answer( { summary => 'Unsure.', threads => [ { id => 21, verdict => 'answer' } ], comments => { verdict => 'answer', body => q{} } } );
+    @calls = ();
+    my $unsure = run_job( sort_review => $pr );
+    is( [ @{ calls_of('reply') }, @{ calls_of('comment') } ], [],              'an answer with no body is posted nowhere' );
+    is( $unsure->{result}{next}{task},                        'spoke_address', 'it is a change' );
+    $minion->reset( { all => 1 } );
+
+    $state{issue_comments}  = [ { id => 31, user => { login => 'trusted' }, body => 'Why?' }, { id => 32, user => { login => $BOT }, body => 'Because.' } ];
+    $state{review_comments} = [];
+    is( run_job( sort_review => $pr )->{result}{nothing}, 1, 'with nothing pending, it runs nothing' );
+
+    $state{pull} = { %{ $state{pull} }, user => { login => 'someone' } };
+    is( run_job( sort_review => $pr )->{state}, 'failed', 'a pull request that is not the bot\'s own is refused' );
+
+    # A mention on the bot's own pull request is sorted too, and not a reply.
+    $state{pull}           = { user => { login => $BOT }, head => { ref => 'clod/2-sort', repo => { full_name => 'Test-Org/one' } } };
+    $state{issue_comments} = [ { id => 33, user => { login => 'trusted' }, body => "\@$BOT why?" } ];
+    $state{commenter}      = 'trusted';
+    $state{threads}        = [ { id => 50, reason => 'mention', updated_at => 't50', repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/12", latest_comment_url => "$api/comment" } } ];
+    my $poll   = run_job('inbox_poll')->{result};
+    my $queued = $minion->job( $poll->{queued}[0] // -1 );
+    is( $queued ? $queued->info->{task} : undef, 'sort_review', 'a mention on the bot\'s own pull request is sorted' ) or diag Mojo::Util::dumper $poll;
+
+    $state{pull}    = { user => { login => 'someone' }, head => { repo => { full_name => 'Test-Org/one' } } };
+    $state{threads} = [ +{ %{ $state{threads}[0] }, id => 51, updated_at => 't51' } ];
+    my $theirs = $minion->job( run_job('inbox_poll')->{result}{queued}[0] // -1 );
+    is( $theirs ? $theirs->info->{task} : undef, 'reply', 'and on the pull request of someone else, it is a reply' );
+    $minion->reset( { all => 1 } );
+};
+
 subtest claude => sub {
     my $config = Clone::clone( $app->clod_config );
     is( App::Clod::Tasks::claude($config)->run_as, undef, 'claude runs as the worker unless the configuration says otherwise' );
@@ -734,6 +805,10 @@ subtest reply => sub {
     my $fix    = run_job( reply => { %item, kind => 'reply' } );
     my $triage = $minion->job( $fix->{result}{triage_job} )->info;
     is( [ $triage->{task}, $triage->{args}[0]{kind} ], [ 'triage', 'fix' ], 'a request for a change starts triage for a fix' );
+
+    answer( { action => 'fix', body => 'I will fix it.' } );
+    my $on_pull = $minion->job( run_job( reply => { %item, kind => 'reply', is_pr => 1, number => 9 } )->{result}{triage_job} // -1 );
+    is( $on_pull ? $on_pull->info->{args}[0]{kind} : undef, 'fix', 'on the pull request of someone else too, which the bot cannot push to' );
     $minion->reset( { all => 1 } );
 };
 
