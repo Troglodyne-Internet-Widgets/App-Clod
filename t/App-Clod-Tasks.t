@@ -121,6 +121,7 @@ $r->get('/repos/:o/:n/issues')->to( cb => sub ($c) { $c->render( json => [ { num
 $r->get('/repos/:o/:n')->to(
     cb => sub ($c) {
         return $c->render( json => { message => 'Not Found' }, status => 404 ) if $state{absent}{ $c->param('o') . q{/} . $c->param('n') };
+        return $c->render( json => { default_branch => 'main', private => Mojo::JSON::true, visibility => 'private' } ) if $c->param('n') eq 'hidden';
         $c->render( json => { default_branch => 'main', owner => { type => 'Organization', login => $c->param('o') } } );
     }
 );
@@ -1198,6 +1199,25 @@ subtest spoke_sweep => sub {
     like( $failed->{result}{errors}{'Test-Org'}, qr/404/, 'a listing that fails is recorded' );
     is( $failed->{result}{repos}, [qw{Test-Org/new Test-Org/one}], 'and the repositories of the sweep before stay spokes' );
     delete $config->{spoke_orgs};
+    $minion->reset( { all => 1 } );
+
+    my $configured = $config->{spokes};
+    $config->{spokes} = [ @SPOKES, 'Test-Org/hidden' ];
+    my $private = run_job('spoke_sweep');
+    like( $private->{result}{dropped}, { 'Test-Org/hidden' => qr/private/ }, 'a configured repository that is not public is dropped, with the reason' );
+    is( [ keys %{ $private->{result}{dropped} } ],    ['Test-Org/hidden'], 'and the public ones are not' );
+    is( App::Clod::Tasks::spokes( $minion, $config ), \@SPOKES,            'it is not a spoke, even without spoke_orgs' );
+    ok( !App::Clod::Tasks::is_spoke( $minion, $config, 'Test-Org/hidden' ), 'and is_spoke says no' );
+    ok( App::Clod::Tasks::is_spoke( $minion,  $config, 'Test-Org/one' ),    'while a public configured one stays' );
+
+    $state{absent}{'Test-Org/hidden'} = 1;
+    my $lookup_failed = run_job('spoke_sweep');
+    is( [ keys %{ $lookup_failed->{result}{dropped} } ], ['Test-Org/hidden'], 'a lookup that fails keeps the verdict of the sweep before' );
+    $minion->reset( { all => 1 } );
+    my $unknown = run_job('spoke_sweep');
+    is( $unknown->{result}{dropped}, {}, 'and a 404 with no verdict before leaves the repository a spoke' );
+    $config->{spokes} = $configured;
+    %state = ();
     $minion->reset( { all => 1 } );
 };
 

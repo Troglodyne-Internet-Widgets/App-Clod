@@ -336,16 +336,18 @@ sub origin_url ( $config, $item ) {
 
 =func spokes
 
-C<($minion, $config)>.  The spokes: C<spokes> from the configuration, the
-repositories that the last C<spoke_sweep> found in C<spoke_orgs>, and the
-L</made_repos>, sorted and each once.  Before the first sweep finishes, only
-the configured ones and the made ones.
+C<($minion, $config)>.  The spokes: C<spokes> from the configuration, except
+those that the last C<spoke_sweep> dropped because they are not public, the
+repositories that the sweep found in C<spoke_orgs>, and the L</made_repos>,
+sorted and each once.  Before the first sweep finishes, only the configured
+ones and the made ones.
 
 =cut
 
 sub spokes ( $minion, $config ) {
-    my $swept = @{ $config->{spoke_orgs} // [] } ? last_result( $minion, 'spoke_sweep' ) // {} : {};
-    return [ sort( List::Util::uniq( @{ $config->{spokes} }, @{ $swept->{repos} // [] }, made_repos( $minion, $swept ) ) ) ];
+    my $swept   = last_result( $minion, 'spoke_sweep' ) // {};
+    my $dropped = $swept->{dropped}                     // {};
+    return [ sort( List::Util::uniq( ( grep { !$dropped->{$_} } @{ $config->{spokes} } ), @{ $swept->{repos} // [] }, made_repos( $minion, $swept ) ) ) ];
 }
 
 =func made_repos
@@ -2151,12 +2153,21 @@ sub assigned_sweep ( $job, $config ) {
 
 =func spoke_sweep
 
-Every fifteen minutes, when C<spoke_orgs> names any.  Lists the public
-repositories of each one, without forks and archived ones.  Its result has
-C<started_at>, the time before the first listing, so that L</made_repos> can
-tell whether it saw a repository made since.  If listing an
-organization fails, its repositories from the sweep before stay spokes, so one
-failed request does not drop them.
+Every fifteen minutes, also when C<spoke_orgs> is empty.  Lists the public
+repositories of each organization of C<spoke_orgs>, without forks and archived
+ones.  Its result has C<started_at>, the time before the first listing, so
+that L</made_repos> can tell whether it saw a repository made since.  If
+listing an organization fails, its repositories from the sweep before stay
+spokes, so one failed request does not drop them.
+
+It also asks GitHub for the visibility of each repository in C<spokes>.  The
+C<dropped> hash of the result maps each one that is not public to the reason,
+and L</spokes> leaves those out, so that what a private repository holds does
+not reach a public pull request.  If the lookup of a repository fails, the
+verdict of the sweep before stands.  That includes a 404, which GitHub also
+answers for a private repository that the token cannot see: such a repository
+stays a spoke, because treating every failed lookup as private would drop each
+spoke during an outage.
 
 =cut
 
@@ -2166,6 +2177,16 @@ sub spoke_sweep ( $job, $config ) {
     my $before  = last_result( $minion, 'spoke_sweep' ) // {};
     prune_history( $minion, q{spoke_sweep} );
     my $gh = github($config);
+    my %dropped;
+    for my $repo ( @{ $config->{spokes} } ) {
+        my $info = eval { $gh->repo($repo) };
+        if ( !$info ) {
+            $dropped{$repo} = $before->{dropped}{$repo} if $before->{dropped}{$repo};
+            next;
+        }
+        my $visibility = $info->{visibility} // ( $info->{private} ? 'private' : 'public' );
+        $dropped{$repo} = "its visibility is $visibility, and a spoke must be public" if $visibility ne 'public';
+    }
     my ( %by_org, %errors );
     for my $org ( @{ $config->{spoke_orgs} } ) {
         my $list = eval { $gh->org_repos($org) };
@@ -2176,7 +2197,7 @@ sub spoke_sweep ( $job, $config ) {
         }
         $by_org{$org} = [ sort map { $_->{full_name} } grep { !$_->{fork} && !$_->{archived} } @$list ];
     }
-    return $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
+    return $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, dropped => \%dropped, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
 }
 
 =head1 SYNOPSIS

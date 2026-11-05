@@ -158,7 +158,10 @@ lowercase hex, as C<Digest::SHA::sha256_hex> gives it.  Required.
 =item spokes
 
 The repositories that the bot works on, as C<Owner/Name>.  This list or
-C<spoke_orgs> must name at least one.
+C<spoke_orgs> must name at least one.  C<spoke_sweep> asks GitHub for the
+visibility of each one, and a repository that is not public is not a spoke.
+The Overview tab names it.  A repository that GitHub answers 404 for stays a
+spoke.
 
 =item spoke_orgs
 

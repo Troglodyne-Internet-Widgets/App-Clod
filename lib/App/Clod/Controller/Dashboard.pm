@@ -118,6 +118,8 @@ sub action_items ( $self, $budget, $outages = [] ) {
     my $sweep = App::Clod::Tasks::last_result( $minion, 'spoke_sweep' ) // {};
     push @actions, { level => 'danger', text => "Listing the repositories of $_ failed: $sweep->{errors}{$_}" } for sort keys %{ $sweep->{errors} // {} };
 
+    push @actions, { level => 'danger', text => "$_ is not a spoke: $sweep->{dropped}{$_}" } for sort keys %{ $sweep->{dropped} // {} };
+
     push @actions, { level => 'warning', text => 'Claude work is paused until the quota resets' . ( $budget->{paused_until} ? q{ at } . gmtime( $budget->{paused_until} ) . ' UTC' : q{} ) . q{.} } if $budget->{paused};
 
     push @actions, $self->self_items( $minion, App::Clod::Tasks::last_result( $minion, 'self_check' ) );
