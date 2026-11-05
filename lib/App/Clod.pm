@@ -106,7 +106,14 @@ then works inside each one.
 It reads the bot user's notification inbox.  It acts on an item only when a
 user in C<authorized_users> caused it.  An assignment to an issue becomes a
 fix, a review request becomes a review, activity on the bot's own pull request
-becomes work on the review comments, and a mention becomes a reply.
+becomes work on the review comments, and a mention becomes a reply.  An
+assignment to a pull request becomes work on the review comments if the pull
+request is the bot's own, and a review if it is not.
+
+Work on the review comments needs a review comment or a comment of an
+authorized user since the last comment of the bot.  If there is none, the bot
+makes no job and changes nothing.  So to have the bot change its own pull
+request, review it and say what to change.
 
 GitHub keeps one notification per issue or pull request, not one per comment.
 Each new comment updates it, and its reason is the reason of the latest one.
