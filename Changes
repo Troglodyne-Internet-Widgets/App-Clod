@@ -64,6 +64,10 @@ Revision history for App-Clod
     - Make no job for work on the review comments when no review comment
       or comment waits for an answer.  A triage ran first and then found
       nothing to do.
+    - Drop a repository of spokes that is not public.  The spoke sweep now
+      asks GitHub for the visibility of each one, spokes() leaves out those
+      that it dropped, and the Overview tab names each with its reason.
+      Nothing kept a private repository out of a public installation before.
     - Fail a fix or an answer to a review that made no commit because
       claude refused some of its calls, and name each refused call in the
       error.  Such a run finished as no change before, with a reply that
