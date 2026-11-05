@@ -125,7 +125,8 @@ module checks it against C<%SCHEMA>, an OpenAPI v3 schema for
 L<JSON::Validator::Schema::Troglodyne>, which also holds every default.  It
 dies on a configuration that cannot work, and on a key that the schema does
 not name, which is how a misspelled key shows.  Secrets are never in it:
-C<GH_TOKEN> and C<CLAUDE_CODE_OAUTH_TOKEN> come from the environment.
+C<GH_TOKEN> and C<CLAUDE_CODE_OAUTH_TOKEN> come from the environment, and with
+C<run_as> the token of claude comes from that account.
 
 L<App::Clod/startup> validates the hash after the plugin has read it.  So two
 things that the plugin does come first.  It merges a file for the mode of the
@@ -206,7 +207,9 @@ C<run_as> is the account that every C<claude> run runs as, through C<sudo>.
 Unset, claude runs as the worker, and can read the token of the bot in the
 environment of the worker.  L<App::Clod::Claude/run_as> says what sudo must
 allow, and L<App::Clod::Spoke/DESCRIPTION> what the workspace needs.  It is
-an account name, so that sudo cannot take it for an option or a UID.
+an account name, so that sudo cannot take it for an option or a UID.  The
+account brings its own C<CLAUDE_CODE_OAUTH_TOKEN>, usually through C<bin>, and
+the worker then needs none.
 
 C<extra_tools> is a list of Claude Code permission rules, such as
 C<Bash(bin/provision:*)>, added to C<allowed_tools> of this installation.  So

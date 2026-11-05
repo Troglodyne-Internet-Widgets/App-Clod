@@ -195,7 +195,9 @@ the harness scan and the sweep of assigned issues.
 
 Both read the configuration from C<CLOD_CONFIG>, or F<clod.conf> in the
 application home.  Secrets come only from the environment: C<GH_TOKEN> for
-GitHub and C<CLAUDE_CODE_OAUTH_TOKEN> for Claude Code.
+GitHub and C<CLAUDE_CODE_OAUTH_TOKEN> for Claude Code.  With C<run_as>, the
+account that claude runs as brings its own token: see
+L<App::Clod::Claude/run_as>.
 
 =head1 WHEN A TOKEN STOPS WORKING
 
