@@ -5,8 +5,10 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
+use File::Temp ();
 use Mojo::File ();
 use Dist::Conformance::Snapshot();
+use Dist::Conformance::Snapshot::Directory();
 
 use App::Clod::Harness();
 
@@ -98,6 +100,20 @@ subtest workflows => sub {
     is( [ App::Clod::Harness::workflows( snapshot(%flows), \%settings ) ],                             [ 'info', 'present: ci.yml' ],   'with none required, they list the ones present' );
     is( [ App::Clod::Harness::workflows( snapshot(%flows), { required_workflows => ['ci.yml'] } ) ],   [ 'pass', 'all present' ],       'a required workflow that is there passes' );
     is( [ App::Clod::Harness::workflows( snapshot(%flows), { required_workflows => ['lint.yml'] } ) ], [ 'fail', 'missing: lint.yml' ], 'one that is not fails' );
+};
+
+subtest update => sub {
+    my $tmp  = File::Temp->newdir;
+    my $tree = Mojo::File->new( $tmp->dirname )->child('spoke')->make_path;
+    $tree->child('README.md')->spew(q{});
+    my $results = App::Clod::Harness::update( $tree, \%settings );
+    my %by      = map { $_->{check} => $_ } @$results;
+    ok( ( grep { $_->{path} eq 'git-hooks/pre-commit' } @{ $by{GitHooks}{changes} } ), 'the update of an empty spoke writes the hook of the standards' ) or diag Mojo::Util::dumper $results;
+    is( $tree->child(qw{git-hooks pre-commit})->slurp, $HOOK, 'into the checkout' );
+    my $after = by_check( App::Clod::Harness::check( Dist::Conformance::Snapshot::Directory->new( root => "$tree" ), \%settings ) );
+    is( $after->{GitHooks}{status}, 'pass', 'and then the spoke passes the check' );
+    my $again = App::Clod::Harness::update( $tree, \%settings );
+    is( [ map { @{ $_->{changes} } } @$again ], [], 'and a second update changes nothing' );
 };
 
 subtest marketplace_check => sub {

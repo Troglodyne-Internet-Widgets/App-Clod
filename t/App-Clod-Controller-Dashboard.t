@@ -24,7 +24,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep spoke_sweep spoke_fix triage reply create_repo file_issues}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -65,6 +65,42 @@ subtest overview => sub {
     like( $texts, qr/repositories\ of\ Test-Org\ failed:\ GitHub\ GET\ \S+\ 404/, 'and an organization that could not be listed' );
     like( $texts, qr/\(spoke_fix\ for\ Test-Org\/one\#3\)\ failed:\ it\ broke/,   'and a failed job, with its origin and error' );
     unlike( $texts, qr/inbox\ has\ not\ been\ read/, 'a recent poll is not an action item' );
+};
+
+subtest 'the buttons of the action items' => sub {
+    my %act = ( 'X-Clod-Action' => 'yes' );
+    $t->get_ok('/api/overview')->status_is(200);
+    my $failed = action_about(qr/\(spoke_fix\ for\ Test-Org\/one\#3\)\ failed/);
+    is( [ map { $_->{label} } @{ $failed->{buttons} } ], [qw{Retry Ignore}], 'a failed job can be retried or ignored' );
+    my $id = $failed->{job};
+
+    $t->post_ok("/act/jobs/$id/retry")->status_is( 403, 'an action without the header is refused, so another site cannot post it' );
+    is( $minion->job($id)->info->{state}, 'failed', 'and does nothing' );
+    $t->post_ok( "/act/jobs/$id/retry" => \%act )->status_is(200)->json_is( '/retried' => $id );
+    is( $minion->job($id)->info->{state}, 'inactive', 'Retry queues the failed job again' );
+    $t->post_ok( "/act/jobs/$id/retry" => \%act )->status_is( 404, 'and a job that has not failed cannot be retried' );
+
+    my $other = job( spoke_fix => { error => 'broke again' }, fail => 1, notes => { origin => 'Test-Org/one#4' } );
+    $minion->perform_jobs;
+    $t->post_ok( "/act/jobs/$other/ignore" => \%act )->status_is(200);
+    ok( $minion->job($other)->info->{notes}{ignored}, 'Ignore notes the job as ignored' );
+    is( $minion->job($other)->info->{state}, 'failed', 'and leaves it failed, in the history' );
+    $t->get_ok('/api/overview')->status_is(200);
+    unlike( action_texts(), qr/Test-Org\/one\#4/, 'and it is no action item any more' );
+
+    my $harness = action_about(qr/Test-Org\/one\ fails\ 1\ harness\ check/);
+    is( $harness->{buttons}, [ { label => 'Fix', act => 'harness/fix', body => { repo => 'Test-Org/one' } } ], 'a spoke that fails a harness check can be fixed' );
+    $t->post_ok( '/act/harness/fix' => \%act => json => { repo => 'Test-Org/one' } )->status_is(200);
+    my $res  = $t->tx->res;
+    my $fix  = $res->json->{queued};
+    my $info = $minion->job($fix)->info;
+    is( [ $info->{task}, $info->{args}[0] ], [ 'harness_fix', { repo => 'Test-Org/one', checks => [ { check => 'CLAUDE.md', detail => undef } ] } ], 'Fix queues a harness fix, with the failing checks' );
+    $t->post_ok( '/act/harness/fix' => \%act => json => { repo => 'Test-Org/one' } )->status_is(200)->json_is( '/queued' => $fix, 'and a second press queues no second one' );
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/harness\ check/), { job => $fix, text => qr/A\ harness\ fix\ of\ it\ is\ queued/ }, 'and while it waits, the item says so, with no button' );
+    ok( !action_about(qr/harness\ check/)->{buttons}, 'none' );
+    $t->post_ok( '/act/harness/fix' => \%act => json => { repo => 'Test-Org/two' } )->status_is( 404, 'a spoke that fails no check has nothing to fix' );
+    $minion->perform_jobs;
 };
 
 subtest work => sub {

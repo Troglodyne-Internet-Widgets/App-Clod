@@ -114,9 +114,28 @@
         card('Cost, 7 days', `$${b.cost_7d.toFixed(2)}`, `${b.runs_7d} runs, $${b.cost_24h.toFixed(2)} today`, 'currency-dollar');
       const level = { info: 'info', warning: 'warning', danger: 'danger' };
       document.getElementById('actions').innerHTML = d.actions.length
-        ? d.actions.map(a => `<li class="list-group-item list-group-item-${level[a.level] || 'secondary'}">${a.job ? jobLink(a.job) + ' ' : ''}${esc(a.text)}</li>`).join('')
+        ? d.actions.map(a => `<li class="list-group-item list-group-item-${level[a.level] || 'secondary'} d-flex align-items-start gap-2">
+            <div class="flex-grow-1">${a.job ? jobLink(a.job) + ' ' : ''}${esc(a.text)}</div>${buttons(a)}</li>`).join('')
         : '<li class="list-group-item text-success"><i class="bi bi-check-circle"></i> Nothing needs you.</li>';
     }
+
+    const buttons = a => (a.buttons || []).map(b => `<button type="button" class="btn btn-sm btn-outline-dark text-nowrap"
+      data-act="${esc(b.act)}" data-body="${esc(JSON.stringify(b.body || {}))}">${esc(b.label)}</button>`).join('');
+
+    // Every action needs this header, which no other site can make the browser send.
+    document.getElementById('actions').addEventListener('click', async e => {
+      const button = e.target.closest('button[data-act]');
+      if (!button) return;
+      button.disabled = true;
+      const res = await fetch(`${base}/act/${button.dataset.act}`, {
+        method: 'POST', headers: { 'X-Clod-Action': 'yes', 'Content-Type': 'application/json' }, body: button.dataset.body,
+      });
+      if (!res.ok) {
+        button.textContent = (await res.json().catch(() => ({}))).error || `failed: ${res.status}`;
+        return;
+      }
+      refresh();
+    });
 
     async function work() {
       const d = await (await fetch(`${base}/api/work`)).json();

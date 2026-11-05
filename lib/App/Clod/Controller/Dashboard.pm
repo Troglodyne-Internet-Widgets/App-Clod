@@ -47,7 +47,12 @@ sub overview ($self) {
 
 C<($budget, $outages)>, from L<App::Clod::Budget/summary> and
 L<App::Clod::Outage/summary>.  The things that need a person, each a
-C<{level, text}> and sometimes a C<job>.  An outage comes first.
+C<{level, text}> and sometimes a C<job>.  An outage comes first.  An item that
+a button can settle has C<buttons>, each a C<{label, act}> and sometimes a
+C<body>: the dashboard posts C<body> to F</act/E<lt>actE<gt>>.  A failed job
+has Retry and Ignore, and a spoke that fails harness checks has Fix, unless a
+L<App::Clod::Tasks/harness_fix> of it waits or runs.  A failed job that
+somebody ignored is not an item.
 
 =cut
 
@@ -74,7 +79,13 @@ sub action_items ( $self, $budget, $outages = [] ) {
         push @actions, { level => 'warning', text => "Marketplace: $m->{detail}." } if ( $m->{status} // q{} ) eq 'fail';
         for my $repo ( sort keys %{ $harness->{repos} } ) {
             my @failing = grep { $_->{status} eq 'fail' } @{ $harness->{repos}{$repo}{checks} };
-            push @actions, { level => 'warning', text => "$repo fails " . scalar(@failing) . ' harness check(s): ' . join( q{, }, map { $_->{check} } @failing ) . q{.} } if @failing;
+            next if !@failing;
+            my $text  = "$repo fails " . scalar(@failing) . ' harness check(s): ' . join( q{, }, map { $_->{check} } @failing ) . q{.};
+            my $fixer = pending_harness_fix( $minion, $repo );
+            push @actions,
+              $fixer
+              ? { level => 'warning', job  => $fixer, text    => "$text A harness fix of it is queued." }
+              : { level => 'warning', text => $text,  buttons => [ { label => 'Fix', act => 'harness/fix', body => { repo => $repo } } ] };
         }
         push @actions, { level => 'danger', text => "Harness scan of $_ failed: $harness->{errors}{$_}" } for sort keys %{ $harness->{errors} // {} };
     }
@@ -109,11 +120,91 @@ sub action_items ( $self, $budget, $outages = [] ) {
     my $failed = $minion->jobs( { states => ['failed'] } );
     my $shown  = 0;
     while ( my $info = $failed->next ) {
+        next if $info->{notes}{ignored};
         last if ++$shown > 10;
         my $error = ref $info->{result} eq 'HASH' ? $info->{result}{error} : $info->{result};
-        push @actions, { level => 'danger', job => $info->{id}, text => "Job $info->{id} ($info->{task}" . ( $info->{notes}{origin} ? " for $info->{notes}{origin}" : q{} ) . ') failed: ' . substr( $error // 'no reason given', 0, 300 ) };
+        push @actions,
+          {
+            level   => 'danger',
+            job     => $info->{id},
+            text    => "Job $info->{id} ($info->{task}" . ( $info->{notes}{origin} ? " for $info->{notes}{origin}" : q{} ) . ') failed: ' . substr( $error // 'no reason given', 0, 300 ),
+            buttons => [ { label => 'Retry', act => "jobs/$info->{id}/retry" }, { label => 'Ignore', act => "jobs/$info->{id}/ignore" } ],
+          };
     }
     return \@actions;
+}
+
+=func pending_harness_fix
+
+C<($minion, $repo)>.  The id of a L<App::Clod::Tasks/harness_fix> of C<$repo>
+that waits or runs, or undef.
+
+=cut
+
+sub pending_harness_fix ( $minion, $repo ) {
+    my $jobs = $minion->jobs( { tasks => ['harness_fix'], states => [qw{inactive active}] } );
+    while ( my $info = $jobs->next ) {
+        return $info->{id} if ( $info->{notes}{repo} // q{} ) eq $repo;
+    }
+    return;
+}
+
+=method retry
+
+Retries the failed job C<id>.  A job that is not there, or did not fail, is a
+404.
+
+=cut
+
+sub retry ($self) {
+    my $job = $self->failed_job // return;
+    $job->retry;
+    return $self->render( json => { retried => $job->id } );
+}
+
+=method ignore
+
+Marks the failed job C<id> as ignored, with the note C<ignored>, the time.  It
+stays in Minion, and stops being an action item.
+
+=cut
+
+sub ignore ($self) {
+    my $job = $self->failed_job // return;
+    $job->note( ignored => time );
+    return $self->render( json => { ignored => $job->id } );
+}
+
+=method failed_job
+
+The failed job of the C<id> of the route.  If there is none, it renders a 404
+and returns undef.
+
+=cut
+
+sub failed_job ($self) {
+    my $job = $self->minion->job( $self->param('id') );
+    return $job if $job && $job->info->{state} eq 'failed';
+    $self->render( json => { error => 'there is no failed job ' . $self->param('id') }, status => 404 );
+    return;
+}
+
+=method harness_fix
+
+Queues a L<App::Clod::Tasks/harness_fix> of the C<repo> of the JSON body, with
+its failing checks from the last harness scan.  A spoke that fails no check is
+a 404.  If one waits or runs already, it queues no second one, and says which.
+
+=cut
+
+sub harness_fix ($self) {
+    my $minion  = $self->minion;
+    my $repo    = ( $self->req->json // {} )->{repo}                       // q{};
+    my $scan    = App::Clod::Tasks::last_result( $minion, 'harness_scan' ) // {};
+    my @failing = map { { check => $_->{check}, detail => $_->{detail} } } grep { $_->{status} eq 'fail' } @{ ( $scan->{repos}{$repo} // {} )->{checks} // [] };
+    return $self->render( json => { error => "$repo fails no harness check" }, status => 404 ) if !@failing;
+    my $id = pending_harness_fix( $minion, $repo ) // $minion->enqueue( harness_fix => [ { repo => $repo, checks => \@failing } ], { notes => { repo => $repo } } );
+    return $self->render( json => { queued => $id } );
 }
 
 =method work
