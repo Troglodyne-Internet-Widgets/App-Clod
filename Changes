@@ -1,6 +1,15 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Sort what waits on the bot's own pull request before changing it.  A
+      run that can only read answers each question in its thread, and only
+      a request for a change goes on to a run that can commit.  A mention on
+      that pull request is sorted as well.  A question in a line comment
+      went to the run that changes code, and its prompt asked for a change
+      or a reason not to make one.
+    - A reply that finds a request for a change on the pull request of
+      someone else starts a fix.  It started work on the review comments,
+      which can push only to a pull request of the bot, and failed.
     - Find who wrote a review on a pull request from its latest review or
       line comment, when the notification names no latest comment, or
       names the pull request itself.  A review of an authorized user was

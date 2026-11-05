@@ -233,8 +233,8 @@ the two do not make a valid F<.conformance.yml>.
 =item system_prompts
 
 Text to append to the system prompt of the C<claude> runs of a task, keyed by
-the task: C<triage>, C<spoke_fix>, C<spoke_review>, C<spoke_address> or
-C<reply>.  Use it for what every run of that task must know about this
+the task: C<triage>, C<spoke_fix>, C<spoke_review>, C<spoke_address>,
+C<sort_review> or C<reply>.  Use it for what every run of that task must know about this
 installation, such as how to test a change.  Because F<clod.conf> is perl, a
 value can be read from a file:
 

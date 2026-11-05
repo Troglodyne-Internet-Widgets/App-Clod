@@ -34,6 +34,7 @@ our %TASKS = (
     spoke_fix      => \&spoke_fix,
     spoke_review   => \&spoke_review,
     spoke_address  => \&spoke_address,
+    sort_review    => \&sort_review,
     reply          => \&reply,
     report         => \&report,
     kickback       => \&kickback,
@@ -478,7 +479,10 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
         $gh->mark_read( $thread->{id} );
         return 'requested by ' . ( $requester // 'nobody known' ) . ', who is not authorized';
     }
-    $kind = own_pull( $config, $gh->pull( $repo, $number ), $repo ) ? 'address_review' : 'review' if $kind eq 'fix' && $is_pr;
+    if ( $is_pr && ( $kind eq 'fix' || $kind eq 'reply' ) ) {
+        my $own = own_pull( $config, $gh->pull( $repo, $number ), $repo );
+        $kind = $own ? 'address_review' : $kind eq 'fix' ? 'review' : 'reply';
+    }
 
     my %item = (
         repo        => $repo,
@@ -500,7 +504,8 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
         return "nothing on $origin waits for an answer";
     }
     $gh->react( $repo, $number, 'eyes' );
-    my $id = $minion->enqueue( ( $kind eq 'reply' ? 'reply' : 'triage' ) => [ \%item ], { notes => { origin => $origin, kind => $kind } } );
+    my $task = $kind eq 'reply' ? 'reply' : $kind eq 'address_review' ? 'sort_review' : 'triage';
+    my $id   = $minion->enqueue( $task => [ \%item ], { notes => { origin => $origin, kind => $kind } } );
     $gh->mark_read( $thread->{id} );
     log_note( $job, "queued job $id for $kind on $origin" );
     return $id;
@@ -510,18 +515,19 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
 
 C<($minion, $origin)>.  The id of a job that has yet to read the conversation of
 the pull request C<$origin> and answer it: a C<triage> of it for
-C<address_review> that waits or runs, or a C<spoke_address> of it that waits.
-Undef if there is none.  A C<spoke_address> that runs does not count: it read
-what was pending when it started, so it does not answer a later comment.
+C<address_review> that waits or runs, or a C<sort_review> or C<spoke_address>
+of it that waits.  Undef if there is none.  A C<sort_review> or
+C<spoke_address> that runs does not count: it read what was pending when it
+started, so it does not answer a later comment.
 
 =cut
 
 sub queued_address ( $minion, $origin ) {
-    my $jobs = $minion->jobs( { tasks => [qw{triage spoke_address}], states => [qw{inactive active}] } );
+    my $jobs = $minion->jobs( { tasks => [qw{triage sort_review spoke_address}], states => [qw{inactive active}] } );
     while ( my $info = $jobs->next ) {
         next if ( $info->{notes}{origin} // q{} ) ne $origin;
         next if $info->{task} eq 'triage' && ( $info->{notes}{kind} // q{} ) ne 'address_review';
-        next if $info->{task} eq 'spoke_address' && $info->{state} ne 'inactive';
+        next if $info->{task} ne 'triage' && $info->{state} ne 'inactive';
         return $info->{id};
     }
     return;
@@ -1198,6 +1204,123 @@ sub pending ( $config, $gh, $item ) {
     return ( pending_threads( $config, $gh->review_comments( $item->{repo}, $item->{number} ) ), pending_comments( $config, conversation( $gh, $item ) ) );
 }
 
+=func sort_review
+
+C<($job, $config, $item)>.  Sorts what waits for an answer on the bot's own
+pull request, the L</pending> threads and comments, into questions and
+requests for a change.  One claude run reads a detached worktree of the branch
+with C<read_tools>, so it cannot change it.  It gives each thread, and the
+comments as one, a verdict:
+
+=over 4
+
+=item answer
+
+The job posts the answer: in the thread, or as one comment for the comments.
+The bot then has the last word there, so the thread is no longer pending.
+
+=item change
+
+A change in the pull request.  The job enqueues a C<spoke_address>, with the
+C<instructions> of the run, which answers what is still pending.
+
+=item elsewhere
+
+A change that another spoke needs as well.  The job enqueues a C<triage> for
+C<address_review>, which can plan work across spokes.
+
+=back
+
+A thread or the comments with no verdict, or an answer with no body, is a
+change.  If some verdict is C<elsewhere>, the triage takes all that is left.
+Its result has C<answered>, the ids of the threads it answered, C<comment_url>
+when it answered the comments, and C<next>, the task and id of the job after
+it, if there is one.
+
+=cut
+
+my %VERDICT = ( type => 'string', enum => [qw{answer change elsewhere}] );
+my %SORTED  = (
+    type       => 'object',
+    required   => [qw{summary threads comments}],
+    properties => {
+        summary => { type => 'string' },
+        threads => {
+            type  => 'array',
+            items => { type => 'object', required => [qw{id verdict}], properties => { id => { type => 'integer' }, verdict => \%VERDICT, body => { type => 'string' } } },
+        },
+        comments     => { type => 'object', required => ['verdict'], properties => { verdict => \%VERDICT, body => { type => 'string' } } },
+        instructions => { type => 'string' },
+    },
+);
+
+sub sort_review ( $job, $config, $item ) {
+    my $repo = $item->{repo};
+    my $gh   = github($config);
+    my $pull = $gh->pull( $repo, $item->{number} );
+    return $job->fail( { error => 'the pull request is not the bot\'s own, from this repository' } ) if !own_pull( $config, $pull, $repo );
+
+    my ( $threads, $comments ) = pending( $config, $gh, $item );
+    return $job->finish( { nothing => 1 } ) if !@$threads && !@$comments;
+
+    my $branch = $pull->{head}{ref};
+    return in_worktree(
+        $job, $config, $repo,
+        { detach => $branch },
+        sub ( $spoke, $tree, $tools ) {
+            my $outcome = run_claude(
+                $job, $config,
+                dir    => $tree,
+                prompt => prompt(
+                    sort    => repo => $repo,
+                    branch  => $branch,
+                    origin  => origin_url( $config, $item ),
+                    tools   => $tools->{note},
+                    history => context( $config, $gh, $item ),
+                    context => Mojo::JSON::encode_json( { threads => $threads, comments => $comments } ),
+                ),
+                tools           => $config->{claude}{read_tools},
+                permission_mode => 'default',
+                add_dirs        => $tools->{add_dirs},
+                schema          => \%SORTED,
+            ) // return;
+            my %usage  = usage_of($outcome);
+            my $answer = $outcome->{structured};
+            return $job->fail( { error => "no answer: $outcome->{stderr}", %usage } ) if ref $answer ne 'HASH';
+
+            my %verdict = map { $_->{id} => $_ } grep { ref $_ eq 'HASH' } @{ $answer->{threads} // [] };
+            my ( @answered, @left );
+            for my $thread (@$threads) {
+                my $said = $verdict{ $thread->{id} } // {};
+                if ( answers($said) ) {
+                    $gh->reply_review_comment( $repo, $item->{number}, $thread->{id}, $said->{body} );
+                    push @answered, $thread->{id};
+                }
+                else { push @left, $said->{verdict} // 'change' }
+            }
+            my $said = ref $answer->{comments} eq 'HASH' ? $answer->{comments} : {};
+            my $comment_url;
+            if    ( @$comments && answers($said) ) { $comment_url = $gh->comment( $repo, $item->{number}, $said->{body} )->{html_url} }
+            elsif (@$comments)                     { push @left, $said->{verdict} // 'change' }
+
+            my %result = ( answered => \@answered, ( $comment_url ? ( comment_url => $comment_url ) : () ), summary => $answer->{summary}, %usage );
+            return $job->finish( \%result ) if !@left;
+
+            my %notes = ( origin => origin_of($item), sort_job => $job->id );
+            my $task  = ( List::Util::any { $_ eq 'elsewhere' } @left ) ? 'triage' : 'spoke_address';
+            my $args  = $task eq 'triage'                               ? $item    : { item => $item, repo => $repo, instructions => $answer->{instructions} // q{} };
+            my $id    = $job->minion->enqueue( $task => [$args], { notes => { %notes, $task eq 'triage' ? ( kind => 'address_review' ) : ( repo => $repo ) } } );
+            log_note( $job, "queued $task job $id for what is not answered on " . origin_of($item) );
+            return $job->finish( { %result, next => { task => $task, id => $id } } );
+        }
+    );
+}
+
+# True if a verdict of sort_review answers, with something to post.
+sub answers ($said) {
+    return ( $said->{verdict} // q{} ) eq 'answer' && ( $said->{body} // q{} ) ne q{};
+}
+
 =func spoke_address
 
 Answers what authorized users said on the bot's own pull request since the bot
@@ -1282,7 +1405,10 @@ sub refused ($outcome) {
 
 =func reply
 
-Answers a mention.  If the person asked for a change, it also enqueues triage.
+Answers a mention on an issue, or on a pull request that is not the bot's own.
+If the person asked for a change, it also enqueues triage for a fix.  The bot
+cannot push to the branch of that pull request, so the fix is a pull request of
+its own.  A mention on the bot's own pull request goes to L</sort_review>.
 
 =cut
 
@@ -1305,7 +1431,7 @@ sub reply ( $job, $config, $item ) {
     $gh->comment( $item->{repo}, $item->{number}, $answer->{body} );
     my %result = ( action => $answer->{action}, summary => $answer->{body}, %usage );
     if ( $answer->{action} eq 'fix' ) {
-        my %next = ( %$item, kind => $item->{is_pr} ? 'address_review' : 'fix' );
+        my %next = ( %$item, kind => 'fix' );
         $result{triage_job} = $job->minion->enqueue( triage => [ \%next ], { notes => { origin => origin_of( \%next ), kind => $next{kind} } } );
     }
     return $job->finish( \%result );

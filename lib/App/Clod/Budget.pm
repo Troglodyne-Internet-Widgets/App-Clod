@@ -15,7 +15,7 @@ my $DAY  = 86_400;
 my $WEEK = 7 * $DAY;
 
 # The tasks whose results carry a claude outcome.
-our @CLAUDE_TASKS = qw{triage spoke_fix spoke_review spoke_address reply};
+our @CLAUDE_TASKS = qw{triage spoke_fix spoke_review spoke_address sort_review reply};
 
 =func pause
 

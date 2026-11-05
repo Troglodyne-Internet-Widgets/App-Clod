@@ -108,25 +108,33 @@ user in C<authorized_users> caused it.  An assignment to an issue becomes a
 fix, a review request becomes a review, activity on the bot's own pull request
 becomes work on the review comments, and a mention becomes a reply.  An
 assignment to a pull request becomes work on the review comments if the pull
-request is the bot's own, and a review if it is not.
+request is the bot's own, and a review if it is not.  On the bot's own pull
+request, a mention is work on the review comments too.
 
 Work on the review comments needs a review comment or a comment of an
 authorized user since the last comment of the bot.  If there is none, the bot
-makes no job and changes nothing.  So to have the bot change its own pull
-request, review it and say what to change.
+makes no job and changes nothing.
+
+That work starts with a sort: one C<claude -p> run that can only read a
+checkout of the branch.  It answers each review thread that asks a question in
+that thread, and the plain comments in one comment, if none of them asks for a
+change.  Only what asks for a change goes on to a run that can change the
+branch.  So a question in a line comment gets an answer, and never a commit.
+If the sort is not sure, it takes the comment for a request for a change, and
+the run that makes changes answers it.
 
 GitHub keeps one notification per issue or pull request, not one per comment.
 Each new comment updates it, and its reason is the reason of the latest one.
-So a comment on the bot's own pull request that mentions the bot by name is a
-mention, and gets a reply, not work on the review comments.  If the reply finds
-that the person asked for a change, it starts that work.  Several comments that
-arrive while the work on a pull request waits to start get no job of their own,
-because that work collects everything that was said since the bot last
-answered.  A comment that arrives while that work runs gets a job of its own.
+Several comments that arrive while the work on a pull request waits to start
+get no job of their own, because that work collects everything that was said
+since the bot last answered.  A comment that arrives while that work runs gets
+a job of its own.
 
-Each fix, review and review answer starts with triage: one C<claude -p> run
-that can read every spoke and decides whether one repository, several, or an
-upstream project that we do not own is the right place for the change.  Then
+Each fix and review starts with triage, and so does a review answer that the
+sort finds needs a change in another spoke as well.  Triage is one
+C<claude -p> run that can read every spoke and decides whether one
+repository, several, or an upstream project that we do not own is the right
+place for the change.  Then
 one C<claude -p> run per repository does the work, inside a git worktree of
 that repository.  For a change across several repositories, Minion parents run
 them in order, and each run gets the summaries of the runs before it.  The bot
