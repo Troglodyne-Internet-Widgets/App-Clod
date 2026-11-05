@@ -57,6 +57,17 @@ sub startup ($self) {
     $authed->get('/api/overview')->to('dashboard#overview');
     $authed->get('/api/work')->to('dashboard#work');
     $authed->get('/api/harness')->to('dashboard#harness');
+
+    my $act = $authed->under(
+        '/act' => sub ($c) {
+            return 1 if ( $c->req->headers->header('X-Clod-Action') // q{} ) eq 'yes';
+            $c->render( json => { error => 'an action needs the header X-Clod-Action: yes' }, status => 403 );
+            return;
+        }
+    );
+    $act->post('/jobs/:id/retry')->to('dashboard#retry');
+    $act->post('/jobs/:id/ignore')->to('dashboard#ignore');
+    $act->post('/harness/fix')->to('dashboard#harness_fix');
     return;
 }
 
@@ -257,6 +268,26 @@ Jobs by state, the Claude Code quota used in the five-hour and seven-day
 windows, and the action items: an outage, a marketplace pin older than the
 plugin, failed jobs, harness checks that fail, token scopes that are missing,
 and an inbox that waits because no repository is a spoke.
+
+Some action items have a button, which settles them from the page:
+
+=over
+
+=item * Retry, on a failed job, queues it again, as F</minion> does.
+
+=item * Ignore, on a failed job, takes it off the action items.  The job
+stays failed in F</minion>.
+
+=item * Fix, on a spoke that fails harness checks, queues
+L<App::Clod::Tasks/harness_fix>.  That job runs the update of the standards
+on a new branch, with no claude run, and opens a pull request for what it
+changed, with an issue that it closes.
+
+=back
+
+The buttons post to F</act>, which takes a request only with the header
+C<X-Clod-Action: yes>.  A browser sends the credentials of the page with a
+form that another site posts, but it sends no such header for another site.
 
 =item Work
 

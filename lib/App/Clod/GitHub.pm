@@ -323,6 +323,14 @@ C<($repo, \%pull)>, where C<%pull> has C<title>, C<head>, C<base> and C<body>.
 
 sub create_pull ( $self, $repo, $pull ) { return $self->post( "/repos/$repo/pulls", $pull ) }
 
+=method open_pulls
+
+C<($repo)>.  The open pull requests of the repository.
+
+=cut
+
+sub open_pulls ( $self, $repo ) { return $self->paginate( "/repos/$repo/pulls", query => { state => 'open' } ) }
+
 =method update_pull
 
 C<($repo, $number, \%fields)>.

@@ -87,6 +87,7 @@ $r->post('/repos/:o/:n/pulls/:num/reviews')->to(
         return $c->render( json => { html_url => 'https://test.test/review' } );
     }
 );
+$r->get('/repos/:o/:n/pulls')->to( cb => sub ($c) { $c->render( json => $state{open_pulls} // [] ) } );
 $r->get('/repos/:o/:n/pulls/:num')->to( cb => sub ($c) { $c->render( json => $state{pull} // { body => 'old body', base => { ref => 'main' }, head => { sha => 'abc' } } ) } );
 $r->patch('/repos/:o/:n/pulls/:num')->to( cb => $record->('update_pull') );
 $r->post('/repos/:o/:n/pulls')->to(
@@ -1019,6 +1020,45 @@ subtest pending_threads => sub {
     my $pending = App::Clod::Tasks::pending_threads( $config, \@comments );
     is( [ map { $_->{id} } @$pending ], [ 1, 3 ], 'a thread is pending when an authorized user has the last word' );
     is( [ map { $_->{by} } @{ $pending->[0]{messages} } ], [ 'trusted', $BOT, 'trusted' ], 'with its whole history' );
+};
+
+subtest harness_fix => sub {
+    %state = ();
+    @calls = ();
+
+    # The worker sets none of these, and a shell that does would name its own author.
+    delete local @ENV{qw{GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL}};
+    my $bare = $remote->child('Test-Org/two.git')->to_string;
+    my $args = { repo => 'Test-Org/two', checks => [ { check => 'GitHooks', detail => 'there is no git-hooks/pre-commit' } ] };
+    my $info = run_job( harness_fix => $args );
+    is( $info->{state}, 'finished', 'a harness fix finishes' ) or diag Mojo::Util::dumper $info->{result};
+    my ($issue) = map { $_->[2] } @{ calls_of('issue') };
+    is( $issue->{title}, 'Meet the harness standards', 'it files an issue' );
+    like( $issue->{body}, qr/`GitHooks`:\ there\ is\ no\ git-hooks\/pre-commit/, 'that names each failing check' );
+    my $pull = calls_of('pull')->[0][2];
+    like( $pull,         { title => 'Meet the harness standards', head => $info->{result}{branch}, base => 'main', body => qr/Closes\ \#1/ }, 'and opens a pull request that closes it' );
+    like( $pull->{body}, qr/`GitHooks`:\ \w+\ `git-hooks\/pre-commit`/,                                                                       'and says what the update changed' );
+    my $hook = $here->child(qw{data standards templates pre-commit})->slurp;
+    chomp $hook;
+    is( git( '--git-dir', $bare, 'show', "$info->{result}{branch}:git-hooks/pre-commit" ), $hook, 'with the hook of the standards on its branch' );
+    like( git( '--git-dir', $bare, 'log', '-1', '--format=%an %s', $info->{result}{branch} ), qr/\A$BOT\ Meet\ the\ harness\ standards\z/, 'committed by the bot' );
+
+    @calls = ();
+    $state{open_pulls} = [ { title => 'Meet the harness standards', user => { login => $BOT }, html_url => 'https://test.test/pull/7' } ];
+    my $again = run_job( harness_fix => $args );
+    is( $again->{result},                                  { repo => 'Test-Org/two', pr_url => 'https://test.test/pull/7', open_already => 1 }, 'with that pull request open, a second fix does nothing' );
+    is( [ @{ calls_of('issue') }, @{ calls_of('pull') } ], [],                                                                                  'and files nothing' );
+    delete $state{open_pulls};
+
+    my $harness = Test::MockModule->new('App::Clod::Harness');
+    $harness->redefine( update => sub (@) { return [ { check => 'ClaudeMd', changes => [], manual => ['Say what the repository is for.'] } ] } );
+    @calls = ();
+    my $nothing = run_job( harness_fix => $args );
+    is( [ $nothing->{result}{no_change}, calls_of('pull') ], [ 1, [] ], 'an update that changes no file opens no pull request' );
+    my $said = calls_of('comment')->[0][2]{body};
+    like( $said, qr/changes\ no\ file/,      'and says on the issue that nothing changed' );
+    like( $said, qr/`ClaudeMd`:\ Say\ what/, 'and what is left for a person' );
+    $minion->reset( { all => 1 } );
 };
 
 subtest harness_scan => sub {

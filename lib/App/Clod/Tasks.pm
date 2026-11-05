@@ -43,6 +43,7 @@ our %TASKS = (
     spoke_sweep    => \&spoke_sweep,
     create_repo    => \&create_repo,
     file_issues    => \&file_issues,
+    harness_fix    => \&harness_fix,
 );
 
 # Each Minion schedule: its cron line and its task.
@@ -1915,6 +1916,71 @@ sub harness_scan ( $job, $config ) {
         $settings->{plugin},
     );
     return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, marketplace => $marketplace, checks => [ sort keys %checks ] } );
+}
+
+=func harness_fix
+
+C<($job, $config, $args)>, where C<$args> has C<repo> and C<checks>, the
+failing checks of the last harness scan, each with C<check> and C<detail>.
+Brings the spoke to the harness standards with no claude run, from the
+dashboard.  It files an issue that names the failing checks, and runs the
+update of L<App::Clod::Harness/update> on a new branch.  If that changes a
+file, it commits, through the hooks of the spoke, pushes, and opens a pull
+request that closes the issue.  The pull request and the issue say what is
+left for a person.  If the update changes nothing, it says so on the issue.
+
+If the bot already has such a pull request open, the job does nothing, so a
+second press of the button cannot make a second one.  The issue is in the
+notes of the job, so a retry does not file it again.
+
+=cut
+
+my $HARNESS_TITLE = 'Meet the harness standards';
+
+sub harness_fix ( $job, $config, $args ) {
+    my $repo   = $args->{repo};
+    my $gh     = github($config);
+    my ($open) = grep { $_->{title} eq $HARNESS_TITLE && ( $_->{user}{login} // q{} ) eq $config->{bot} } @{ $gh->open_pulls($repo) };
+    return $job->finish( { repo => $repo, pr_url => $open->{html_url}, open_already => 1 } ) if $open;
+
+    my @failing = map { "- `$_->{check}`: " . ( $_->{detail} // q{} ) } @{ $args->{checks} // [] };
+    my $issue   = $job->info->{notes}{issue} // do {
+        my $made = $gh->create_issue( $repo, { title => $HARNESS_TITLE, body => join( "\n", 'The harness scan finds that this repository fails these checks:', q{}, @failing, q{}, 'Asked for on the dashboard of the bot.' ) } );
+        my %made = ( number => $made->{number}, url => $made->{html_url} );
+        $job->note( issue => \%made );
+        \%made;
+    };
+
+    my $base   = default_branch( $gh, $repo );
+    my $branch = 'clod/' . $job->id . '-harness';
+    return in_worktree(
+        $job, $config, $repo,
+        { branch => $branch, base => $base },
+        sub ( $spoke, $tree, $tools ) {
+            my $results = App::Clod::Harness::update( $tree, $config->{harness}, cache => "$config->{workspace}/conformance" );
+            my @changes = map {
+                my $check = $_->{check};
+                map { "- `$check`: $_->{action} `$_->{path}`" } @{ $_->{changes} }
+            } @$results;
+            my @manual = map {
+                my $check = $_->{check};
+                map { "- `$check`: $_" } @{ $_->{manual} }
+            } @$results;
+            my $left = @manual ? join( "\n", 'Left for a person:', q{}, @manual ) : 'Nothing is left for a person.';
+
+            $spoke->git( q{-C}, "$tree", qw{add -A} );
+            if ( $spoke->git( q{-C}, "$tree", qw{status --porcelain} ) eq q{} ) {
+                $gh->comment( $repo, $issue->{number}, "The update of the harness changes no file here.\n\n$left" );
+                return $job->finish( { repo => $repo, issue_url => $issue->{url}, no_change => 1, manual => \@manual } );
+            }
+            my $what = join "\n", 'The update of the harness standards, run by the bot.', q{}, @changes;
+            $spoke->git( q{-C}, "$tree", qw{commit --quiet -m}, "Meet the harness standards\n\n$what" );
+            $spoke->push_branch( $tree, $branch );
+            my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, "Closes #$issue->{number}" ) } );
+            log_note( $job, "opened $pull->{html_url}" );
+            return $job->finish( { repo => $repo, issue_url => $issue->{url}, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, changes => \@changes, manual => \@manual } );
+        }
+    );
 }
 
 =func assigned_sweep

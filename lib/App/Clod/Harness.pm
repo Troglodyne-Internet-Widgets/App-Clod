@@ -11,6 +11,7 @@ use version ();
 
 use Dist::Conformance();
 use Dist::Conformance::Config();
+use Dist::Conformance::Snapshot::Directory();
 use Dist::Conformance::Snapshot::Tree();
 
 =func default_config
@@ -108,6 +109,23 @@ sub check ( $snapshot, $settings, %options ) {
     my ( $status, $detail ) = workflows( $snapshot, $settings );
     push @results, { check => 'workflows', status => $status, detail => $detail };
     return { flavor => $conformance->config->{flavor}, chosen => $snapshot->contains($Dist::Conformance::Config::FILE) ? 1 : 0, checks => \@results };
+}
+
+=func update
+
+C<($tree, $settings, %options)>, with C<%options> as L</conformance> takes them.
+Runs the update of every check on the checkout C<$tree>, as
+C<conformance update> does there, and returns what
+L<Dist::Conformance/update> returns: for each check, its C<changes> and what
+is C<manual>, left for a person.  It writes the files of the standards into
+the checkout, and commits nothing.
+
+=cut
+
+sub update ( $tree, $settings, %options ) {
+    my $conformance = conformance( Dist::Conformance::Snapshot::Directory->new( root => "$tree" ), $settings, %options );
+    $conformance->root("$tree");
+    return $conformance->update;
 }
 
 =func marketplace_check
