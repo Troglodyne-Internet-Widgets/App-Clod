@@ -7,6 +7,7 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base 'Mojolicious', -signatures;
 
+use IPC::Run    ();
 use Mojo::File  ();
 use Mojo::Util  ();
 use Digest::SHA ();
@@ -31,6 +32,36 @@ sub share_dir {
     return Mojo::File->new( File::ShareDir::dist_dir('App-Clod') );
 }
 
+=func checkout
+
+The git checkout that this code runs from, as a L<Mojo::File>: the directory
+above F<lib>, if it holds F<.git>.  Undef for an installed distribution.
+
+=cut
+
+sub checkout {
+    my $file = Mojo::File->new(__FILE__)->to_abs;
+    my $root = $file->dirname->dirname->dirname;
+    return -e $root->child('.git') ? $root : undef;
+}
+
+=func running_commit
+
+The commit that the L</checkout> is at, as C<{sha, short}>, or undef when this
+code runs from no checkout, or git cannot say.  L</startup> asks once, so the
+helper C<running> is the commit that the process loaded, and a pull changes it
+only after a restart.
+
+=cut
+
+sub running_commit {
+    my $dir = checkout() // return;
+    my ( $sha, $err ) = ( q{}, q{} );
+    IPC::Run::run( [ qw{git -C}, "$dir", qw{rev-parse HEAD} ], '<', \undef, '>', \$sha, '2>', \$err ) or return;
+    chomp $sha;
+    return { sha => $sha, short => substr $sha, 0, 7 };
+}
+
 =method startup
 
 The Mojolicious entry point.
@@ -43,6 +74,8 @@ sub startup ($self) {
     Mojo::File->new( $config->{workspace} )->make_path;
     $self->config($config);
     $self->helper( clod_config => sub { $config } );
+    my $running = running_commit();
+    $self->helper( running => sub { $running } );
 
     $self->renderer->paths( [ share_dir()->child('templates')->to_string ] );
     $self->plugin( Minion => { SQLite => $config->{minion} } );
@@ -68,6 +101,8 @@ sub startup ($self) {
     $act->post('/jobs/:id/retry')->to('dashboard#retry');
     $act->post('/jobs/:id/ignore')->to('dashboard#ignore');
     $act->post('/harness/fix')->to('dashboard#harness_fix');
+    $act->post('/self/update')->to('dashboard#self_update');
+    $act->post('/plugins/update')->to('dashboard#plugin_update');
     return;
 }
 
@@ -283,7 +318,17 @@ L<App::Clod::Tasks/harness_fix>.  That job runs the update of the standards
 on a new branch, with no claude run, and opens a pull request for what it
 changed, with an issue that it closes.
 
+=item * Update, when the bot is out of date, queues
+L<App::Clod::Tasks/self_update>.  The bot is out of date when its checkout is
+behind its upstream, or when it runs another commit than its checkout has.
+L<App::Clod::Tasks/self_check> finds that out every half hour.
+
+=item * Update plugins, when a plugin of the account that claude runs as is
+behind its marketplace, queues L<App::Clod::Tasks/plugin_update>.
+
 =back
+
+The header of the page shows the short sha of the commit that the page runs.
 
 The buttons post to F</act>, which takes a request only with the header
 C<X-Clod-Action: yes>.  A browser sends the credentials of the page with a

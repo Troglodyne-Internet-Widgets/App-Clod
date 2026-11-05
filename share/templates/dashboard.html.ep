@@ -22,6 +22,7 @@
       <span class="navbar-brand"><i class="bi bi-diagram-3"></i> Clod <small class="text-body-secondary fs-6"><%= $bot %></small></span>
       <span class="d-flex gap-3 align-items-center">
         <small class="text-body-secondary" id="updated"></small>
+        <small class="text-body-secondary font-monospace" id="running" title="the commit that the bot runs"></small>
         <a class="btn btn-sm btn-outline-secondary" href="<%= url_for('/minion') %>"><i class="bi bi-list-task"></i> Minion</a>
       </span>
     </div>
@@ -112,6 +113,7 @@
         card('Quota, 5 hours', five[0], five[1], 'speedometer2') +
         card('Quota, 7 days', seven[0], seven[1], 'calendar-week') +
         card('Cost, 7 days', `$${b.cost_7d.toFixed(2)}`, `${b.runs_7d} runs, $${b.cost_24h.toFixed(2)} today`, 'currency-dollar');
+      document.getElementById('running').textContent = d.running ? d.running.short : '';
       const level = { info: 'info', warning: 'warning', danger: 'danger' };
       document.getElementById('actions').innerHTML = d.actions.length
         ? d.actions.map(a => `<li class="list-group-item list-group-item-${level[a.level] || 'secondary'} d-flex align-items-start gap-2">

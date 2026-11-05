@@ -146,7 +146,7 @@ sub marketplace_check ( $plugin_json, $marketplace_json, $plugin ) {
     if ( !defined $latest || !defined $pinned ) {
         return { %result, status => 'fail', detail => 'could not read both versions' };
     }
-    my $behind = eval { version->parse($pinned) < version->parse($latest) };
+    my $behind = eval { version->declare($pinned) < version->declare($latest) };
     return { %result, status => 'fail', detail => "the marketplace pins $pinned; the plugin is at $latest" } if $behind;
     return { %result, status => 'pass', detail => "the marketplace pins $pinned" };
 }

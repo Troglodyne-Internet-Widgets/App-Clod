@@ -1,6 +1,13 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Say on the dashboard when the bot is out of date, with an Update
+      button that pulls and restarts the units of restart_units, its own
+      unit last.  And when a plugin of the account that claude runs as is
+      behind its marketplace, with an Update plugins button.  self_check
+      looks every half hour.  The header shows the short sha that runs.
+    - Compare a version with two parts as dotted, so 0.10 is newer than
+      0.9.  The marketplace check took 0.10 for older than 0.9.
     - Buttons on the action items of the dashboard: Retry and Ignore on a
       failed job, and Fix on a spoke that fails harness checks.  Fix
       queues harness_fix, which runs the update of the harness standards

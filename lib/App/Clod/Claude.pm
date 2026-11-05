@@ -10,6 +10,7 @@ use Mojo::Base -base, -signatures;
 use IPC::Run ();
 use Mojo::JSON();
 use Time::HiRes qw{time};
+use version     ();
 
 # How long to wait when a run hit the limit and did not say when it resets.
 my $UNKNOWN_RESET = 1800;
@@ -114,11 +115,7 @@ read it.
 =cut
 
 sub command ( $self, %run ) {
-    my @cmd = ( $self->bin, qw{-p --output-format stream-json --verbose} );
-    if ( my $account = $self->run_as ) {
-        my @kept = sort { $a cmp $b } grep { $_ ne 'CLAUDE_CODE_OAUTH_TOKEN' } keys %{ $self->env };
-        unshift @cmd, qw{sudo -n -H -u}, $account, ( @kept ? '--preserve-env=' . join( q{,}, @kept ) : () ), qw{-- /usr/bin/env}, 'PATH=' . ( $ENV{PATH} // q{} );
-    }
+    my @cmd = $self->as_account( $self->bin, qw{-p --output-format stream-json --verbose} );
     push @cmd, '--model', $self->model if $self->model;
     push @cmd, '--permission-mode', $run{permission_mode} // 'acceptEdits';
     my $tools = $run{tools} // $self->allowed_tools;
@@ -127,6 +124,87 @@ sub command ( $self, %run ) {
     push @cmd, '--json-schema',          Mojo::JSON::encode_json( $run{schema} ) if $run{schema};
     push @cmd, '--append-system-prompt', $run{system}                            if $run{system};
     return \@cmd;
+}
+
+=method as_account
+
+C<(@cmd)>.  The argument list that runs C<@cmd> as L</run_as>, through sudo as
+L</run_as> describes, or C<@cmd> itself when there is no such account.
+
+=cut
+
+sub as_account ( $self, @cmd ) {
+    my $account = $self->run_as // return @cmd;
+    my @kept    = sort { $a cmp $b } grep { $_ ne 'CLAUDE_CODE_OAUTH_TOKEN' } keys %{ $self->env };
+    return ( qw{sudo -n -H -u}, $account, ( @kept ? '--preserve-env=' . join( q{,}, @kept ) : () ), qw{-- /usr/bin/env}, 'PATH=' . ( $ENV{PATH} // q{} ), @cmd );
+}
+
+=method cli
+
+C<(@args)>.  Runs C<claude @args> as L</as_account> does, for a command of
+claude that is not a session, such as C<plugin list>, and returns what it
+printed.  Dies with what it printed on its standard error if it fails.
+
+=cut
+
+sub cli ( $self, @args ) { return $self->as_account_run( $self->bin, @args ) }
+
+=method as_account_run
+
+C<(@cmd)>.  Runs C<@cmd> as L</as_account> does, with the C<env> of claude and
+none of C<@WITHHELD>, and returns what it printed.  Dies with what it printed
+on its standard error if it fails.
+
+=cut
+
+sub as_account_run ( $self, @cmd ) {
+    local %ENV = ( %ENV, %{ $self->env } );
+    delete @ENV{@WITHHELD};
+    my ( $out, $err ) = ( q{}, q{} );
+    my $ok = eval { IPC::Run::run( [ $self->as_account(@cmd) ], '<', \undef, '>', \$out, '2>', \$err, IPC::Run::timeout(600) ) };
+    die "@cmd: " . ( $err ne q{} ? $err : $@ || 'failed' ) . "\n" if !$ok;
+    return $out;
+}
+
+=method plugins
+
+The plugins that claude has installed for its account, each a hash with
+C<id>, such as C<perl-slop@troglodyne-marketplace>, C<version>, the version
+that is installed, and C<latest>, the version that its marketplace offers, or
+undef when the marketplace does not say.  It first refreshes the
+marketplaces, as C<claude plugin marketplace update> does.  The list of
+installed plugins does not say which version is the newest, and the manifest
+of each marketplace does.
+
+=cut
+
+sub plugins ($self) {
+    $self->cli(qw{plugin marketplace update});
+    my $installed = Mojo::JSON::decode_json( $self->cli(qw{plugin list --json}) );
+    my $known     = Mojo::JSON::decode_json( $self->as_account_run( qw{/bin/sh -c}, 'cat "$HOME/.claude/plugins/known_marketplaces.json"' ) );
+    my %offered;
+    for my $market ( sort keys %$known ) {
+        my $dir      = $known->{$market}{installLocation}                                                                         // next;
+        my $manifest = eval { Mojo::JSON::decode_json( $self->as_account_run( 'cat', "$dir/.claude-plugin/marketplace.json" ) ) } // next;
+        $offered{"$_->{name}\@$market"} = $_->{version} for grep { ref $_ eq 'HASH' && defined $_->{name} } @{ $manifest->{plugins} // [] };
+    }
+    return [ map { { id => $_->{id}, version => $_->{version}, latest => $offered{ $_->{id} } } } sort { $a->{id} cmp $b->{id} } @$installed ];
+}
+
+=func is_behind
+
+C<($plugin)>, an entry of L</plugins>.  True when its marketplace offers a
+newer version than the one that is installed.  The versions compare as
+versions, so 0.10 is newer than 0.9.  A version that is no version string is
+behind when it differs from the one offered.
+
+=cut
+
+sub is_behind ($plugin) {
+    my ( $have, $offered ) = @$plugin{qw{version latest}};
+    return 0 if !defined $offered || !defined $have;
+    my $newer = eval { version->declare($offered) > version->declare($have) };
+    return defined $newer ? ( $newer ? 1 : 0 ) : ( $offered ne $have ? 1 : 0 );
 }
 
 =func rtk_too
