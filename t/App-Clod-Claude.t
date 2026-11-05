@@ -24,7 +24,7 @@ subtest command => sub {
         $cmd,
         [
             qw{test-claude -p --output-format stream-json --verbose --model test-model --permission-mode default},
-            '--allowedTools', 'Read,Bash(git log:*)',
+            '--allowedTools', 'Read,Bash(git log:*),Bash(rtk git log:*)',
             qw{--add-dir /bogus/a --add-dir /bogus/b},
             '--json-schema', '{"type":"object"}',
         ],
@@ -33,6 +33,13 @@ subtest command => sub {
     my $plain = App::Clod::Claude->new( bin => 'test-claude' )->command( tools => [] );
     ok( !( grep { $_ eq '--allowedTools' || $_ eq '--model' } @$plain ), 'no tools and no model add no flags' );
     is( ( grep { $_ eq 'acceptEdits' } @$plain )[0], 'acceptEdits', 'the permission mode defaults to acceptEdits' );
+
+    # The rtk hook rewrites a command before the permission check.
+    is(
+        [ map { App::Clod::Claude::rtk_too($_) } 'Read', 'Bash(prove:*)', 'Bash(*/bin/provision *)', 'Bash(rtk git:*)' ],
+        [ 'Read', 'Bash(prove:*)', 'Bash(rtk prove:*)', 'Bash(*/bin/provision *)', 'Bash(rtk */bin/provision *)', 'Bash(rtk git:*)' ],
+        'each Bash rule also allows the command that rtk makes of it, and other rules stay as they are'
+    );
 };
 
 subtest run => sub {
@@ -86,9 +93,9 @@ subtest 'run, as another account' => sub {
     is( $outcome->{ok},                              1,            'a run through sudo finds claude on the PATH of the worker, which secure_path replaces' ) or diag $outcome->{stderr};
     is( Mojo::File->new("$tmp/sudo-account")->slurp, 'test-agent', 'and runs as the account of run_as' );
     my %seen = map { $_ => 1 } split /\n/, Mojo::File->new($names)->slurp;
-    ok( $seen{CLAUDE_CODE_OAUTH_TOKEN}, 'claude gets its token through the reset environment of sudo' );
-    ok( $seen{FAKE_CLAUDE_STREAM},      'and the extra environment' );
-    ok( !$seen{GH_TOKEN},               'but not the GitHub token, even when the extra environment names it' );
+    ok( !$seen{CLAUDE_CODE_OAUTH_TOKEN}, 'the token of the worker does not go through sudo, which would log it' );
+    ok( $seen{FAKE_CLAUDE_STREAM},       'and the extra environment' );
+    ok( !$seen{GH_TOKEN},                'but not the GitHub token, even when the extra environment names it' );
     my ( $cwd, $prompt ) = recorded();
     is( $cwd,    "$tmp",       'in the directory that it was given' );
     is( $prompt, 'the prompt', 'with the prompt on standard input' );

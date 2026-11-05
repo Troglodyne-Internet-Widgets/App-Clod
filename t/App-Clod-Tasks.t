@@ -572,7 +572,7 @@ subtest 'tool spokes and the spoke prompt' => sub {
     is( $told->{flags}{'--add-dir'},              [$dir],                                 'it gets a worktree of the tool spoke of its own' );
     like( $told->{prompt}, qr/-\ Test-Org\/two\ in\ \Q$dir\E,\ at\ main\n/, 'and its prompt says where, at which branch' );
     is( $head_of->(), { $dir => $main }, 'with no earlier job in the tool spoke, the worktree is at its default branch' );
-    like( $told->{flags}{'--allowedTools'}[0], qr/,Bash\(bin\/provision:\*\)\z/, 'and the extra tools are allowed, after the configured ones' );
+    like( $told->{flags}{'--allowedTools'}[0], qr/,Bash\(bin\/provision:\*\),Bash\(rtk\ bin\/provision:\*\)\z/, 'and the extra tools are allowed, after the configured ones, with the rule for what rtk makes of each' );
     ok( !-e $tmp->child( 'workspace', 'work', $fix->{id} ), 'every worktree of the run is gone afterwards' );
     is( [ grep { m{/work/} } split /\n/, git( '--git-dir', $tools, 'worktree', 'list' ) ], [], 'and the bare clone of the tool spoke has no worktree left' );
 

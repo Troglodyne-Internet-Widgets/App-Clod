@@ -7,8 +7,7 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
-use IPC::Run   ();
-use List::Util ();
+use IPC::Run ();
 use Mojo::JSON();
 use Time::HiRes qw{time};
 
@@ -26,7 +25,7 @@ C<GITHUB_TOKEN>, the token of the bot.  A spoke run commits, and the job pushes
 the branch and opens the pull request with the token itself.  With the token in
 its environment, an agent that may run C<git> or C<perl> could push, or call
 the API, wherever the bot can.  C<CLAUDE_CODE_OAUTH_TOKEN> stays, because
-claude needs it.  C<run> takes them out after it adds L</env>, so C<env> cannot
+claude needs it, unless L</run_as> is set.  C<run> takes them out after it adds L</env>, so C<env> cannot
 give them back.
 
 That keeps the token out of the environment of claude, but not out of its
@@ -87,9 +86,14 @@ cannot reach the token.  sudo needs a rule such as:
 
     worker ALL=(agent) NOPASSWD:SETENV: ALL
 
-C<SETENV> is for C<--preserve-env>, which passes C<CLAUDE_CODE_OAUTH_TOKEN> and
-the names in L</env> through the environment.  The argument list is no place
-for them, because C<ps> shows it to every account.  C<PATH> goes to
+C<SETENV> is for C<--preserve-env>, which passes the names in L</env> through
+the environment.  The argument list is no place for them, because C<ps> shows
+it to every account.
+
+The account brings its own C<CLAUDE_CODE_OAUTH_TOKEN>, for example from a file
+that only it can read, through a L</bin> that loads it and runs claude.  The
+token of the worker does not go through sudo, because sudo logs each variable
+that C<--preserve-env> passes, with its value, to the journal.  C<PATH> goes to
 F</usr/bin/env> as an argument instead, because the C<secure_path> of sudo
 replaces it otherwise, and the git hooks of a spoke find their tools on it.
 C<-H> makes the C<HOME> of the account the C<HOME> of claude, so its settings
@@ -112,17 +116,33 @@ read it.
 sub command ( $self, %run ) {
     my @cmd = ( $self->bin, qw{-p --output-format stream-json --verbose} );
     if ( my $account = $self->run_as ) {
-        my @kept = sort { $a cmp $b } List::Util::uniq( 'CLAUDE_CODE_OAUTH_TOKEN', keys %{ $self->env } );
-        unshift @cmd, qw{sudo -n -H -u}, $account, '--preserve-env=' . join( q{,}, @kept ), qw{-- /usr/bin/env}, 'PATH=' . ( $ENV{PATH} // q{} );
+        my @kept = sort { $a cmp $b } grep { $_ ne 'CLAUDE_CODE_OAUTH_TOKEN' } keys %{ $self->env };
+        unshift @cmd, qw{sudo -n -H -u}, $account, ( @kept ? '--preserve-env=' . join( q{,}, @kept ) : () ), qw{-- /usr/bin/env}, 'PATH=' . ( $ENV{PATH} // q{} );
     }
     push @cmd, '--model', $self->model if $self->model;
     push @cmd, '--permission-mode', $run{permission_mode} // 'acceptEdits';
     my $tools = $run{tools} // $self->allowed_tools;
-    push @cmd, '--allowedTools',         join( q{,}, @$tools ) if @$tools;
+    push @cmd, '--allowedTools',         join( q{,}, map { rtk_too($_) } @$tools ) if @$tools;
     push @cmd, '--add-dir',              $_ for @{ $run{add_dirs} // [] };
     push @cmd, '--json-schema',          Mojo::JSON::encode_json( $run{schema} ) if $run{schema};
     push @cmd, '--append-system-prompt', $run{system}                            if $run{system};
     return \@cmd;
+}
+
+=func rtk_too
+
+C<($rule)>.  The permission rule, and for a rule of the C<Bash> tool the same
+rule for the command that rtk makes of it.  The rtk hook rewrites C<git add -A>
+to C<rtk git add -A> before the permission check, so C<Bash(git:*)> alone does
+not allow it, and a run with no person to ask is refused.  A rule for rtk
+itself comes back alone.
+
+=cut
+
+sub rtk_too ($rule) {
+    my ($command) = $rule =~ m/\ABash[(](.+)[)]\z/;
+    return $rule if !defined $command || $command =~ m/\Artk\b/;
+    return ( $rule, "Bash(rtk $command)" );
 }
 
 =method run
