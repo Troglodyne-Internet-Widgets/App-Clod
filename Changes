@@ -1,6 +1,12 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Keep the work of a fix or an answer to a review whose push fails.
+      The commits stay in the bare clone under refs/clod/kept/<job>, and
+      the answer of the run in the notes of the job, so a retry of the job
+      pushes them and opens the pull request or replies, with no second
+      claude run.  An answer to a review drops what it kept if the branch
+      moved since, so that its push does not undo someone else's commits.
     - Try again when GitHub fails for a moment.  A git clone, fetch or push
       that ends in a server error or a lost connection gets up to four
       tries, five, thirty and a hundred and twenty seconds apart, and so

@@ -457,6 +457,78 @@ subtest spoke_fix => sub {
     $minion->reset( { all => 1 } );
 };
 
+subtest 'a push that fails keeps the work for a retry' => sub {
+    %state = ();
+    @calls = ();
+    my $bare   = $remote->child('Test-Org/one.git')->to_string;
+    my $mirror = App::Clod::Tasks::spoke( $app->clod_config, 'Test-Org/one' )->mirror->to_string;
+    my $mock   = Test::MockModule->new('App::Clod::Spoke');
+    my $push   = $mock->original('push_branch');
+    my $fails  = 0;
+    $mock->redefine( push_branch => sub ( $self, @args ) { die "git push: remote: Internal Server Error\n" if $fails-- > 0; return $push->( $self, @args ) } );
+    my $is_kept = sub ($id) {
+        my $sha = eval { git( '--git-dir', $mirror, qw{rev-parse --verify --quiet}, "refs/clod/kept/$id" ) };
+        return $sha;
+    };
+
+    # Runs the job again, as the retry button does, with a claude that would
+    # commit nothing, and says whether claude ran.
+    my $retry = sub ($id) {
+        answer( { title => 'A second run', summary => 'Nothing.', replies => [] } );
+        unlink "$tmp/kept-record";
+        $fake{FAKE_CLAUDE_RECORD} = "$tmp/kept-record";
+        $minion->job($id)->retry;
+        my $info = run_id($id);
+        delete $fake{FAKE_CLAUDE_RECORD};
+        return ( $info, -e "$tmp/kept-record" ? 1 : 0 );
+    };
+
+    $fails = 1;
+    answer( { title => 'The first title', summary => 'The first run.' }, commit => 1 );
+    my $id     = $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/one', instructions => 'do it' } ] );
+    my $failed = run_id($id);
+    is( $failed->{state}, 'failed', 'a fix whose push fails fails' );
+    like( $failed->{result}, qr/Internal\ Server\ Error/, 'with the error of the push' );
+    my $kept = $failed->{notes}{kept} // {};
+    is( $is_kept->($id),  $kept->{sha}, 'and keeps its commit in the bare clone' );
+    is( calls_of('pull'), [],           'and opens no pull request' );
+
+    my ( $fixed, $ran ) = $retry->($id);
+    is( $fixed->{state},                                                  'finished',        'a retry of it finishes' ) or diag Mojo::Util::dumper $fixed->{result};
+    is( $ran,                                                             0,                 'without another claude run' );
+    is( calls_of('pull')->[0][2]{title},                                  'The first title', 'and opens the pull request of the first run' );
+    is( git( '--git-dir', $bare, 'rev-parse', $fixed->{result}{branch} ), $kept->{sha},      'with the commit that it kept' );
+    is( [ $fixed->{notes}{kept}, $is_kept->($id) ],                       [ undef, undef ],  'and then keeps it no more' );
+
+    # An answer to a review, on a branch that nobody else pushes to.
+    git( q{--git-dir}, $bare, qw{branch clod/3-kept main} );
+    $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/3-kept', sha => git( q{--git-dir}, $bare, qw{rev-parse clod/3-kept} ), repo => { full_name => 'Test-Org/one' } }, base => { ref => 'main' }, html_url => 'https://test.test/pull/13' };
+    $state{review_comments} = [ { id => 21, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'rename this' } ];
+    my $pr      = { %item, kind => 'address_review', is_pr => 1, number => 13 };
+    my $address = sub {
+        $fails = 1;
+        answer( { summary => 'Renamed.', replies => [ { id => 21, body => 'Renamed it.' } ] }, commit => 1 );
+        my $aid = $minion->enqueue( spoke_address => [ { item => $pr, repo => 'Test-Org/one' } ] );
+        return ( $aid, run_id($aid) );
+    };
+    @calls = ();
+    my ( $aid, $afailed ) = $address->();
+    is( [ $afailed->{state}, calls_of('reply') ], [ 'failed', [] ], 'an answer to a review whose push fails fails, and replies to nobody' );
+    my ( $answered, $again ) = $retry->($aid);
+    is( [ $answered->{state}, $again ],                       [ 'finished', 0 ],            'a retry of it finishes, without another claude run' ) or diag Mojo::Util::dumper $answered->{result};
+    is( [ map { $_->[2]{body} } @{ calls_of('reply') } ],     ['Renamed it.'],              'and posts the replies of the first run' );
+    is( git( '--git-dir', $bare, qw{rev-parse clod/3-kept} ), $afailed->{notes}{kept}{sha}, 'after it pushed the commit that it kept' );
+
+    # Someone pushed to the branch between the two tries.
+    $state{pull}{head}{sha} = git( q{--git-dir}, $bare, qw{rev-parse clod/3-kept} );
+    my ($bid) = $address->();
+    $state{pull}{head}{sha} = 'a-commit-of-someone-else';
+    my ( undef, $reran ) = $retry->($bid);
+    is( $reran,           1,     'but when the branch moved since, the retry runs claude again, and does not push over the new commit' );
+    is( $is_kept->($bid), undef, 'and drops what it kept' );
+    $minion->reset( { all => 1 } );
+};
+
 subtest retry_after => sub {
     my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('reply') } );
     my @got = App::Clod::Tasks::retry_after( $job, 300 );
