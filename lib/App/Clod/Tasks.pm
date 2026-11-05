@@ -31,25 +31,26 @@ our %KIND = (
 );
 
 our %TASKS = (
-    inbox_poll     => \&inbox_poll,
-    triage         => \&triage,
-    spoke_fix      => \&spoke_fix,
-    spoke_review   => \&spoke_review,
-    spoke_address  => \&spoke_address,
-    sort_review    => \&sort_review,
-    reply          => \&reply,
-    report         => \&report,
-    kickback       => \&kickback,
-    harness_scan   => \&harness_scan,
-    assigned_sweep => \&assigned_sweep,
-    spoke_sweep    => \&spoke_sweep,
-    create_repo    => \&create_repo,
-    file_issues    => \&file_issues,
-    harness_fix    => \&harness_fix,
-    self_check     => \&self_check,
-    self_update    => \&self_update,
-    plugin_update  => \&plugin_update,
-    deps_upgrade   => \&deps_upgrade,
+    inbox_poll         => \&inbox_poll,
+    triage             => \&triage,
+    spoke_fix          => \&spoke_fix,
+    spoke_review       => \&spoke_review,
+    spoke_address      => \&spoke_address,
+    sort_review        => \&sort_review,
+    reply              => \&reply,
+    report             => \&report,
+    kickback           => \&kickback,
+    harness_scan       => \&harness_scan,
+    assigned_sweep     => \&assigned_sweep,
+    spoke_sweep        => \&spoke_sweep,
+    refresh_references => \&refresh_references,
+    create_repo        => \&create_repo,
+    file_issues        => \&file_issues,
+    harness_fix        => \&harness_fix,
+    self_check         => \&self_check,
+    self_update        => \&self_update,
+    plugin_update      => \&plugin_update,
+    deps_upgrade       => \&deps_upgrade,
 );
 
 # Each Minion schedule: its cron line and its task.
@@ -621,17 +622,25 @@ sub default_branch ( $gh, $repo ) { return $gh->repo($repo)->{default_branch} }
 
 =func prepare_hub
 
-C<($config, $gh, \@spokes)>.  Refreshes the reference worktree of every spoke
-and writes the hub CLAUDE.md.  Returns the hub directory and a hash of
-repository to reference worktree.
+C<($config, $gh, \@spokes, @fresh)>.  Makes sure that each spoke has a
+reference worktree, writes the hub CLAUDE.md, and returns the hub directory and
+a hash of repository to reference worktree.  It refreshes the reference of each
+spoke of C<@fresh>, the repository of the request, and of a spoke that has no
+reference yet.  The others are as L</refresh_references> left them, at most a
+sweep old.
+
+Triage reads every spoke to judge which ones a request needs, and does not
+change any of them, so a reference a quarter of an hour old is good enough.  A
+spoke run fetches its own worktree, so no change starts from it.
 
 =cut
 
-# Every spoke at its default branch, and the hub workspace that describes them.
-sub prepare_hub ( $config, $gh, $spokes ) {
+sub prepare_hub ( $config, $gh, $spokes, @fresh ) {
+    my %fresh = map { $_ => 1 } grep { defined } @fresh;
     my %ref;
     for my $repo (@$spokes) {
-        $ref{$repo} = spoke( $config, $repo )->refresh_reference( default_branch( $gh, $repo ) );
+        my $spoke = spoke( $config, $repo );
+        $ref{$repo} = $fresh{$repo} || !-d $spoke->reference ? $spoke->refresh_reference( default_branch( $gh, $repo ) ) : $spoke->reference;
     }
     my $hub = Mojo::File->new( $config->{workspace}, 'hub' )->make_path;
     my $md  = App::Clod::Triage::hub_claude_md(
@@ -792,7 +801,7 @@ C<follow_up> has no chain and no C<report>: filing the issues settles it.
 sub triage ( $job, $config, $item ) {
     my $gh     = github($config);
     my $spokes = spokes( $job->minion, $config );
-    my ( $hub, $ref ) = prepare_hub( $config, $gh, $spokes );
+    my ( $hub, $ref ) = prepare_hub( $config, $gh, $spokes, $item->{repo} );
     my %create  = creation( $job->minion, $config, $item );
     my $written = %create ? written( $gh, $item ) : [];
     my %vars    = (
@@ -1582,7 +1591,7 @@ its own.  A mention on the bot's own pull request goes to L</sort_review>.
 
 sub reply ( $job, $config, $item ) {
     my $gh = github($config);
-    my ( $hub, $ref ) = prepare_hub( $config, $gh, spokes( $job->minion, $config ) );
+    my ( $hub, $ref ) = prepare_hub( $config, $gh, spokes( $job->minion, $config ), $item->{repo} );
     my $outcome = run_claude(
         $job, $config,
         dir             => $hub,
@@ -2181,6 +2190,28 @@ sub plugin_update ( $job, $config ) {
     return $job->finish( { updated => \@updated } );
 }
 
+=func refresh_references
+
+After each L</spoke_sweep>.  Refreshes the reference worktree of every spoke,
+one after another, which L</prepare_hub> reads.  A spoke that fails does not
+stop the rest.  Its result has C<refreshed>, the count, and C<errors>, a hash of
+repository to error.
+
+=cut
+
+sub refresh_references ( $job, $config ) {
+    prune_history( $job->minion, q{refresh_references} );
+    my $gh = github($config);
+    my ( $refreshed, %errors ) = (0);
+    for my $repo ( @{ spokes( $job->minion, $config ) } ) {
+        if ( eval { spoke( $config, $repo )->refresh_reference( default_branch( $gh, $repo ) ); 1 } ) {
+            $refreshed++;
+        }
+        else { $errors{$repo} = ( split m{\n}, $@ )[0] }
+    }
+    return $job->finish( { checked_at => time, refreshed => $refreshed, errors => \%errors } );
+}
+
 =func assigned_sweep
 
 Every fifteen minutes.  Lists the open issues and pull requests assigned to the
@@ -2202,7 +2233,8 @@ sub assigned_sweep ( $job, $config ) {
 
 =func spoke_sweep
 
-Every fifteen minutes, also when C<spoke_orgs> is empty.  Lists the public
+Every fifteen minutes, also when C<spoke_orgs> is empty.  When it is done, it
+queues L</refresh_references>, unless one waits or runs already.  Lists the public
 repositories of each organization of C<spoke_orgs>, without forks and archived
 ones.  Its result has C<started_at>, the time before the first listing, so
 that L</made_repos> can tell whether it saw a repository made since.  If
@@ -2246,7 +2278,9 @@ sub spoke_sweep ( $job, $config ) {
         }
         $by_org{$org} = [ sort map { $_->{full_name} } grep { !$_->{fork} && !$_->{archived} } @$list ];
     }
-    return $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, dropped => \%dropped, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
+    $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, dropped => \%dropped, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
+    $minion->enqueue('refresh_references') if !$minion->jobs( { tasks => ['refresh_references'], states => [qw{inactive active}] } )->total;
+    return;
 }
 
 =head1 SYNOPSIS

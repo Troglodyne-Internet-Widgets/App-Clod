@@ -7,6 +7,7 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
+use Fcntl      qw{:flock};
 use IPC::Run   ();
 use List::Util ();
 use Mojo::File ();
@@ -122,18 +123,56 @@ sub transient ($error) {
 =method fetch
 
 Clones the spoke if there is no bare clone yet, then fetches.  Returns the bare
-clone.
+clone.  It holds L</locked> while it works, so two jobs never clone or fetch
+one bare clone at once.
+
+=cut
+
+sub fetch ($self) {
+    return $self->locked( sub { $self->fetch_unlocked } );
+}
+
+=method locked
+
+C<($code)>.  Runs C<$code> and returns what it returns, while it holds an
+exclusive lock of the bare clone: a lock of F<E<lt>bare cloneE<gt>.lock> beside
+it, which every process that works on the clone takes.  A second job that
+wants it waits until the first is done.  Without it, a job could see the
+directory of a clone that another job had only begun, and fetch no
+remote-tracking refs, and two fetches could refuse each other's ref locks.
+
+A process must not take it twice, because the second lock waits for the first.
+So L</fetch> and L</refresh_reference> take it, and call
+L</fetch_unlocked>, which does not.
+
+=cut
+
+sub locked ( $self, $code ) {
+    my $mirror = $self->mirror;
+    my $file   = $mirror->dirname->make_path->child( $mirror->basename . '.lock' );
+    open my $lock, '>>', "$file" or die "Cannot open $file: $!\n";
+    flock $lock, LOCK_EX or die "Cannot lock $file: $!\n";
+    my @out = $code->();
+    close $lock or die "Cannot close $file: $!\n";
+    return wantarray ? @out : $out[0];
+}
+
+=method fetch_unlocked
+
+What L</fetch> does, for a caller that holds L</locked> already.  It sets the
+fetch refspec on every fetch, not only after the clone, so a clone whose first
+fetch died gets its remote-tracking refs with the next one.
 
 =cut
 
 # A bare clone, with remote-tracking refs so that worktrees can start from origin.
-sub fetch ($self) {
+sub fetch_unlocked ($self) {
     my $mirror = $self->mirror;
     if ( !-d $mirror ) {
         $mirror->dirname->make_path;
         $self->git_remote( 'clone', '--bare', $self->github_web . '/' . $self->repo . '.git', "$mirror" );
-        $self->git( q{-C}, "$mirror", qw{config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*} );
     }
+    $self->git( q{-C}, "$mirror", qw{config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*} );
     $self->git( q{-C}, "$mirror", qw{config core.sharedRepository group} );
     $self->git_remote( q{-C}, "$mirror", qw{fetch --prune origin} );
     return $mirror;
@@ -161,19 +200,26 @@ sub install_hooks ( $self, $tree ) {
 =method refresh_reference
 
 C<($branch)>.  Fetches, then resets the reference worktree to
-C<origin/$branch>.  Returns it.
+C<origin/$branch>, under L</locked>.  Returns it.  A reference whose directory
+is gone is made again, after git forgets the worktree that it still has
+registered there, which it would otherwise refuse to add a second time.
 
 =cut
 
 sub refresh_reference ( $self, $branch ) {
-    my $mirror = $self->fetch;
-    my $ref    = $self->reference;
-    if ( !-d $ref ) {
-        $ref->dirname->make_path;
-        $self->git( q{-C}, "$mirror", qw{worktree add --detach}, "$ref", "origin/$branch" );
-    }
-    $self->git( q{-C}, "$ref", 'reset', '--hard', "origin/$branch" );
-    return $ref;
+    return $self->locked(
+        sub {
+            my $mirror = $self->fetch_unlocked;
+            my $ref    = $self->reference;
+            if ( !-d $ref ) {
+                $ref->dirname->make_path;
+                $self->git( q{-C}, "$mirror", qw{worktree prune} );
+                $self->git( q{-C}, "$mirror", qw{worktree add --detach}, "$ref", "origin/$branch" );
+            }
+            $self->git( q{-C}, "$ref", 'reset', '--hard', "origin/$branch" );
+            return $ref;
+        }
+    );
 }
 
 =method worktree

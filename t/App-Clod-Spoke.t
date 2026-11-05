@@ -150,6 +150,33 @@ subtest 'a push when GitHub fails for a moment' => sub {
     $spoke->remove_worktree($tree);
 };
 
+subtest 'one process at a time works on a bare clone' => sub {
+    $spoke->fetch;
+
+    # A child that fetches, given three seconds, says how it ended: 0 when the
+    # fetch went through, 9 when it was still waiting for the lock.
+    my $fetch_in_child = sub {
+        my $pid = fork // die "fork: $!";
+        if ( !$pid ) {
+            local $SIG{ALRM} = sub { POSIX::_exit(9) };
+            Time::HiRes::alarm(3);
+            POSIX::_exit( eval { $spoke->fetch; 1 } ? 0 : 1 );
+        }
+        waitpid $pid, 0;
+        return $? >> 8;
+    };
+    is( $spoke->locked($fetch_in_child), 9, 'a fetch waits while another process holds the lock of the clone' );
+    is( $fetch_in_child->(),             0, 'and goes through when it is free' );
+
+    # A clone that died before its refspec was set has no remote-tracking refs.
+    my $broken = App::Clod::Spoke->new( repo => 'Test-Org/one', workspace => "$tmp/ws-broken", github_web => "file://$tmp/remote", token => 'test-token' );
+    $broken->mirror->dirname->make_path;
+    git( qw{clone --quiet --bare}, "$bare", $broken->mirror->to_string );
+    $broken->fetch;
+    my $refs = git( '--git-dir', $broken->mirror->to_string, qw{for-each-ref --format=%(refname) refs/remotes/origin/} );
+    like( $refs, qr{^refs/remotes/origin/main$}m, 'a fetch gives such a clone its remote-tracking refs' );
+};
+
 subtest git => sub {
     like( dies { $spoke->git(qw{rev-parse --verify no-such-ref}) }, qr/\Agit\ rev-parse\ --verify\ no-such-ref:\ fatal:\ [^\n]+\n\z/, 'a failing git command dies with its error, on one line, with no file or line' );
     ok( !( grep { m{test-token} } git( '--git-dir', $spoke->mirror->to_string, 'config', '--list' ) ), 'the token is not in the clone\'s configuration' );
