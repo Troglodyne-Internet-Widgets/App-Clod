@@ -101,6 +101,24 @@ subtest 'run, as another account' => sub {
     is( $prompt, 'the prompt', 'with the prompt on standard input' );
 };
 
+# In -p a call that the permissions do not allow is refused, and the result
+# says which.
+subtest 'run, with refused calls' => sub {
+    my $stream = Mojo::File->new("$tmp/stream-denied.jsonl");
+    my @denied = (
+        { tool_name => 'Bash',     tool_use_id => 'a', tool_input => { command   => 'rtk git add -A', description => 'Stage' } },
+        { tool_name => 'Write',    tool_use_id => 'b', tool_input => { file_path => '/bogus/.git/hooks/pre-commit' } },
+        { tool_name => 'WebFetch', tool_use_id => 'c', tool_input => {} },
+    );
+    $stream->spew( Mojo::JSON::encode_json( { type => 'result', is_error => Mojo::JSON::false, result => 'done', structured_output => {}, total_cost_usd => 0.1, usage => {}, permission_denials => \@denied } ) . "\n" );
+    my $outcome = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => "$stream" } )->run( dir => "$tmp", prompt => 'x' );
+    is( $outcome->{ok},     1,                                                                             'a run with refused calls can still end well' );
+    is( $outcome->{denied}, [ 'Bash(rtk git add -A)', 'Write(/bogus/.git/hooks/pre-commit)', 'WebFetch' ], 'and it says each refused call, as the rule that would allow it' );
+
+    my $clean = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string } )->run( dir => "$tmp", prompt => 'x' );
+    is( $clean->{denied}, [], 'a run with none refused says none' );
+};
+
 subtest 'run, with no newline after the last event' => sub {
     my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-unterminated.jsonl' )->to_string } );
     my @seen;
