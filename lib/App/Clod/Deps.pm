@@ -13,6 +13,10 @@ our @DZIL     = ('dzil');
 our @CPM      = ('cpm');
 our @OUTDATED = ('cpan-outdated');
 
+# The tools of the agent that every spoke needs, beside the policies of the
+# critic profiles of the standards.  App::Clod::Config lets a run use them.
+our @TOOLS = qw{Perl::Critic Perl::Tidy Devel::NYTProf};
+
 =func listdeps
 
 C<($checkout)>.  The modules that the distribution in C<$checkout> needs, as
@@ -27,15 +31,49 @@ sub listdeps ($checkout) {
 =func install
 
 C<($lib, @modules)>.  Installs each module of C<@modules> into the local lib
-C<$lib>, with cpm and no tests, whether or not the perl has it already.  A
+C<$lib>, with cpm and no tests, whether or not the perl has it already.  It
+installs with C<umask 0027>, so the group of the lib may read what it installs
+and not change it.  A
 module can carry a version range in the syntax of cpm, such as C<Foo~1.2>.
 
 =cut
 
 sub install ( $lib, @modules ) {
     return if !@modules;
-    run( {}, @CPM, qw{install --without-test -L}, "$lib", @modules );
+    my $umask = umask oct '0027';
+    my $ok    = eval { run( {}, @CPM, qw{install --without-test -L}, "$lib", @modules ); 1 };
+    umask $umask;
+    die $@ if !$ok;
     return;
+}
+
+=func policies
+
+C<(@profiles)>, the texts of F<.perlcriticrc> files.  The module of each policy
+that a profile turns on, sorted and once each: a section C<[X]> names
+C<Perl::Critic::Policy::X>, a short name included, and a section C<[-X]> turns
+X off.
+
+=cut
+
+sub policies (@profiles) {
+    my %on       = map { ( "Perl::Critic::Policy::$_" => 1 ) } grep { !m{\A-} } map { m{^\[([^\]\s]+)\]\s*$}mg } @profiles;
+    my @policies = sort keys %on;
+    return @policies;
+}
+
+=func missing
+
+C<($lib, @modules)>.  The modules of C<@modules> that the local lib C<$lib>
+does not have a file of.
+
+=cut
+
+sub missing ( $lib, @modules ) {
+    return grep {
+        my $file = "$lib/lib/perl5/" . (s{::}{/}gr) . '.pm';
+        !-e $file
+    } @modules;
 }
 
 =func outdated

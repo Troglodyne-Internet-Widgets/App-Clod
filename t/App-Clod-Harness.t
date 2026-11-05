@@ -116,6 +116,12 @@ subtest update => sub {
     is( [ map { @{ $_->{changes} } } @$again ], [], 'and a second update changes nothing' );
 };
 
+subtest critic_profiles => sub {
+    my @profiles = App::Clod::Harness::critic_profiles( \%settings );
+    is( scalar @profiles, 1, 'the standards have one critic profile' );
+    like( $profiles[0], qr/^\[ProhibitPipeOpen\]$/m, 'and it is the one of their templates' );
+};
+
 subtest marketplace_check => sub {
     my $plugin = '{"version":"0.11.0"}';
     my $behind = App::Clod::Harness::marketplace_check( $plugin, '{"plugins":[{"name":"test-plugin","version":"0.10.0"}]}', 'test-plugin' );

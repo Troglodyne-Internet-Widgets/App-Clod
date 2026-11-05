@@ -1207,6 +1207,42 @@ subtest 'the references that triage reads' => sub {
     $minion->reset( { all => 1 } );
 };
 
+subtest 'the agent lib' => sub {
+    %state = ();
+    my $config = $app->clod_config;
+    is(
+        [ App::Clod::Tasks::agent_tools($config) ],
+        [qw{Perl::Critic Perl::Tidy Devel::NYTProf Perl::Critic::Policy::ProhibitPipeOpen Perl::Critic::Policy::Variables::RequireNoAutovivification}],
+        'the agent needs its tools, and each policy of the critic profiles of the standards'
+    );
+
+    my ( @did, @restarted );
+    my $deps = Test::MockModule->new('App::Clod::Deps');
+    $deps->redefine(
+        missing => sub ( $lib, @modules ) {
+            return grep { m{Autovivification} } @modules;
+        }
+    );
+    $deps->redefine( outdated => sub ($lib) { return [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] } );
+    $deps->redefine( install  => sub ( $lib, @modules ) { push @did, "install $lib @modules"; return } );
+    $deps->redefine( upgrade  => sub ($lib) { push @did, "upgrade $lib";                      return $lib =~ m{agent} ? [ { module => 'Perl::Tidy' } ] : [] } );
+    my $tasks = Test::MockModule->new('App::Clod::Tasks');
+    $tasks->redefine( restart_unit => sub ($unit) { push @restarted, $unit; return } );
+    my $claude = Test::MockModule->new('App::Clod::Claude');
+    $claude->redefine( plugins => sub ($) { [] } );
+
+    $config->{agent_lib} = '/bogus/agent-perl5';
+    my $check = run_job('self_check');
+    is( $check->{result}{agent_deps}, { missing => ['Perl::Critic::Policy::Variables::RequireNoAutovivification'], outdated => [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] }, 'the check says what the agent lib lacks, and what has a newer release' );
+
+    my $upgrade = run_job('deps_upgrade');
+    is( \@did,                                  [ 'install /bogus/agent-perl5 Perl::Critic::Policy::Variables::RequireNoAutovivification', 'upgrade /bogus/agent-perl5' ], 'an upgrade installs what the agent lib lacks, and upgrades what is outdated' );
+    is( [ $upgrade->{state}, \@restarted ],     [ 'finished',                                                                              [] ],                           'and restarts nothing, because the next claude run loads them' );
+    is( App::Clod::Tasks::claude($config)->lib, '/bogus/agent-perl5', 'and claude runs with the agent lib' );
+    delete $config->{agent_lib};
+    $minion->reset( { all => 1 } );
+};
+
 subtest harness_scan => sub {
     %state = ();
     $state{files} = { 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.10.0"}]}' };

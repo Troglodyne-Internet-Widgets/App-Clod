@@ -75,6 +75,7 @@ our %SCHEMA = (
         create_repos   => { type => 'boolean', default  => 0 },
         restart_units  => list_of( { type => 'string', pattern => '\A[\w@.:-]+[.]service\z' } ),
         local_lib      => { type => 'string', nullable => 1, default => undef },
+        agent_lib      => { type => 'string', nullable => 1, default => undef },
     },
 );
 
@@ -327,6 +328,21 @@ With one, L<App::Clod::Deps> keeps every module of the bot there:
 L<App::Clod::Tasks/self_update> installs what a new version needs, and the
 dashboard can upgrade what has a newer release, with no sudo.  The clod recipe
 of trog-provisioner makes it, and fills this in.
+
+=item agent_lib
+
+A local lib, such as F</opt/domains/example.test/agent-perl5>, for the tools
+of the agent: Perl::Critic and every policy of the critic profiles of the
+standards, Perl::Tidy and Devel::NYTProf.  Default none.  With one, every
+claude run gets it first on C<PERL5LIB> and its F<bin> first on C<PATH>, so
+perlcritic in a spoke, and in its hooks, finds the policies that the
+standards name.  C<clod deps install> fills it, and the dashboard installs
+what it lacks and upgrades what has a newer release, with no sudo and no
+provision.
+
+The service user owns it, and the account of C<run_as> must be able to read
+it and not to change it.  The clod recipe of trog-provisioner makes it so,
+and fills this in.
 
 =item otel
 

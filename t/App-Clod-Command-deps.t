@@ -42,8 +42,17 @@ subtest 'clod deps' => sub {
     is( capture_stdout { $app->commands->run(qw{deps upgrade}) }, "Foo\t1\t2\n",            'upgrade prints what it upgraded' );
     is( \@did,                                                    ['upgrade /bogus/perl5'], 'in the local lib' );
 
-    like( dies { $app->commands->run(qw{deps sideways}) },       qr/\AUsage:\ clod\ deps/, 'anything else prints the usage' );
-    like( dies { app_with()->commands->run(qw{deps outdated}) }, qr/names\ no\ local_lib/, 'and with no local_lib, it says so' );
+    my $tasks = Test::MockModule->new('App::Clod::Tasks');
+    $tasks->redefine( agent_tools => sub ($config) { return qw{Perl::Critic Perl::Tidy} } );
+    @did = ();
+    app_with( local_lib => '/bogus/perl5', agent_lib => '/bogus/agent-perl5' )->commands->run(qw{deps install});
+    is( \@did, [ 'install /bogus/perl5 Foo Bar', 'install /bogus/agent-perl5 Perl::Critic Perl::Tidy' ], 'with an agent lib, install fills it with the tools of the agent too' );
+    @did = ();
+    app_with( agent_lib => '/bogus/agent-perl5' )->commands->run(qw{deps install});
+    is( \@did, ['install /bogus/agent-perl5 Perl::Critic Perl::Tidy'], 'and with an agent lib alone, only it' );
+
+    like( dies { $app->commands->run(qw{deps sideways}) },       qr/\AUsage:\ clod\ deps/,                     'anything else prints the usage' );
+    like( dies { app_with()->commands->run(qw{deps outdated}) }, qr/names\ no\ local_lib\ and\ no\ agent_lib/, 'and with neither lib, it says so' );
 };
 
 done_testing;

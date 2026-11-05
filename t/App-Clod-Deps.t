@@ -65,6 +65,36 @@ subtest upgrade => sub {
     is( logged('cpm'),                          [], 'and installs nothing' );
 };
 
+subtest policies => sub {
+    my $profile = "severity = 1\n\n[Variables::RequireNoAutovivification]\n\n[ProhibitPipeOpen]\nmax = 1\n\n[-Subroutines::ProhibitExplicitReturnUndef]\n";
+    is(
+        [ App::Clod::Deps::policies( $profile, "[ProhibitPipeOpen]\n" ) ],
+        [qw{Perl::Critic::Policy::ProhibitPipeOpen Perl::Critic::Policy::Variables::RequireNoAutovivification}],
+        'each policy that a profile turns on, a short name too, once each, and none that it turns off'
+    );
+};
+
+subtest missing => sub {
+    my $lib = $tmp->child('agent-lib');
+    my $dir = $lib->child(qw{lib perl5 Perl Critic})->make_path;
+    $dir->child('Policy.pm')->spew("1;\n");
+    is( [ App::Clod::Deps::missing( "$lib", qw{Perl::Critic::Policy Perl::Tidy} ) ], ['Perl::Tidy'], 'what the lib has no file of' );
+};
+
+subtest 'install, readable by its group and no more' => sub {
+    my $lib  = $tmp->child('umask-lib');
+    my $made = $tmp->child('cpm-made');
+    local @App::Clod::Deps::CPM = ( '/bin/sh', '-c', qq{touch '$made'; mkdir -p '$made.d'}, 'cpm' );
+    my $worker = oct '0007';
+    my $before = umask $worker;
+    App::Clod::Deps::install( "$lib", 'Foo' );
+    is( umask, $worker, 'it puts back the umask of the worker' );
+    umask $before;
+    my $perms = oct '7777';
+    is( sprintf( '%04o', ( stat $made )[2] & $perms ),     '0640', 'what it installs, the group may read and not change' );
+    is( sprintf( '%04o', ( stat "$made.d" )[2] & $perms ), '0750', 'and enter, in a directory' );
+};
+
 subtest run => sub {
     local @App::Clod::Deps::CPM = fake( 'cpm', q{}, 1 );
     my $error = dies { App::Clod::Deps::install( '/bogus/lib', 'Foo' ) };

@@ -163,6 +163,12 @@ subtest 'an update of the bot' => sub {
     $t->get_ok('/api/overview')->status_is(200);
     ok( !action_about(qr/out\ of\ date|Plugins/), 'and an up-to-date bot is no action item' );
     like( action_about(qr/Perl\ modules/), { text => qr/Try::Tiny\ 0\.30\ to\ 0\.32/, buttons => [ { label => 'Upgrade modules', act => 'deps/upgrade' } ] }, 'a module with a newer release can be upgraded' );
+    job( self_check => { checked_at => time, running => $running, checkout => { head => $running->{sha}, upstream => $running->{sha}, behind => 0, ahead => 0 }, plugins => [], agent_deps => { missing => ['Perl::Critic::Policy::ProhibitPipeOpen'], outdated => [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] } } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    my $tools = action_about(qr/agent/);
+    like( $tools,         { text => qr/lacks\ these\ tools:\ \S+ProhibitPipeOpen\./, buttons => [ { label => 'Install tools', act => 'deps/upgrade' } ] }, 'tools that the agent lacks can be installed' );
+    like( $tools->{text}, qr/Perl::Tidy\ 1\ to\ 2\.\z/,                                                                                                    'and so can those with a newer release' );
     $t->post_ok( '/act/deps/upgrade' => \%act )->status_is(200);
     $res = $t->tx->res;
     is( $minion->job( $res->json->{queued} )->info->{task}, 'deps_upgrade', 'Upgrade modules queues deps_upgrade' );
