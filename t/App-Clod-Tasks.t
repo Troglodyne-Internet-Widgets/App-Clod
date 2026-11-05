@@ -1183,6 +1183,11 @@ subtest harness_scan => sub {
     my $one = $info->{result}{repos}{'Test-Org/one'};
     is( [ @{$one}{qw{flavor chosen}} ],                                          [ 'test-default', 0 ], 'a spoke without .conformance.yml gets the flavor of the configuration' );
     is( { map { $_->{check} => $_->{status} } @{ $one->{checks} } }->{ClaudeMd}, 'pass',                'and is checked against it' );
+    is( $one->{fix_pr},                                                          undef,                 'with no harness fix open, a failing spoke names none' );
+
+    $state{open_pulls} = [ { title => 'Meet the harness standards', user => { login => $BOT }, html_url => 'https://test.test/pull/33' }, { title => 'Meet the harness standards', user => { login => 'someone' }, html_url => 'https://test.test/pull/34' } ];
+    is( run_job('harness_scan')->{result}{repos}{'Test-Org/one'}{fix_pr}, 'https://test.test/pull/33', 'and with the harness fix of the bot open, it names that one' );
+    delete $state{open_pulls};
 
     $state{files}{'.conformance.yml'} = "flavor: test-chosen\nsource:\n  directory: " . $here->child( 'data', 'standards' ) . "\n";
     my $chosen = run_job('harness_scan')->{result};

@@ -121,7 +121,7 @@
       const level = { info: 'info', warning: 'warning', danger: 'danger' };
       document.getElementById('actions').innerHTML = d.actions.length
         ? d.actions.map(a => `<li class="list-group-item list-group-item-${level[a.level] || 'secondary'} d-flex align-items-start gap-2">
-            <div class="flex-grow-1">${a.job ? jobLink(a.job) + ' ' : ''}${esc(a.text)}</div>${buttons(a)}</li>`).join('')
+            <div class="flex-grow-1">${a.job ? jobLink(a.job) + ' ' : ''}${esc(a.text)}${a.link ? ` <a href="${esc(a.link.url)}">${esc(a.link.label)}</a>` : ''}</div>${buttons(a)}</li>`).join('')
         : '<li class="list-group-item text-success"><i class="bi bi-check-circle"></i> Nothing needs you.</li>';
     }
 

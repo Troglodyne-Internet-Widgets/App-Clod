@@ -1,6 +1,10 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - A spoke whose harness fix waits for review says so on the dashboard,
+      with a link to the pull request, and offers no second Fix.  The
+      harness scan records that pull request while it is open.  The item
+      offered Fix again as soon as the job finished.
     - Assign each pull request that the hub opens, so that it reaches
       somebody's notifications: a fix to its requester, and a harness fix,
       with its issue, to who pressed the button.  A login that is not in

@@ -1922,8 +1922,9 @@ sub filing_refusal ( $job, $config, $item, $issues ) {
 
 Hourly.  Runs L<App::Clod::Harness> over every spoke and checks the
 marketplace pin.  The result of each spoke has its flavor, whether the spoke
-chose it, and its checks.  C<checks> names every check of any spoke, sorted,
-for the columns of the page.  The clones of the standards are in
+chose it, and its checks, and for a spoke that fails a check, C<fix_pr>, the
+URL of the pull request of an earlier L</harness_fix> that is still open.
+C<checks> names every check of any spoke, sorted, for the columns of the page.  The clones of the standards are in
 F<conformance> of the workspace.
 
 =cut
@@ -1944,6 +1945,10 @@ sub harness_scan ( $job, $config ) {
             my $result   = App::Clod::Harness::check( $snapshot, $settings, %options );
             $checks{ $_->{check} } = 1 for @{ $result->{checks} };
             $repos{$repo} = { branch => $branch, %$result };
+            if ( List::Util::any { $_->{status} eq 'fail' } @{ $result->{checks} } ) {
+                my $open = open_harness_pull( $config, $gh, $repo );
+                $repos{$repo}{fix_pr} = $open->{html_url} if $open;
+            }
             1;
         };
         $errors{$repo} = $@ if !$ok;
@@ -1977,10 +1982,22 @@ notes of the job, so a retry does not file it again.
 
 my $HARNESS_TITLE = 'Meet the harness standards';
 
-sub harness_fix ( $job, $config, $args ) {
-    my $repo   = $args->{repo};
-    my $gh     = github($config);
+=func open_harness_pull
+
+C<($config, $gh, $repo)>.  The open pull request of the bot in C<$repo> that a
+L</harness_fix> opened, or undef.
+
+=cut
+
+sub open_harness_pull ( $config, $gh, $repo ) {
     my ($open) = grep { $_->{title} eq $HARNESS_TITLE && ( $_->{user}{login} // q{} ) eq $config->{bot} } @{ $gh->open_pulls($repo) };
+    return $open;
+}
+
+sub harness_fix ( $job, $config, $args ) {
+    my $repo = $args->{repo};
+    my $gh   = github($config);
+    my $open = open_harness_pull( $config, $gh, $repo );
     return $job->finish( { repo => $repo, pr_url => $open->{html_url}, open_already => 1 } ) if $open;
 
     my @failing = map { "- `$_->{check}`: " . ( $_->{detail} // q{} ) } @{ $args->{checks} // [] };
