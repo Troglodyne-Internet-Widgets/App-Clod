@@ -1,6 +1,15 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Keep the tools of the agent in agent_lib, a local lib of the service
+      user that the agent may read and not change, when clod.conf names
+      one: Perl::Critic, each policy of the critic profiles of the
+      standards, Perl::Tidy and Devel::NYTProf.  Every claude run gets it
+      first on PERL5LIB and PATH.  clod deps install fills it, and the
+      dashboard installs what it lacks and upgrades what is outdated, so a
+      policy that the standards add reaches the agent with no provision.
+      Without an agent_lib, claude gets no PERL5LIB, so not the modules of
+      the bot either.
     - Refresh the references of the spokes once after each spoke sweep, in
       refresh_references, and let a triage or a reply refresh only the one
       of its request.  Each of them refreshed every spoke, so two at once

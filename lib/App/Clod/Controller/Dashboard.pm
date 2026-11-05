@@ -151,7 +151,8 @@ L<App::Clod::Tasks/self_check>.  The action items that it calls for: a bot
 behind its upstream, or a checkout that the bot does not run yet, with an
 Update button, and plugins behind their marketplace, with an Update plugins
 button, and Perl modules in C<local_lib> with a newer release, with an Upgrade
-modules button.  While a job for a button waits or runs, the item names it, and has
+modules button, and tools that the agent lacks, or that have a newer release,
+in C<agent_lib>, with an Install tools button.  While a job for a button waits or runs, the item names it, and has
 no button.
 
 =cut
@@ -176,6 +177,13 @@ sub self_items ( $self, $minion, $check ) {
     my @old = @{ $check->{deps} // [] };
     push @items, button_item( $minion, 'deps_upgrade', 'Perl modules have a newer release: ' . join( q{, }, map { "$_->{module} $_->{version} to $_->{latest}" } @old ) . q{.}, { label => 'Upgrade modules', act => 'deps/upgrade' } ) if @old;
     push @items, { level => 'warning', text => "The bot cannot tell whether its Perl modules are up to date: $check->{deps_error}" } if $check->{deps_error};
+    my $tools = $check->{agent_deps} // {};
+    my @why   = (
+        ( @{ $tools->{missing}  // [] } ? 'The agent lacks these tools: ' . join( q{, }, @{ $tools->{missing} } ) . q{.}                                                                   : () ),
+        ( @{ $tools->{outdated} // [] } ? 'Tools of the agent have a newer release: ' . join( q{, }, map { "$_->{module} $_->{version} to $_->{latest}" } @{ $tools->{outdated} } ) . q{.} : () ),
+    );
+    push @items, button_item( $minion, 'deps_upgrade', join( q{ }, @why ), { label => 'Install tools', act => 'deps/upgrade' } ) if @why;
+    push @items, { level => 'warning', text => "The bot cannot tell whether the tools of the agent are up to date: $check->{agent_deps_error}" } if $check->{agent_deps_error};
     return @items;
 }
 

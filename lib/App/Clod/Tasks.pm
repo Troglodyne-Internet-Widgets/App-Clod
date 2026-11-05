@@ -173,6 +173,7 @@ sub claude ($config) {
         bin           => $c->{bin},
         model         => $c->{model},
         run_as        => $c->{run_as},
+        lib           => $config->{agent_lib},
         timeout       => $c->{timeout},
         allowed_tools => [ @{ $c->{allowed_tools} }, @{ $c->{extra_tools} } ],
         env           => \%env,
@@ -2057,10 +2058,12 @@ that the worker runs, from the helper C<running> of L<App::Clod>, and
 C<checkout>, the L<App::Clod/checkout> after a fetch, with C<head>,
 C<upstream>, its upstream branch, and C<behind> and C<ahead>, the commits
 between the two.  And C<plugins>, from L<App::Clod::Claude/plugins>, for the
-account that claude runs as.  With a C<local_lib>, C<deps>, the modules there
+account that claude runs as.  With an C<agent_lib>, C<agent_deps>: the tools
+of L</agent_tools> that it lacks, as C<missing>, and those with a newer
+release, as C<outdated>.  With a C<local_lib>, C<deps>, the modules there
 that have a newer release, from L<App::Clod::Deps/outdated>.  A part that
 fails has its error in place of its result, as C<checkout> with C<error>,
-C<plugin_error> or C<deps_error>.  With no checkout, there is no C<checkout>.
+C<plugin_error>, C<deps_error> or C<agent_deps_error>.  With no checkout, there is no C<checkout>.
 
 =cut
 
@@ -2079,6 +2082,12 @@ sub self_check ( $job, $config ) {
     $result{plugins} = eval { claude($config)->plugins } // do { $result{plugin_error} = ( split m{\n}, $@ )[0]; [] };
     if ( my $lib = $config->{local_lib} ) {
         $result{deps} = eval { App::Clod::Deps::outdated($lib) } // do { $result{deps_error} = ( split m{\n}, $@ )[0]; [] };
+    }
+    if ( my $lib = $config->{agent_lib} ) {
+        $result{agent_deps} = eval {
+            my @tools = agent_tools($config);
+            +{ missing => [ App::Clod::Deps::missing( $lib, @tools ) ], outdated => App::Clod::Deps::outdated($lib) };
+        } // do { $result{agent_deps_error} = ( split m{\n}, $@ )[0]; { missing => [], outdated => [] } };
     }
     return $job->finish( \%result );
 }
@@ -2131,20 +2140,45 @@ sub restart_and_finish ( $job, $config, $result ) {
     return;
 }
 
+=func agent_tools
+
+C<($config)>.  The modules that the agent lib must hold: the tools of
+C<@App::Clod::Deps::TOOLS>, and the policy of each critic profile of the
+standards, as L<App::Clod::Harness/critic_profiles> finds them.  So a policy
+that the standards add reaches the agent with the next install, and no
+provision.
+
+=cut
+
+sub agent_tools ($config) {
+    my @profiles = App::Clod::Harness::critic_profiles( $config->{harness}, cache => "$config->{workspace}/conformance" );
+    return ( @App::Clod::Deps::TOOLS, App::Clod::Deps::policies(@profiles) );
+}
+
 =func deps_upgrade
 
 From the dashboard.  Upgrades the modules in C<local_lib> that have a newer
 release, as L<App::Clod::Deps/upgrade> does, and then restarts the units, as
-L</restart_and_finish> does, so the bot loads them.  Its result has
-C<upgraded>, what it found outdated.
+L</restart_and_finish> does, so the bot loads them.  With an C<agent_lib>, it
+also installs the tools of L</agent_tools> that it lacks, and upgrades those
+there with a newer release.  The next claude run loads them, so they restart
+nothing.  Its result has C<upgraded> and C<agent_upgraded>, what it found
+outdated, and C<agent_installed>.
 
 =cut
 
 sub deps_upgrade ( $job, $config ) {
-    my $lib      = $config->{local_lib} // return $job->fail( { error => 'clod.conf names no local_lib' } );
-    my $upgraded = App::Clod::Deps::upgrade($lib);
-    return $job->finish( { upgraded => [] } ) if !@$upgraded;
-    return restart_and_finish( $job, $config, { upgraded => $upgraded } );
+    my ( $lib, $agent ) = @$config{qw{local_lib agent_lib}};
+    return $job->fail( { error => 'clod.conf names no local_lib and no agent_lib' } ) if !$lib && !$agent;
+    my %result = ( upgraded => [] );
+    if ($agent) {
+        my @missing = App::Clod::Deps::missing( $agent, agent_tools($config) );
+        App::Clod::Deps::install( $agent, @missing );
+        @result{qw{agent_installed agent_upgraded}} = ( \@missing, App::Clod::Deps::upgrade($agent) );
+    }
+    $result{upgraded} = App::Clod::Deps::upgrade($lib) if $lib;
+    return $job->finish( \%result )                    if !@{ $result{upgraded} };
+    return restart_and_finish( $job, $config, \%result );
 }
 
 =func own_unit
