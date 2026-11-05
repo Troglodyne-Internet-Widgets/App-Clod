@@ -36,6 +36,14 @@ get '/repos/Test-Org/one/git/trees/*ref' => sub ($c) {
 };
 get '/repos/Test-Org/one' => sub ($c) { return $c->render( json => { message => 'Bad credentials' }, status => 401 ) };
 
+# Answers each request with the next status of its queue, and then with 200.
+my %flaky;
+any '/flaky' => sub ($c) {
+    $seen{flaky}{ $c->req->method }++;
+    my $status = shift @{ $flaky{ $c->req->method } // [] } // 200;
+    return $c->render( json => { message => "status $status" }, status => $status );
+};
+
 my $gh = App::Clod::GitHub->new( token => 'test-token' );
 $gh->ua->server->app(app);
 my $server = $gh->ua->server->url;
@@ -71,12 +79,37 @@ subtest request => sub {
     ok( App::Clod::GitHub::is_unauthorized($refused),  'a 401 is a refused token' );
     ok( !App::Clod::GitHub::is_unauthorized($missing), 'a 404 is not' ) or diag $missing;
 
+    local @App::Clod::Retry::DELAYS = ( 0, 0, 0 );
     my $nowhere = App::Clod::GitHub->new( token => 'test-token', api => 'http://127.0.0.1:1', timeout => 2 );
-    my $silent  = dies { $nowhere->repo('Test-Org/one') };
-    is( $silent, "GitHub GET http://127.0.0.1:1/repos/Test-Org/one: no response: Connection refused\n", 'no answer at all dies differently from an error status, and no file or line' );
+    my $silent;
+    my $tries = warnings {
+        $silent = dies { $nowhere->repo('Test-Org/one') }
+    };
+    is( scalar @$tries, 3,                                                                                     'a GET with no answer at all is tried four times' );
+    is( $silent,        "GitHub GET http://127.0.0.1:1/repos/Test-Org/one: no response: Connection refused\n", 'no answer at all dies differently from an error status, and no file or line' );
     ok( !App::Clod::GitHub::is_unauthorized($silent), 'and is not a refused token' );
     local $ENV{GH_TOKEN};
     like( dies { App::Clod::GitHub->new->token }, qr{GH_TOKEN\ is\ not\ set}, 'no token dies when it is first needed' );
+};
+
+subtest 'when GitHub fails for a moment' => sub {
+    local @App::Clod::Retry::DELAYS = ( 0, 0, 0 );
+    my $try = sub ( $method, @statuses ) {
+        %flaky = ( $method => [@statuses] );
+        delete $seen{flaky};
+        my $answer;
+        my $said = warnings {
+            $answer = eval { $gh->request( $method => '/flaky', json => {} )->code } // $@
+        };
+        return ( $answer, $seen{flaky}{$method}, scalar @$said );
+    };
+
+    is( [ $try->( GET => 500, 502 ) ], [ 200, 3, 2 ], 'a GET is tried again after any server error, and says so each time' );
+    is( [ $try->( POST => 502, 503, 504 ) ], [ 200, 4, 3 ], 'a POST is tried again after an error of the proxy in front of GitHub' );
+    my ( $error, $count ) = $try->( POST => 500 );
+    is( [ $error, $count ], [ "GitHub POST /flaky: 500 status 500\n", 1 ], 'but not after a 500, which GitHub can answer to a POST that it did' );
+    is( [ ( $try->( GET => 404 ) )[ 0, 1 ] ],                [ "GitHub GET /flaky: 404 status 404\n", 1 ], 'and an error that is no server error gets no second try' );
+    is( [ ( $try->( GET => 503, 503, 503, 503 ) )[ 0, 1 ] ], [ "GitHub GET /flaky: 503 status 503\n", 4 ], 'after four tries, it dies with the last error' );
 };
 
 done_testing;

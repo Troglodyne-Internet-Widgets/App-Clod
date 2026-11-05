@@ -1,6 +1,15 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Try again when GitHub fails for a moment.  A git clone, fetch or push
+      that ends in a server error or a lost connection gets up to four
+      tries, five, thirty and a hundred and twenty seconds apart, and so
+      does an API GET.  A request that changes something is tried again
+      only after a 502, 503 or 504.  A push that GitHub took but answered
+      with a server error counts as done.  A push that failed with a 500
+      threw away a finished rebase.
+    - Tell the run that answers a review not to push after a rebase.  It
+      tried, which failed, because the account it runs as has no token.
     - Tell an answer to a review the base branch of its pull request.  A
       request to rebase that names no branch goes onto that branch, and a
       rewrite of the branch gets conflicts resolved on both sides and the

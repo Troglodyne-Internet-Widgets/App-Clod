@@ -8,8 +8,11 @@ use re '/aasx';
 use Mojo::Base -base, -signatures;
 
 use IPC::Run   ();
+use List::Util ();
 use Mojo::File ();
 use Mojo::Util ();
+
+use App::Clod::Retry ();
 
 =attr repo
 
@@ -86,6 +89,36 @@ sub git ( $self, @args ) {
     return $out;
 }
 
+=method git_remote
+
+Runs git as L</git> does, for a command that talks to GitHub, such as a fetch
+or a push.  A failure that L</transient> calls a moment's trouble at GitHub
+gets more tries, through L<App::Clod::Retry/attempt>.
+
+=cut
+
+sub git_remote ( $self, @args ) {
+    return ( App::Clod::Retry::attempt( "git @args", \&transient, sub { $self->git(@args) } ) )[0];
+}
+
+=func transient
+
+C<($error)>.  True if the error of a git command is a server error or a lost
+connection.  A push gets the same tries: C<--force-with-lease> refuses a second
+push over a branch that the first one did move.
+
+=cut
+
+my @TRANSIENT = (
+    qr{Internal\ Server\ Error}, qr{Bad\ Gateway},              qr{Service\ Unavailable},   qr{Gateway\ Time-?out},
+    qr{returned\ error:\ 5\d\d}, qr{Could\ not\ resolve\ host}, qr{Connection\ timed\ out}, qr{Connection\ reset},
+    qr{Failed\ to\ connect},     qr{early\ EOF},                qr{unexpected\ disconnect}, qr{RPC\ failed},
+);
+
+sub transient ($error) {
+    return List::Util::any { $error =~ $_ } @TRANSIENT;
+}
+
 =method fetch
 
 Clones the spoke if there is no bare clone yet, then fetches.  Returns the bare
@@ -98,11 +131,11 @@ sub fetch ($self) {
     my $mirror = $self->mirror;
     if ( !-d $mirror ) {
         $mirror->dirname->make_path;
-        $self->git( 'clone', '--bare', $self->github_web . '/' . $self->repo . '.git', "$mirror" );
+        $self->git_remote( 'clone', '--bare', $self->github_web . '/' . $self->repo . '.git', "$mirror" );
         $self->git( q{-C}, "$mirror", qw{config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*} );
     }
     $self->git( q{-C}, "$mirror", qw{config core.sharedRepository group} );
-    $self->git( q{-C}, "$mirror", qw{fetch --prune origin} );
+    $self->git_remote( q{-C}, "$mirror", qw{fetch --prune origin} );
     return $mirror;
 }
 
@@ -167,8 +200,8 @@ sub worktree ( $self, $dir, %opt ) {
         return $dir;
     }
     if ( $opt{pull} ) {
-        $self->git( q{-C}, "$mirror", 'fetch',                   'origin', "+pull/$opt{pull}/head:refs/remotes/origin/pr/$opt{pull}" );
-        $self->git( q{-C}, "$mirror", qw{worktree add --detach}, "$dir",   "origin/pr/$opt{pull}" );
+        $self->git_remote( q{-C}, "$mirror", 'fetch', 'origin', "+pull/$opt{pull}/head:refs/remotes/origin/pr/$opt{pull}" );
+        $self->git( q{-C}, "$mirror", qw{worktree add --detach}, "$dir", "origin/pr/$opt{pull}" );
     }
     elsif ( $opt{existing} ) {
         $self->git( q{-C}, "$mirror", qw{worktree add -B}, $opt{existing}, "$dir", "origin/$opt{existing}" );
@@ -196,13 +229,20 @@ sub commits_since ( $self, $dir, $base ) {
 =method push_branch
 
 C<($dir, $branch)>.  Pushes the worktree HEAD to C<$branch> with
-C<--force-with-lease>, and returns the SHA it pushed.
+C<--force-with-lease>, and returns the SHA it pushed.  If the push fails but
+the branch on GitHub is at HEAD anyway, the push is done: GitHub can answer a
+server error to a push that it did take, and the lease then refuses the next
+try.
 
 =cut
 
 sub push_branch ( $self, $dir, $branch ) {
-    $self->git( q{-C}, "$dir", qw{push --force-with-lease origin}, "HEAD:refs/heads/$branch" );
-    return $self->git( q{-C}, "$dir", 'rev-parse', 'HEAD' );
+    my $head = $self->git( q{-C}, "$dir", 'rev-parse', 'HEAD' );
+    return $head if eval { $self->git_remote( q{-C}, "$dir", qw{push --force-with-lease origin}, "HEAD:refs/heads/$branch" ); 1 };
+    my $error   = $@;
+    my ($there) = split m{\s}, $self->git_remote( q{-C}, "$dir", qw{ls-remote origin}, "refs/heads/$branch" );
+    die $error if ( $there // q{} ) ne $head;
+    return $head;
 }
 
 =method remove_worktree

@@ -5,9 +5,11 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
-use File::Temp ();
-use IPC::Run   ();
-use Mojo::File ();
+use File::Temp       ();
+use IPC::Run         ();
+use Mojo::File       ();
+use List::Util       ();
+use Test::MockModule ();
 
 use App::Clod::Spoke();
 
@@ -85,6 +87,67 @@ subtest worktree => sub {
     is( [ map { git( '-C', "$_", 'rev-parse', 'HEAD' ) } @detached ], [ $sha, $sha ], 'two detached worktrees can be at one branch at once' );
     is( git( '-C', "$detached[0]", qw{rev-parse --abbrev-ref HEAD} ), 'HEAD',         'and neither holds the branch' );
     $spoke->remove_worktree($_) for @detached;
+};
+
+subtest 'a push when GitHub fails for a moment' => sub {
+    local @App::Clod::Retry::DELAYS = ( 0, 0, 0 );
+    my $dir  = $tmp->child( 'ws', 'work', 5, 'Test-Org', 'one' );
+    my $tree = $spoke->worktree( $dir, branch => 'clod/5-retry', base => 'main' );
+    my $mock = Test::MockModule->new('App::Clod::Spoke');
+    my $real = $mock->original('git');
+    my @pushes;
+
+    # Each push runs the next of @plan: 'fail' dies before it reaches the
+    # remote, 'took' pushes and then dies as if the answer was lost.
+    my @plan;
+    $mock->redefine(
+        git => sub ( $self, @args ) {
+            return $real->( $self, @args ) if !List::Util::any { $_ eq 'push' } @args;
+            push @pushes, 1;
+            my $step = shift @plan // 'push';
+            die "git push: remote: Internal Server Error\n"                  if $step eq 'fail';
+            die "git push: ! [remote rejected] (permission denied)\n"        if $step eq 'refuse';
+            die "git push: ! [rejected] HEAD -> clod/5-retry (stale info)\n" if $step eq 'stale';
+            my $out = $real->( $self, @args );
+            die "git push: remote: Internal Server Error\n" if $step eq 'took';
+            return $out;
+        }
+    );
+
+    git( q{-C}, "$tree", qw{commit --quiet --allow-empty -m first} );
+    @plan = qw{fail push};
+    my $sha;
+    my $said = warnings { $sha = $spoke->push_branch( $tree, 'clod/5-retry' ) };
+    is( scalar @pushes, 2, 'a push that GitHub answers with a server error is tried again' );
+    like( $said, [qr/push\ .*\ in\ 0s:\ .*Internal\ Server\ Error/], 'and the try says why, in the log of the worker' );
+    is( git( '--git-dir', "$bare", 'rev-parse', 'clod/5-retry' ), $sha, 'and lands' );
+
+    git( q{-C}, "$tree", qw{commit --quiet --allow-empty -m second} );
+    @pushes = ();
+    @plan   = qw{took stale};
+    my $took;
+    my $once = warnings { $took = $spoke->push_branch( $tree, 'clod/5-retry' ) };
+    is( scalar @$once,                                                       1,                                                     'once' );
+    is( scalar @pushes,                                                      2,                                                     'a push that GitHub took, but answered with a server error, is tried again' );
+    is( [ $took, git( '--git-dir', "$bare", 'rev-parse', 'clod/5-retry' ) ], [ ( git( q{-C}, "$tree", qw{rev-parse HEAD} ) ) x 2 ], 'and when the lease refuses that try, the branch is already at HEAD, so the push is done' );
+
+    git( q{-C}, "$tree", qw{commit --quiet --allow-empty -m third} );
+    @pushes = ();
+    @plan   = qw{refuse};
+    like( dies { $spoke->push_branch( $tree, 'clod/5-retry' ) }, qr/permission\ denied/, 'a push that GitHub refuses dies' );
+    is( scalar @pushes, 1, 'without another try' );
+
+    @pushes = ();
+    @plan   = qw{fail fail fail fail};
+    my $error;
+    my $each = warnings {
+        $error = dies { $spoke->push_branch( $tree, 'clod/5-retry' ) }
+    };
+    is( scalar @$each, 3, 'and says so for each try after the first' );
+    like( $error, qr/Internal\ Server\ Error/, 'and so does one that fails on every try' );
+    is( scalar @pushes, 4, 'after four tries' );
+    $mock->unmock_all;
+    $spoke->remove_worktree($tree);
 };
 
 subtest git => sub {

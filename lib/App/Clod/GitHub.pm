@@ -11,6 +11,8 @@ use Mojo::UserAgent();
 use Mojo::URL  ();
 use Mojo::Util ();
 
+use App::Clod::Retry ();
+
 =attr api
 
 The API base URL.
@@ -56,10 +58,37 @@ my sub next_link ($link) {
 
 C<< ($method, $path_or_url, %opt) >>, where C<%opt> takes C<query>, C<json>,
 C<headers>, C<accept> and C<ok>.  Returns the L<Mojo::Message::Response>.
+A failure that L</transient> calls a moment's trouble at GitHub gets more
+tries, through L<App::Clod::Retry/attempt>.
 
 =cut
 
 sub request ( $self, $method, $path, %opt ) {
+    return ( App::Clod::Retry::attempt( "GitHub $method $path", sub ($error) { transient( $method, $error ) }, sub { $self->request_once( $method, $path, %opt ) } ) )[0];
+}
+
+=func transient
+
+C<($method, $error)>.  True if the error of L</request> is worth another try.
+A GET tries again after any server error, or no answer at all.  Any other
+method changes something, and a server error or a lost answer can mean that
+GitHub did it anyway.  So it tries again only after a 502, 503 or 504, which a
+proxy in front of GitHub answers.
+
+=cut
+
+sub transient ( $method, $error ) {
+    return $error =~ m{:\ (?:5\d\d\ |no\ response:)} if $method eq 'GET';
+    return $error =~ m{:\ 50[234]\ };
+}
+
+=method request_once
+
+Makes the request of L</request> once, with no retry.
+
+=cut
+
+sub request_once ( $self, $method, $path, %opt ) {
     my $url = $path =~ m{\Ahttps?://} ? Mojo::URL->new($path) : Mojo::URL->new( $self->api . $path );
     $url->query( $opt{query} ) if $opt{query};
     my %headers = (

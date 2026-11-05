@@ -21,7 +21,8 @@ not run the pre-commit hook, so nothing checks the result for you:
 2. Run the tests that the result can break, as CLAUDE.md says.
 3. In your answer, say what you ran and what it printed.
 
-The hub pushes a rewritten branch with `--force-with-lease`.
+Do not push, also not after a rebase. The hub pushes the branch, a rewritten
+one as well, with `--force-with-lease`.
 
 {{instructions}}
 
