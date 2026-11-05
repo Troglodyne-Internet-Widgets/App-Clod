@@ -478,6 +478,7 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
         $gh->mark_read( $thread->{id} );
         return 'requested by ' . ( $requester // 'nobody known' ) . ', who is not authorized';
     }
+    $kind = own_pull( $config, $gh->pull( $repo, $number ), $repo ) ? 'address_review' : 'review' if $kind eq 'fix' && $is_pr;
 
     my %item = (
         repo        => $repo,
@@ -493,6 +494,10 @@ sub inbox_thread ( $job, $config, $gh, $thread ) {
     if ( $kind eq 'address_review' && ( my $queued = queued_address( $minion, $origin ) ) ) {
         $gh->mark_read( $thread->{id} );
         return "job $queued will answer $origin";
+    }
+    if ( $kind eq 'address_review' && !List::Util::any { @$_ } pending( $config, $gh, \%item ) ) {
+        $gh->mark_read( $thread->{id} );
+        return "nothing on $origin waits for an answer";
     }
     $gh->react( $repo, $number, 'eyes' );
     my $id = $minion->enqueue( ( $kind eq 'reply' ? 'reply' : 'triage' ) => [ \%item ], { notes => { origin => $origin, kind => $kind } } );
@@ -1158,6 +1163,29 @@ sub pending_comments ( $config, $conversation ) {
     return \@after;
 }
 
+=func own_pull
+
+C<($config, $pull, $repo)>.  True if the pull request C<$pull> is the bot's
+own, from a branch of C<$repo>, so that the bot can push to it.
+
+=cut
+
+sub own_pull ( $config, $pull, $repo ) {
+    return ( $pull->{user}{login} // q{} ) eq $config->{bot} && ( $pull->{head}{repo}{full_name} // q{} ) eq $repo;
+}
+
+=func pending
+
+C<($config, $gh, $item)>.  What waits for an answer on the pull request
+C<$item>: the L</pending_threads> and the L</pending_comments>, as two array
+references.
+
+=cut
+
+sub pending ( $config, $gh, $item ) {
+    return ( pending_threads( $config, $gh->review_comments( $item->{repo}, $item->{number} ) ), pending_comments( $config, conversation( $gh, $item ) ) );
+}
+
 =func spoke_address
 
 Answers what authorized users said on the bot's own pull request since the bot
@@ -1174,10 +1202,9 @@ sub spoke_address ( $job, $config, $args ) {
     my $gh   = github($config);
     my $pull = $gh->pull( $repo, $item->{number} );
     return $job->fail( { repo => $repo, error => 'the pull request is not the bot\'s own, from this repository' } )
-      if $pull->{user}{login} ne $config->{bot} || $pull->{head}{repo}{full_name} ne $repo;
+      if !own_pull( $config, $pull, $repo );
 
-    my $pending  = pending_threads( $config, $gh->review_comments( $repo, $item->{number} ) );
-    my $comments = pending_comments( $config, conversation( $gh, $item ) );
+    my ( $pending, $comments ) = pending( $config, $gh, $item );
     return $job->finish( { repo => $repo, nothing => 1 } ) if !@$pending && !@$comments;
 
     my $branch = $pull->{head}{ref};

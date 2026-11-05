@@ -256,6 +256,38 @@ subtest inbox_poll => sub {
     my $mention = run_job('inbox_poll');
     is( $minion->job( $mention->{result}{queued}[0] )->info->{task}, 'reply', 'a mention goes straight to a reply' );
 
+    # An assignment to a pull request, by an authorized user.
+    my $own_pull = { user => { login => $BOT }, head => { repo => { full_name => 'Test-Org/one' } }, base => { ref => 'main' } };
+    $state{events} = [ { event => 'assigned', assignee => { login => $BOT }, actor => { login => $BOT }, assigner => { login => 'trusted' } } ];
+    my $assign_pull = sub ( $id, $number ) {
+        $state{threads} = [ { id => $id, reason => 'assign', updated_at => "t$id", repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/$number", title => 'A change' } } ];
+        return run_job('inbox_poll')->{result};
+    };
+
+    $state{pull}           = $own_pull;
+    $state{issue_comments} = [ { id => 1, user => { login => 'trusted' }, body => 'Rename the sub.', created_at => '1' } ];
+    my $own = $assign_pull->( 20, 12 );
+    is( scalar @{ $own->{queued} }, 1, 'an assignment to the bot\'s own pull request becomes work' ) or diag Mojo::Util::dumper $own;
+    like( $minion->job( $own->{queued}[0] )->info, { task => 'triage', args => [ { kind => 'address_review', number => 12 } ] }, 'on its review comments, on that pull request' );
+
+    @calls = ();
+    $state{issue_comments} = [ { id => 1, user => { login => 'trusted' }, body => 'Rename the sub.', created_at => '1' }, { id => 2, user => { login => $BOT }, body => 'Done.', created_at => '2' } ];
+    my $answered = $assign_pull->( 21, 13 );
+    is( $answered->{queued}, [], 'with nothing since the last comment of the bot, it makes no job' );
+    like( $answered->{ignored}, [qr/nothing\ on\ Test-Org\/one\#13\ waits\ for\ an\ answer/], 'and says so' );
+    is( [ map { $_->[0] } @calls ], ['read'], 'it is marked read, without a reaction' );
+
+    $state{review_comments} = [ { id => 30, user => { login => 'trusted' }, body => 'Not here.', path => 'lib/X.pm', line => 3 } ];
+    my $threaded = $assign_pull->( 22, 14 );
+    is( scalar @{ $threaded->{queued} }, 1, 'but a review thread whose last word is not the bot\'s is work' ) or diag Mojo::Util::dumper $threaded;
+    delete $state{review_comments};
+
+    $state{pull} = { user => { login => 'someone' }, head => { repo => { full_name => 'Test-Org/one' } }, base => { ref => 'main' } };
+    my $theirs = $assign_pull->( 23, 15 );
+    like( $minion->job( $theirs->{queued}[0] )->info, { task => 'triage', args => [ { kind => 'review', number => 15 } ] }, 'an assignment to the pull request of someone else becomes a review' );
+    delete @state{qw{pull issue_comments}};
+    $minion->reset( { all => 1 } );
+
     @calls          = ();
     $state{closed}  = { 9 => 1 };
     $state{threads} = [ { id => 6, reason => 'author', updated_at => 't4', repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/9", latest_comment_url => "$api/comment" } } ];
@@ -265,6 +297,7 @@ subtest inbox_poll => sub {
     is( [ map { $_->[0] } @calls ], ['read'], 'it is marked read, without a reaction' );
     $minion->reset( { all => 1 } );
 
+    $state{issue_comments} = [ { id => 1, user => { login => q{trusted} }, body => q{Please change it.}, created_at => q{1} } ];
     my %comment = ( id => 7, reason => 'author', repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/11", latest_comment_url => "$api/comment" } );
     my $waiting = $minion->enqueue( spoke_address => [ {} ], { notes => { origin => 'Test-Org/one#11' } } );
     $state{threads} = [ +{ %comment, updated_at => 't5' } ];

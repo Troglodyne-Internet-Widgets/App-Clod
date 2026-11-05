@@ -1,6 +1,13 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - An assignment to a pull request becomes work on the review comments
+      if the pull request is the bot's own, and a review if it is not.  It
+      was a fix, which took the pull request for an issue and opened a
+      second pull request with the same change.
+    - Make no job for work on the review comments when no review comment
+      or comment waits for an answer.  A triage ran first and then found
+      nothing to do.
     - Fail a fix or an answer to a review that made no commit because
       claude refused some of its calls, and name each refused call in the
       error.  Such a run finished as no change before, with a reply that
