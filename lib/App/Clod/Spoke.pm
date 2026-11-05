@@ -7,11 +7,11 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
-use Fcntl      qw{:flock};
-use IPC::Run   ();
-use List::Util ();
-use Mojo::File ();
-use Mojo::Util ();
+use IPC::Run     ();
+use List::Util   ();
+use Mojo::File   ();
+use Mojo::Util   ();
+use Mutex::Flock ();
 
 use App::Clod::Retry ();
 
@@ -143,18 +143,15 @@ remote-tracking refs, and two fetches could refuse each other's ref locks.
 
 A process must not take it twice, because the second lock waits for the first.
 So L</fetch> and L</refresh_reference> take it, and call
-L</fetch_unlocked>, which does not.
+L</fetch_unlocked>, which does not.  The lock is the C<synchronize> of
+L<Mutex::Flock>, which lets go of it when C<$code> returns or dies.
 
 =cut
 
 sub locked ( $self, $code ) {
     my $mirror = $self->mirror;
     my $file   = $mirror->dirname->make_path->child( $mirror->basename . '.lock' );
-    open my $lock, '>>', "$file" or die "Cannot open $file: $!\n";
-    flock $lock, LOCK_EX or die "Cannot lock $file: $!\n";
-    my @out = $code->();
-    close $lock or die "Cannot close $file: $!\n";
-    return wantarray ? @out : $out[0];
+    return Mutex::Flock->new( path => "$file" )->synchronize($code);
 }
 
 =method fetch_unlocked

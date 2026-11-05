@@ -167,6 +167,13 @@ subtest 'one process at a time works on a bare clone' => sub {
     };
     is( $spoke->locked($fetch_in_child), 9, 'a fetch waits while another process holds the lock of the clone' );
     is( $fetch_in_child->(),             0, 'and goes through when it is free' );
+    ok(
+        dies {
+            $spoke->locked( sub { die "inside the lock\n" } )
+        },
+        'code that dies under the lock dies'
+    );
+    is( $fetch_in_child->(), 0, 'and lets go of the lock' );
 
     # A clone that died before its refspec was set has no remote-tracking refs.
     my $broken = App::Clod::Spoke->new( repo => 'Test-Org/one', workspace => "$tmp/ws-broken", github_web => "file://$tmp/remote", token => 'test-token' );
