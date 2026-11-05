@@ -14,11 +14,56 @@ sub entry ( $repo, $order ) { return { repo => $repo, order => $order, instructi
 
 subtest schema => sub {
     my $schema = App::Clod::Triage::schema( \@spokes );
-    my @enums  = map { $_->{then}{properties}{repos}{items}{properties}{repo}{enum} // () } @{ $schema->{allOf} };
-    is( \@enums, [ \@spokes, \@spokes ], 'under single and multi, a repository must be a spoke' );
-    push @{ $enums[0] }, 'Other/repo';
-    is( App::Clod::Triage::schema( \@spokes )->{allOf}[0]{then}{properties}{repos}{items}{properties}{repo}{enum}, \@spokes,                        'and a change to one schema reaches neither the spokes nor the next schema' );
-    is( \@spokes,                                                                                                  [qw{Test-Org/one Test-Org/two}], 'nor the list of spokes it was made from' );
+    is( $schema->{properties}{repos}{items}{properties}{repo}{enum}, \@spokes, 'a repository must be a spoke' );
+    push @{ $schema->{properties}{repos}{items}{properties}{repo}{enum} }, 'Other/repo';
+    is( App::Clod::Triage::schema( \@spokes )->{properties}{repos}{items}{properties}{repo}{enum}, \@spokes,                        'and a change to one schema reaches neither the spokes nor the next schema' );
+    is( \@spokes,                                                                                  [qw{Test-Org/one Test-Org/two}], 'nor the list of spokes it was made from' );
+};
+
+# The keywords that apply to one type only.  The strict mode of the schema
+# compiler in claude refuses one in a subschema that does not say that type,
+# unless a schema above it at the same place in the data does.
+my %TYPED = (
+    array  => [qw{items minItems maxItems uniqueItems contains}],
+    string => [qw{minLength maxLength pattern format}],
+);
+
+# Every place in $schema that uses a typed keyword with no type that says so.
+# Each item of the work list is a subschema, where it is, and the types that a
+# schema above it at the same place in the data says.
+sub untyped ($schema) {
+    my ( @missing, @work );
+    push @work, [ $schema, '#', {} ];
+    while ( my $next = shift @work ) {
+        my ( $here, $at, $known ) = @$next;
+        next if ref $here ne 'HASH';
+        my %types = ( %$known, ( defined $here->{type} ? ( $here->{type} => 1 ) : () ) );
+        for my $type ( sort keys %TYPED ) {
+            push @missing, map { "$at: $_ without type $type" } grep { exists $here->{$_} && !$types{$type} } @{ $TYPED{$type} };
+        }
+
+        # Under these, the data is the same, so the type above still holds.
+        for my $same (qw{allOf anyOf oneOf}) {
+            my $i = 0;
+            push @work, map { [ $_, "$at/$same/" . $i++, \%types ] } @{ $here->{$same} // [] };
+        }
+        push @work, map { [ $here->{$_}, "$at/$_", \%types ] } grep { exists $here->{$_} } qw{if then else not};
+
+        # Under these, the data is another value, with no type yet.
+        push @work, map { [ $here->{properties}{$_}, "$at/properties/$_", {} ] } sort keys %{ $here->{properties} // {} };
+        push @work, [ $here->{items}, "$at/items", {} ] if ref $here->{items} eq 'HASH';
+    }
+    return @missing;
+}
+
+subtest 'what the API takes' => sub {
+    for my $allow ( [], [ orgs => ['Test-Org'], follow_ups => 3 ] ) {
+        my $name = @$allow ? 'with creation and follow-ups' : 'without them';
+        is( [ untyped( App::Clod::Triage::schema( \@spokes, @$allow ) ) ], [], "$name, every typed keyword of the schema says its type" );
+        my $sent = App::Clod::Triage::claude_schema( \@spokes, @$allow );
+        is( [ grep { exists $sent->{$_} } qw{allOf anyOf oneOf} ], [],                                                           "$name, what claude gets has no allOf, anyOf or oneOf at its top level" );
+        is( $sent->{properties},                                   App::Clod::Triage::schema( \@spokes, @$allow )->{properties}, 'and every field of the answer, as the schema has it' );
+    }
 };
 
 subtest validate => sub {
@@ -37,11 +82,11 @@ subtest validate => sub {
         'unknown scope'        => [ { scope => 'some', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                               qr{/scope:\ Not\ in\ enum\ list}s ],
         'empty reason'         => [ { scope => 'single', reason => q{}, repos => [ entry( 'Test-Org/one', 1 ) ] },                             qr{/reason:\ String\ is\ too\ short}s ],
         'no repos'             => [ { scope => 'single', reason => 'r', repos => [] },                                                         qr{/repos:\ \S+\ Not\ enough\ items:\ 0/1}s ],
-        'not a spoke'          => [ { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] },                               qr{/repos/0/repo:\ \S+\ Not\ in\ enum\ list}s ],
+        'not a spoke'          => [ { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] },                               qr{/repos/0/repo:\ Not\ in\ enum\ list}s ],
         'twice'                => [ { scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/one', 2 ) ] },  qr/listed\ twice/ ],
         'single with two'      => [ { scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ), entry( 'Test-Org/two', 2 ) ] }, qr{/repos:\ \S+\ Too\ many\ items:\ 2/1}s ],
         'multi with one'       => [ { scope => 'multi', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] },                              qr{/repos:\ \S+\ Not\ enough\ items:\ 1/2}s ],
-        'no instructions'      => [ { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1 } ] },                 qr{/repos/0/instructions:\ \S+\ Missing\ property}s ],
+        'no instructions'      => [ { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1 } ] },                 qr{/repos/0/instructions:\ Missing\ property}s ],
         'clarify, no question' => [ { scope => 'clarify', reason => 'r', repos => [] },                                                        qr{/question:\ \S+\ Missing\ property}s ],
         'clarify, empty text'  => [ { scope => 'clarify', reason => 'r', repos => [], question => { text => q{} } },                           qr{/question/text:\ String\ is\ too\ short}s ],
         'upstream, no detail'  => [ { scope => 'upstream', reason => 'r', repos => [] },                                                       qr{/upstream:\ \S+\ Missing\ property}s ],
@@ -50,7 +95,7 @@ subtest validate => sub {
         my ( $answer, $error ) = @{ $bad{$case} };
         like( dies { App::Clod::Triage::validate( $answer, \@spokes ) }, $error, "rejects: $case" );
     }
-    is( dies { App::Clod::Triage::validate( { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] }, \@spokes ) }, "The answer does not fit the schema:\n  /repos/0/repo: /allOf/0 Not in enum list: Test-Org/one, Test-Org/two.\n", 'a rejection is the whole message, with no file or line, so it can go back to the model as it is' );
+    is( dies { App::Clod::Triage::validate( { scope => 'single', reason => 'r', repos => [ entry( 'Other/repo', 1 ) ] }, \@spokes ) }, "The answer does not fit the schema:\n  /repos/0/repo: Not in enum list: Test-Org/one, Test-Org/two.\n", 'a rejection is the whole message, with no file or line, so it can go back to the model as it is' );
 };
 
 subtest 'new repositories' => sub {
