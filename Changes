@@ -1,6 +1,10 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Find who wrote a review on a pull request from its latest review or
+      line comment, when the notification names no latest comment, or
+      names the pull request itself.  A review of an authorized user was
+      ignored, as asked for by nobody known.
     - An assignment to a pull request becomes work on the review comments
       if the pull request is the bot's own, and a review if it is not.  It
       was a fix, which took the pull request for an issue and opened a
