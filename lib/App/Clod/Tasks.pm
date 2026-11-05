@@ -1016,6 +1016,60 @@ sub slug ($text) {
     return substr( $slug, 0, 40 ) =~ s/-+\z//r;
 }
 
+=func kept_ref
+
+C<($job)>.  The ref in the bare clone that holds the commits of the job while
+its push waits for a retry: F<refs/clod/kept/E<lt>idE<gt>>.  A fetch prunes
+only F<refs/remotes>, so it keeps them.
+
+=cut
+
+sub kept_ref ($job) { return 'refs/clod/kept/' . $job->id }
+
+=func kept
+
+C<($job, $spoke)>.  The work that an earlier try of the job kept when its push
+failed, as L</push_or_keep> noted it.  Undef if there is none, or if its commit
+is gone from the bare clone.
+
+=cut
+
+sub kept ( $job, $spoke ) {
+    my $kept = $job->info->{notes}{kept} // return;
+    return if !eval { $spoke->git( q{-C}, $spoke->mirror->to_string, qw{rev-parse --verify --quiet}, kept_ref($job) . '^{commit}' ); 1 };
+    return $kept;
+}
+
+=func push_or_keep
+
+C<($job, $spoke, $tree, $branch, \%work)>.  Pushes the worktree HEAD to
+C<$branch>.  If the push fails, the commits stay under L</kept_ref>, and the
+note C<kept> of the job holds C<%work> and C<sha>, the commit.  Then it dies
+with the error of the push, so the job fails, and a retry of it can push the
+same work without a second claude run.  C<%work> holds what the job needs
+after the push: the C<answer> of the run, C<commits> and C<usage>.  The work
+of an answer to a review also has C<onto>, the head of the branch on GitHub
+that the work started from.  After a push that works, it drops what an earlier
+try kept.
+
+=cut
+
+sub push_or_keep ( $job, $spoke, $tree, $branch, $work ) {
+    if ( eval { $spoke->push_branch( $tree, $branch ); 1 } ) {
+        if ( $job->info->{notes}{kept} ) {
+            $spoke->git( q{-C}, $spoke->mirror->to_string, qw{update-ref -d}, kept_ref($job) );
+            $job->note( kept => undef );
+        }
+        return;
+    }
+    my $error = $@;
+    my $sha   = $spoke->git( q{-C}, "$tree", qw{rev-parse HEAD} );
+    $spoke->git( q{-C}, "$tree", 'update-ref', kept_ref($job), $sha );
+    $job->note( kept => { %$work, sha => $sha } );
+    log_note( $job, "kept $sha for a retry, because the push failed" );
+    die $error;
+}
+
 =func spoke_fix
 
 Works on a new branch in a worktree of one spoke.  The spoke commits, and the
@@ -1023,7 +1077,9 @@ job pushes and opens the pull request.  If the spoke asks a question instead,
 the job gives the origin to a person through C<hand_back>.  A job whose parent
 asked a question, or waits for one, does not run the spoke, and waits too.
 When C<created> is in its arguments, the hub made the repository for this
-change, and the prompt says so.
+change, and the prompt says so.  If an earlier try kept its work because the
+push failed, see L</push_or_keep>, the job pushes that work and opens the pull
+request without running the spoke again.
 
 =cut
 
@@ -1039,44 +1095,72 @@ sub spoke_fix ( $job, $config, $args ) {
     my $branch = join q{-}, grep { $_ ne q{} } 'clod/' . $job->id, slug( $item->{title} );
     my $prior  = @prior ? join( "\n", 'Earlier spokes in this change:', map { "- $_->{repo}: " . ( $_->{branch} ? "branch $_->{branch}" : 'no change' ) . ( $_->{pr_url} ? ", $_->{pr_url}" : q{} ) . "\n  " . ( $_->{summary} // q{} ) } @prior ) : q{};
 
+    my $kept = kept( $job, spoke( $config, $repo ) );
     return in_worktree(
         $job, $config, $repo,
-        { branch => $branch, base => $base },
+        $kept ? { at => $kept->{sha} } : { branch => $branch, base => $base },
         sub ( $spoke, $tree, $tools ) {
-            my $outcome = run_claude(
-                $job, $config,
-                dir      => $tree,
-                prompt   => prompt( fix => repo => $repo, branch => $branch, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $prior, tools => $tools->{note}, context => context( $config, $gh, $item ) ),
-                add_dirs => $tools->{add_dirs},
-                schema   => {
-                    type       => 'object',
-                    required   => [qw{title summary}],
-                    properties => { title => { type => 'string' }, summary => { type => 'string' }, question => { type => 'string' }, path => { type => 'string' } },
-                },
-            ) // return;
-            my %usage   = usage_of($outcome);
-            my $answer  = $outcome->{structured} // {};
-            my $commits = $spoke->commits_since( $tree, "origin/$base" );
-            return $job->fail( { repo => $repo, error => "the run failed: $outcome->{stderr}", %usage } ) if !$outcome->{ok} && !$commits;
+            my $work = $kept // fix_run( $job, $config, $gh, $args, $spoke, $tree, $tools, branch => $branch, base => $base, prior => $prior ) // return;
+            log_note( $job, "pushes $work->{sha}, which an earlier try kept" ) if $kept;
+            push_or_keep( $job, $spoke, $tree, $branch, $work );
 
-            if ( !$commits && ( $answer->{question} // q{} ) ne q{} ) {
-                my $asked = hand_back(
-                    $job, $config, $gh, $item, $answer->{path},
-                    "I need an answer before I can change $repo. I changed nothing.",
-                    $answer->{question}, ( $answer->{path} ? "This concerns `$answer->{path}` in $repo." : () ), how_to_resume($config),
-                );
-                return $job->finish( { repo => $repo, question => $answer->{question}, summary => $answer->{question}, %$asked, %usage } );
-            }
-            return $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } ) if !$commits && @{ $outcome->{denied} // [] };
-            return $job->finish( { repo => $repo, no_change => 1, summary => $answer->{summary}, %usage } )                                         if !$commits;
-
-            $spoke->push_branch( $tree, $branch );
-            my $body = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior );
-            my $pull = $gh->create_pull( $repo, { title => $answer->{title} || $item->{title}, head => $branch, base => $base, body => $body } );
+            my $answer = $work->{answer};
+            my $body   = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior );
+            my $pull   = $gh->create_pull( $repo, { title => $answer->{title} || $item->{title}, head => $branch, base => $base, body => $body } );
             log_note( $job, "opened $pull->{html_url}" );
-            return $job->finish( { repo => $repo, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, summary => $answer->{summary}, commits => $commits, %usage } );
+            return $job->finish( { repo => $repo, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, summary => $answer->{summary}, commits => $work->{commits}, %{ $work->{usage} } } );
         }
     );
+}
+
+=func fix_run
+
+C<($job, $config, $gh, $args, $spoke, $tree, $tools, %fix)>.  The claude run of
+L</spoke_fix>, in C<$tree>, where C<%fix> has C<branch>, C<base> and C<prior>.
+If the run asked a question, changed nothing, or failed, it finishes or fails
+the job and returns undef.  If it committed, it returns the work for
+L</push_or_keep>.
+
+=cut
+
+sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
+    my ( $item, $repo ) = @$args{qw{item repo}};
+    my $outcome = run_claude(
+        $job, $config,
+        dir      => $tree,
+        prompt   => prompt( fix => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, tools => $tools->{note}, context => context( $config, $gh, $item ) ),
+        add_dirs => $tools->{add_dirs},
+        schema   => {
+            type       => 'object',
+            required   => [qw{title summary}],
+            properties => { title => { type => 'string' }, summary => { type => 'string' }, question => { type => 'string' }, path => { type => 'string' } },
+        },
+    ) // return;
+    my %usage   = usage_of($outcome);
+    my $answer  = $outcome->{structured} // {};
+    my $commits = $spoke->commits_since( $tree, "origin/$fix{base}" );
+    if ( !$outcome->{ok} && !$commits ) {
+        $job->fail( { repo => $repo, error => "the run failed: $outcome->{stderr}", %usage } );
+        return;
+    }
+    if ( !$commits && ( $answer->{question} // q{} ) ne q{} ) {
+        my $asked = hand_back(
+            $job, $config, $gh, $item, $answer->{path},
+            "I need an answer before I can change $repo. I changed nothing.",
+            $answer->{question}, ( $answer->{path} ? "This concerns `$answer->{path}` in $repo." : () ), how_to_resume($config),
+        );
+        $job->finish( { repo => $repo, question => $answer->{question}, summary => $answer->{question}, %$asked, %usage } );
+        return;
+    }
+    if ( !$commits && @{ $outcome->{denied} // [] } ) {
+        $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } );
+        return;
+    }
+    if ( !$commits ) {
+        $job->finish( { repo => $repo, no_change => 1, summary => $answer->{summary}, %usage } );
+        return;
+    }
+    return { answer => $answer, commits => $commits, usage => \%usage };
 }
 
 our %REVIEW_SCHEMA = (
@@ -1331,6 +1415,13 @@ The prompt also holds the whole conversation of the pull request, and the base
 branch of the pull request, which a rebase that names no branch goes onto.  The
 push is forced with a lease, so a rebase reaches the pull request.
 
+If an earlier try kept its work because the push failed, see
+L</push_or_keep>, the job pushes that work and replies without running the
+spoke again.  It does so only if the head of the pull request is still the one
+that the work started from.  If someone pushed to the branch since, a forced
+push of the kept work would undo their commits, so the job drops it and runs
+the spoke again.
+
 =cut
 
 sub spoke_address ( $job, $config, $args ) {
@@ -1345,53 +1436,88 @@ sub spoke_address ( $job, $config, $args ) {
     return $job->finish( { repo => $repo, nothing => 1 } ) if !@$pending && !@$comments;
 
     my $branch = $pull->{head}{ref};
+    my $spoke  = spoke( $config, $repo );
+    my $kept   = kept( $job, $spoke );
+    if ( $kept && ( $kept->{onto} // q{} ) ne ( $pull->{head}{sha} // q{} ) ) {
+        log_note( $job, "drops the work that an earlier try kept, because $branch moved since" );
+        $spoke->git( q{-C}, $spoke->mirror->to_string, qw{update-ref -d}, kept_ref($job) );
+        $job->note( kept => undef );
+        undef $kept;
+    }
     return in_worktree(
         $job, $config, $repo,
-        { existing => $branch },
+        $kept ? { at => $kept->{sha} } : { existing => $branch },
         sub ( $spoke, $tree, $tools ) {
-            my $outcome = run_claude(
-                $job, $config,
-                dir    => $tree,
-                prompt => prompt(
-                    address      => repo => $repo,
-                    branch       => $branch,
-                    base         => $pull->{base}{ref},
-                    origin       => origin_url( $config, $item ),
-                    instructions => $args->{instructions},
-                    tools        => $tools->{note},
-                    history      => context( $config, $gh, $item ),
-                    context      => Mojo::JSON::encode_json( { threads => $pending, comments => $comments } ),
-                ),
-                add_dirs => $tools->{add_dirs},
-                schema   => {
-                    type       => 'object',
-                    required   => [qw{summary replies}],
-                    properties => {
-                        summary => { type => 'string' },
-                        replies => { type => 'array', items => { type => 'object', required => [qw{id body}], properties => { id => { type => 'integer' }, body => { type => 'string' } } } },
-                        comment => { type => 'string' },
-                    },
-                },
-            ) // return;
-            my %usage  = usage_of($outcome);
-            my $answer = $outcome->{structured};
-            return $job->fail( { repo => $repo, error => "the run failed: $outcome->{stderr}", %usage } ) if ref $answer ne 'HASH';
+            my $work = $kept // address_run( $job, $config, $gh, $args, $spoke, $tree, $tools, pull => $pull, pending => $pending, comments => $comments ) // return;
+            log_note( $job, "pushes $work->{sha}, which an earlier try kept" ) if $kept;
+            push_or_keep( $job, $spoke, $tree, $branch, $work )                if $work->{commits};
 
-            my $commits = $spoke->commits_since( $tree, "origin/$branch" );
-
-            # Before the replies, which can say that a change was made.
-            return $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } ) if !$commits && @{ $outcome->{denied} // [] };
-            $spoke->push_branch( $tree, $branch )                                                                                                   if $commits;
-            my %open = map { $_->{id} => 1 } @$pending;
+            my $answer = $work->{answer};
+            my %open   = map { $_->{id} => 1 } @$pending;
             my @replied;
             for my $reply ( grep { $open{ $_->{id} } } @{ $answer->{replies} } ) {
                 $gh->reply_review_comment( $repo, $item->{number}, $reply->{id}, $reply->{body} );
                 push @replied, $reply->{id};
             }
             my $answered = @$comments && ( $answer->{comment} // q{} ) ne q{} ? $gh->comment( $repo, $item->{number}, $answer->{comment} )->{html_url} : undef;
-            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $commits, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, %usage } );
+            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $work->{commits}, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, %{ $work->{usage} } } );
         }
     );
+}
+
+=func address_run
+
+C<($job, $config, $gh, $args, $spoke, $tree, $tools, %address)>.  The claude
+run of L</spoke_address>, in C<$tree>, where C<%address> has C<pull>,
+C<pending> and C<comments>.  If the run failed, or committed nothing because
+claude refused some of its calls, it fails the job and returns undef.
+Otherwise it returns the work for L</push_or_keep>, with C<onto>, the head of
+the pull request that the run started from.
+
+=cut
+
+sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
+    my ( $item, $repo ) = @$args{qw{item repo}};
+    my $pull    = $address{pull};
+    my $branch  = $pull->{head}{ref};
+    my $outcome = run_claude(
+        $job, $config,
+        dir    => $tree,
+        prompt => prompt(
+            address      => repo => $repo,
+            branch       => $branch,
+            base         => $pull->{base}{ref},
+            origin       => origin_url( $config, $item ),
+            instructions => $args->{instructions},
+            tools        => $tools->{note},
+            history      => context( $config, $gh, $item ),
+            context      => Mojo::JSON::encode_json( { threads => $address{pending}, comments => $address{comments} } ),
+        ),
+        add_dirs => $tools->{add_dirs},
+        schema   => {
+            type       => 'object',
+            required   => [qw{summary replies}],
+            properties => {
+                summary => { type => 'string' },
+                replies => { type => 'array', items => { type => 'object', required => [qw{id body}], properties => { id => { type => 'integer' }, body => { type => 'string' } } } },
+                comment => { type => 'string' },
+            },
+        },
+    ) // return;
+    my %usage  = usage_of($outcome);
+    my $answer = $outcome->{structured};
+    if ( ref $answer ne 'HASH' ) {
+        $job->fail( { repo => $repo, error => "the run failed: $outcome->{stderr}", %usage } );
+        return;
+    }
+    my $commits = $spoke->commits_since( $tree, "origin/$branch" );
+
+    # Before the replies, which can say that a change was made.
+    if ( !$commits && @{ $outcome->{denied} // [] } ) {
+        $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } );
+        return;
+    }
+    return { answer => $answer, commits => $commits, usage => \%usage, onto => $pull->{head}{sha} };
 }
 
 =func refused
