@@ -286,6 +286,31 @@ subtest inbox_poll => sub {
     my $theirs = $assign_pull->( 23, 15 );
     like( $minion->job( $theirs->{queued}[0] )->info, { task => 'triage', args => [ { kind => 'review', number => 15 } ] }, 'an assignment to the pull request of someone else becomes a review' );
     delete @state{qw{pull issue_comments}};
+
+    # A review with a line comment.  Its notification names no latest comment,
+    # or names the pull request itself.
+    $state{pull}            = $own_pull;
+    $state{issue_comments}  = [];
+    $state{reviews}         = [ { id => 40, user => { login => 'trusted' }, body => q{}, state => 'COMMENTED', submitted_at => '2026-01-01T00:00:02Z' } ];
+    $state{review_comments} = [ { id => 41, user => { login => 'trusted' }, body => 'What happens here?', path => 'lib/X.pm', line => 3, created_at => '2026-01-01T00:00:02Z' } ];
+    my $reviewed = sub ( $id, %subject ) {
+        $state{threads} = [ { id => $id, reason => 'author', updated_at => "t$id", repository => { full_name => 'Test-Org/one' }, subject => { type => 'PullRequest', url => "$api/repos/Test-Org/one/pulls/16", title => 'A change', %subject } } ];
+        return run_job('inbox_poll')->{result};
+    };
+    my $bare = $reviewed->(24);
+    is( scalar @{ $bare->{queued} }, 1, 'a line comment of an authorized user, in a notification that names no comment, is work' ) or diag Mojo::Util::dumper $bare;
+    my $bare_job = $minion->job( $bare->{queued}[0] // -1 );
+    like( $bare_job ? $bare_job->info : {}, { args => [ { kind => 'address_review', requester => 'trusted' } ] }, 'asked for by the author of the latest review' );
+    $minion->reset( { all => 1 } );
+
+    my $self_url = $reviewed->( 25, latest_comment_url => "$api/repos/Test-Org/one/pulls/16" );
+    is( scalar @{ $self_url->{queued} }, 1, 'and so is one whose latest comment is the pull request itself' ) or diag Mojo::Util::dumper $self_url;
+    $minion->reset( { all => 1 } );
+
+    push @{ $state{review_comments} }, { id => 42, user => { login => 'stranger' }, body => 'Me too.', path => 'lib/X.pm', line => 3, in_reply_to_id => 41, created_at => '2026-01-01T00:00:09Z' };
+    my $strange = $reviewed->(26);
+    like( $strange->{ignored}, [qr/requested\ by\ stranger,\ who\ is\ not\ authorized/], 'but the latest word of a user who is not authorized is not' );
+    delete @state{qw{pull issue_comments reviews review_comments}};
     $minion->reset( { all => 1 } );
 
     @calls          = ();

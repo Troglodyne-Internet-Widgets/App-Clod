@@ -534,6 +534,10 @@ request, or the author of the latest comment.  The events API puts the assignee
 in C<actor> of an assignment, so that user is in C<assigner>, and the one who
 asked for a review is in C<review_requester>.
 
+If C<latest_comment_url> names no comment, or names the pull request itself, the
+author of the latest review or line comment on the pull request caused it.  A
+review of an authorized user came with such a notification.
+
 =cut
 
 sub requester ( $config, $gh, $repo, $number, $reason, $subject ) {
@@ -545,8 +549,16 @@ sub requester ( $config, $gh, $repo, $number, $reason, $subject ) {
         my ($event) = grep { ( $_->{event} // q{} ) eq $wanted && ( $_->{$field}{login} // q{} ) eq $bot } reverse @{ $gh->issue_events( $repo, $number ) };
         return $event ? $event->{$by}{login} : undef;
     }
-    return if !$subject->{latest_comment_url};
-    return $gh->get( $subject->{latest_comment_url} )->{user}{login};
+    my $latest = $subject->{latest_comment_url} // q{};
+    return $gh->get($latest)->{user}{login} if $latest ne q{} && $latest ne ( $subject->{url} // q{} );
+    return if ( $subject->{type} // q{} ) ne 'PullRequest';
+
+    my @said = (
+        ( map { { by => $_->{user}{login}, at => $_->{created_at} } } @{ $gh->review_comments( $repo, $number ) } ),
+        ( map { { by => $_->{user}{login}, at => $_->{submitted_at} } } @{ $gh->reviews( $repo, $number ) } ),
+    );
+    my $last = ( sort { ( $a->{at} // q{} ) cmp ( $b->{at} // q{} ) } @said )[-1];
+    return $last ? $last->{by} : undef;
 }
 
 =func context
