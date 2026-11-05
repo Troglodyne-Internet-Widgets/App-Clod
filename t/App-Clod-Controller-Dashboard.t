@@ -105,6 +105,27 @@ subtest 'the buttons of the action items' => sub {
     $minion->perform_jobs;
 };
 
+subtest 'a harness fix that waits for review' => sub {
+    my $scan = { checked_at => time - 600, repos => { 'Test-Org/one' => { checks => [ { check => 'CLAUDE.md', status => 'fail' } ] } }, checks => [ 'CLAUDE.md', 'git hooks' ] };
+    job( harness_scan => $scan );
+    job( harness_fix  => { repo => 'Test-Org/one', pr_url => 'https://github.com/Test-Org/one/pull/33' }, notes => { repo => 'Test-Org/one' } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    my $item = action_about(qr/harness\ check/);
+    like( $item, { text => qr/A\ fix\ waits\ for\ review:\z/, link => { url => 'https://github.com/Test-Org/one/pull/33', label => '#33' } }, 'a harness fix that opened a pull request links to it' );
+    ok( !$item->{buttons}, 'and offers no second Fix' );
+
+    job( harness_scan => { %$scan, checked_at => time + 1, repos => { 'Test-Org/one' => { %{ $scan->{repos}{'Test-Org/one'} }, fix_pr => 'https://github.com/Test-Org/one/pull/33' } } } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    is( action_about(qr/harness\ check/)->{link}{label}, '#33', 'a later scan that finds it open keeps the link' );
+
+    job( harness_scan => { %$scan, checked_at => time + 2 } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    is( [ map { $_->{label} } @{ action_about(qr/harness\ check/)->{buttons} // [] } ], ['Fix'], 'and once a scan finds it closed, Fix is back' );
+};
+
 subtest 'an update of the bot' => sub {
     my %act     = ( 'X-Clod-Action' => 'yes' );
     my $running = $t->app->running;

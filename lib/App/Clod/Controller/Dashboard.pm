@@ -54,7 +54,9 @@ C<{level, text}> and sometimes a C<job>.  An outage comes first.  An item that
 a button can settle has C<buttons>, each a C<{label, act}> and sometimes a
 C<body>: the dashboard posts C<body> to F</act/E<lt>actE<gt>>.  A failed job
 has Retry and Ignore, and a spoke that fails harness checks has Fix, unless a
-L<App::Clod::Tasks/harness_fix> of it waits or runs.  A failed job that
+L<App::Clod::Tasks/harness_fix> of it waits or runs, or its pull request
+waits for review.  Then the item has C<link>, a C<{url, label}>, to the pull
+request, and no button.  A failed job that
 somebody ignored is not an item.
 
 =cut
@@ -85,10 +87,11 @@ sub action_items ( $self, $budget, $outages = [] ) {
             next if !@failing;
             my $text  = "$repo fails " . scalar(@failing) . ' harness check(s): ' . join( q{, }, map { $_->{check} } @failing ) . q{.};
             my $fixer = pending_harness_fix( $minion, $repo );
+            my $pull  = !$fixer && harness_pull( $minion, $repo, $harness );
             push @actions,
-              $fixer
-              ? { level => 'warning', job  => $fixer, text    => "$text A harness fix of it is queued." }
-              : { level => 'warning', text => $text,  buttons => [ { label => 'Fix', act => 'harness/fix', body => { repo => $repo } } ] };
+                $fixer ? { level => 'warning', job => $fixer, text => "$text A harness fix of it is queued." }
+              : $pull  ? { level => 'warning', text => "$text A fix waits for review:", link => { url => $pull, label => pull_label($pull) } }
+              :          { level => 'warning', text => $text, buttons => [ { label => 'Fix', act => 'harness/fix', body => { repo => $repo } } ] };
         }
         push @actions, { level => 'danger', text => "Harness scan of $_ failed: $harness->{errors}{$_}" } for sort keys %{ $harness->{errors} // {} };
     }
@@ -250,6 +253,38 @@ sub pending_harness_fix ( $minion, $repo ) {
         return $info->{id} if ( $info->{notes}{repo} // q{} ) eq $repo;
     }
     return;
+}
+
+=func harness_pull
+
+C<($minion, $repo, $scan)>, with C<$scan> the result of the last harness scan.
+The URL of the open pull request of a harness fix of C<$repo>: the one that a
+L<App::Clod::Tasks/harness_fix> opened after that scan, or else the
+C<fix_pr> that the scan found.  Undef when there is none, which is also the
+case once the scan finds that one that it saw is closed.
+
+=cut
+
+sub harness_pull ( $minion, $repo, $scan ) {
+    my $jobs = $minion->jobs( { tasks => ['harness_fix'], states => ['finished'] } );
+    while ( my $info = $jobs->next ) {
+        next if ( $info->{notes}{repo} // q{} ) ne $repo;
+        last if ( $info->{finished}    // 0 ) < ( $scan->{checked_at} // 0 );
+        my $url = ( ref $info->{result} eq 'HASH' ? $info->{result} : {} )->{pr_url} // next;
+        return $url;
+    }
+    return ( $scan->{repos}{$repo} // {} )->{fix_pr};
+}
+
+=func pull_label
+
+C<($url)>.  The label of a link to a pull request: C<#12> for its number.
+
+=cut
+
+sub pull_label ($url) {
+    my ($number) = $url =~ m{/pull/(\d+)\z};
+    return defined $number ? "#$number" : $url;
 }
 
 =method retry
