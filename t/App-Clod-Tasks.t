@@ -1173,6 +1173,40 @@ subtest 'self_check and self_update' => sub {
     $minion->reset( { all => 1 } );
 };
 
+subtest 'the references that triage reads' => sub {
+    %state = ();
+    @calls = ();
+    my @refreshed;
+    my $mock = Test::MockModule->new('App::Clod::Spoke');
+    my $real = $mock->original('refresh_reference');
+    $mock->redefine( refresh_reference => sub ( $self, @args ) { push @refreshed, $self->repo; return $real->( $self, @args ) } );
+    my $config = $app->clod_config;
+    my $gh     = App::Clod::Tasks::github($config);
+
+    App::Clod::Tasks::prepare_hub( $config, $gh, \@SPOKES );
+    @refreshed = ();
+    my ( undef, $ref ) = App::Clod::Tasks::prepare_hub( $config, $gh, \@SPOKES, 'Test-Org/two' );
+    is( \@refreshed,         ['Test-Org/two'], 'with every reference there, triage refreshes only the one of its request' );
+    is( [ sort keys %$ref ], \@SPOKES,         'and still reads every spoke' );
+
+    App::Clod::Tasks::spoke( $config, 'Test-Org/one' )->reference->remove_tree;
+    @refreshed = ();
+    App::Clod::Tasks::prepare_hub( $config, $gh, \@SPOKES, 'Test-Org/two' );
+    is( [ sort @refreshed ], \@SPOKES, 'and a spoke that has no reference yet, so that it can read it' );
+
+    $minion->reset( { all => 1 } );
+    run_job('spoke_sweep');
+    my $next = $minion->jobs( { tasks => ['refresh_references'] } )->next;
+    ok( $next, 'a spoke sweep queues a refresh of the references' ) or return;
+    run_job('spoke_sweep');
+    is( $minion->jobs( { tasks => ['refresh_references'] } )->total, 1, 'and no second one while one waits' );
+
+    @refreshed = ();
+    my $refresh = run_id( $next->{id} );
+    is( [ $refresh->{result}{refreshed}, [ sort @refreshed ] ], [ 2, \@SPOKES ], 'the refresh refreshes every spoke' );
+    $minion->reset( { all => 1 } );
+};
+
 subtest harness_scan => sub {
     %state = ();
     $state{files} = { 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.10.0"}]}' };
