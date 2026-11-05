@@ -14,6 +14,10 @@
     .harness td, .harness th { white-space: nowrap; }
     .harness td.cell { text-align: center; }
     .summary { max-width: 40rem; }
+    /* A button of an action item in the color of the text of its item, which
+       its level sets, so it reads in both themes. */
+    .act { color: inherit; border-color: currentColor; background-color: transparent; }
+    .act:hover, .act:focus-visible { color: inherit; border-color: currentColor; background-color: rgba(127, 127, 127, 0.25); }
   </style>
 </head>
 <body class="bg-body-tertiary">
@@ -121,7 +125,7 @@
         : '<li class="list-group-item text-success"><i class="bi bi-check-circle"></i> Nothing needs you.</li>';
     }
 
-    const buttons = a => (a.buttons || []).map(b => `<button type="button" class="btn btn-sm btn-outline-dark text-nowrap"
+    const buttons = a => (a.buttons || []).map(b => `<button type="button" class="btn btn-sm act text-nowrap"
       data-act="${esc(b.act)}" data-body="${esc(JSON.stringify(b.body || {}))}">${esc(b.label)}</button>`).join('');
 
     // Every action needs this header, which no other site can make the browser send.
