@@ -73,6 +73,7 @@ our %SCHEMA = (
         spoke_prompt   => { type => 'string',  nullable => 1, default => undef },
         follow_up_max  => { type => 'integer', minimum  => 0, default => 3 },
         create_repos   => { type => 'boolean', default  => 0 },
+        restart_units  => list_of( { type => 'string', pattern => '\A[\w@.:-]+[.]service\z' } ),
     },
 );
 
@@ -295,6 +296,15 @@ Nothing in the configuration changes that.  See L<App::Clod/CAVEATS>.
 
 The release issue of each new repository is assigned to the person who asked
 for the repository.  See L<App::Clod::Tasks/create_repo>.
+
+=item restart_units
+
+The systemd units of the bot, such as C<clod-example.test.service> and
+C<clod-worker-example.test.service>, that L<App::Clod::Tasks/self_update>
+restarts after it pulls new code.  Default none: then the dashboard says that
+a person must restart them.  The service user must be allowed to run
+C</usr/bin/systemctl restart $unit> with sudo and no password, for each unit.
+The clod recipe of trog-provisioner grants that, and fills this in.
 
 =item otel
 

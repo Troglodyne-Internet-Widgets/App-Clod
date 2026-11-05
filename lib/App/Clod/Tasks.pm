@@ -6,6 +6,7 @@ use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
 
+use IPC::Run    ();
 use List::Util  ();
 use Mojo::File  ();
 use Mojo::JSON  ();
@@ -44,6 +45,9 @@ our %TASKS = (
     create_repo    => \&create_repo,
     file_issues    => \&file_issues,
     harness_fix    => \&harness_fix,
+    self_check     => \&self_check,
+    self_update    => \&self_update,
+    plugin_update  => \&plugin_update,
 );
 
 # Each Minion schedule: its cron line and its task.
@@ -52,6 +56,7 @@ our %SCHEDULES = (
     harness  => [ '17 * * * *',   'harness_scan' ],
     assigned => [ '*/15 * * * *', 'assigned_sweep' ],
     spokes   => [ '*/15 * * * *', 'spoke_sweep' ],
+    self     => [ '7,37 * * * *', 'self_check' ],
 );
 our %SCHEDULED = map { $_->[1] => 1 } values %SCHEDULES;
 
@@ -1981,6 +1986,112 @@ sub harness_fix ( $job, $config, $args ) {
             return $job->finish( { repo => $repo, issue_url => $issue->{url}, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, changes => \@changes, manual => \@manual } );
         }
     );
+}
+
+=func self_check
+
+Every half hour.  Says whether the bot is up to date: C<running>, the commit
+that the worker runs, from the helper C<running> of L<App::Clod>, and
+C<checkout>, the L<App::Clod/checkout> after a fetch, with C<head>,
+C<upstream>, its upstream branch, and C<behind> and C<ahead>, the commits
+between the two.  And C<plugins>, from L<App::Clod::Claude/plugins>, for the
+account that claude runs as.  A part that fails has its error in place of its
+result, as C<checkout> with C<error>, or C<plugin_error>.  With no checkout,
+there is no C<checkout>.
+
+=cut
+
+sub self_check ( $job, $config ) {
+    prune_history( $job->minion, q{self_check} );
+    my %result = ( checked_at => time, running => $job->app->running );
+    if ( my $dir = App::Clod::checkout() ) {
+        my $git = spoke( $config, 'App-Clod' );
+        $result{checkout} = eval {
+            $git->git_remote( q{-C}, "$dir", qw{fetch --quiet origin} );
+            my %at = map { $_ => $git->git( q{-C}, "$dir", 'rev-parse', $_ eq 'head' ? 'HEAD' : '@{upstream}' ) } qw{head upstream};
+            my ( $behind, $ahead ) = split m{\s+}, $git->git( q{-C}, "$dir", qw{rev-list --count --left-right}, '@{upstream}...HEAD' );
+            +{ %at, behind => 0 + $behind, ahead => 0 + $ahead };
+        } // { error => ( split m{\n}, $@ )[0] };
+    }
+    $result{plugins} = eval { claude($config)->plugins } // do { $result{plugin_error} = ( split m{\n}, $@ )[0]; [] };
+    return $job->finish( \%result );
+}
+
+=func self_update
+
+From the dashboard.  Pulls the L<App::Clod/checkout> from its upstream, fast
+forward only, and restarts the units of C<restart_units> when the worker runs
+another commit than the checkout then has.  It restarts its own unit, the one
+that its process runs in, last, after it finishes, because the restart stops
+it.  With no C<restart_units>, its result says that a person must restart the
+bot.  Its result has C<from> and C<to>, the head before and after the pull,
+and C<restarted>, the units.
+
+=cut
+
+our $CGROUP = '/proc/self/cgroup';
+
+sub self_update ( $job, $config ) {
+    my $dir    = App::Clod::checkout() // return $job->fail( { error => 'the bot does not run from a git checkout' } );
+    my $git    = spoke( $config, 'App-Clod' );
+    my %result = ( from => $git->git( q{-C}, "$dir", qw{rev-parse HEAD} ) );
+    $git->git_remote( q{-C}, "$dir", qw{fetch --quiet origin} );
+    $git->git( q{-C}, "$dir", qw{merge --ff-only --quiet}, '@{upstream}' );
+    $result{to} = $git->git( q{-C}, "$dir", qw{rev-parse HEAD} );
+    return $job->finish( { %result, restarted => [] } ) if $result{to} eq ( ( $job->app->running // {} )->{sha} // q{} );
+
+    my @units = @{ $config->{restart_units} };
+    return $job->finish( { %result, restarted => [], restart => 'restart_units names no unit, so a person must restart the bot' } ) if !@units;
+    my $own    = own_unit() // q{};
+    my @others = grep { $_ ne $own } @units;
+    restart_unit($_) for @others;
+    my @mine = grep { $_ eq $own } @units;
+    $job->finish( { %result, restarted => [ @others, @mine ] } );
+    restart_unit($_) for @mine;
+    return;
+}
+
+=func own_unit
+
+The systemd unit that this process runs in, from F</proc/self/cgroup>, such as
+C<clod-worker-example.test.service>.  Undef outside a unit.
+
+=cut
+
+sub own_unit {
+    open my $fh, '<', $CGROUP or return;
+    my ($unit) = map { m{/([^/]+[.]service)$} } <$fh>;
+    close $fh or return;
+    return $unit;
+}
+
+=func restart_unit
+
+C<($unit)>.  Restarts the unit with C<sudo -n /usr/bin/systemctl restart>,
+which is the command that servicesudo grants, as it is written.  Dies with
+what sudo or systemctl said if it fails.
+
+=cut
+
+sub restart_unit ($unit) {
+    my $err = q{};
+    IPC::Run::run( [ qw{sudo -n /usr/bin/systemctl restart}, $unit ], '<', \undef, '>', \my $out, '2>', \$err ) or die "restart $unit: $err\n";
+    return;
+}
+
+=func plugin_update
+
+From the dashboard.  Updates each plugin that L<App::Clod::Claude/is_behind>
+finds behind its marketplace, with C<claude plugin update>, for the account
+that claude runs as.  The next run of claude loads the new version, so
+nothing restarts.  Its result has C<updated>, the ids.
+
+=cut
+
+sub plugin_update ( $job, $config ) {
+    my $claude  = claude($config);
+    my @updated = map { $claude->cli( qw{plugin update}, $_->{id} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
+    return $job->finish( { updated => \@updated } );
 }
 
 =func assigned_sweep

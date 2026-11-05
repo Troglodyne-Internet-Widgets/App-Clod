@@ -121,10 +121,12 @@ subtest marketplace_check => sub {
     my $behind = App::Clod::Harness::marketplace_check( $plugin, '{"plugins":[{"name":"test-plugin","version":"0.10.0"}]}', 'test-plugin' );
     is( $behind->{status}, 'fail', 'a pin older than the plugin fails' );
     like( $behind->{detail}, qr/pins\ 0\.10\.0;\ the\ plugin\ is\ at\ 0\.11\.0/, 'and says both versions' );
-    is( App::Clod::Harness::marketplace_check( $plugin, '{"plugins":[{"name":"test-plugin","version":"0.11.0"}]}', 'test-plugin' )->{status}, 'pass',                         'an equal pin passes' );
-    is( App::Clod::Harness::marketplace_check( $plugin, '{"plugins":[{"name":"test-plugin","version":"0.9.10"}]}', 'test-plugin' )->{status}, 'fail',                         'versions compare as versions, not strings' );
-    is( App::Clod::Harness::marketplace_check( $plugin, '{"plugins":[]}',                                          'test-plugin' )->{status}, 'fail',                         'a plugin missing from the marketplace fails' );
-    is( App::Clod::Harness::marketplace_check( undef,   undef,                                                     'test-plugin' )->{detail}, 'could not read both versions', 'missing files fail' );
+    is( App::Clod::Harness::marketplace_check( $plugin, '{"plugins":[{"name":"test-plugin","version":"0.11.0"}]}', 'test-plugin' )->{status}, 'pass', 'an equal pin passes' );
+    is( App::Clod::Harness::marketplace_check( $plugin, '{"plugins":[{"name":"test-plugin","version":"0.9.10"}]}', 'test-plugin' )->{status}, 'fail', 'versions compare as versions, not strings' );
+    my $two = '{"name":"test-plugin","version":"0.10"}';
+    is( App::Clod::Harness::marketplace_check( $two,    '{"plugins":[{"name":"test-plugin","version":"0.9"}]}', 'test-plugin' )->{status}, 'fail',                         'and a version with two parts compares as dotted, so 0.9 is older than 0.10' );
+    is( App::Clod::Harness::marketplace_check( $plugin, '{"plugins":[]}',                                       'test-plugin' )->{status}, 'fail',                         'a plugin missing from the marketplace fails' );
+    is( App::Clod::Harness::marketplace_check( undef,   undef,                                                  'test-plugin' )->{detail}, 'could not read both versions', 'missing files fail' );
 };
 
 done_testing;

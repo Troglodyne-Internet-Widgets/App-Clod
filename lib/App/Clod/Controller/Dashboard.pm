@@ -10,6 +10,7 @@ use Mojo::Base 'Mojolicious::Controller', -signatures;
 use Time::HiRes qw{time};
 
 use App::Clod::Budget();
+use App::Clod::Claude();
 use App::Clod::Outage();
 use App::Clod::Tasks();
 
@@ -28,7 +29,9 @@ sub page ($self) { return $self->render( template => 'dashboard', bot => $self->
 
 =method overview
 
-Item counts by state, the Minion stats, the budget, the outages, and the action items.
+Item counts by state, the Minion stats, the budget, the outages, the action
+items, and C<running>, the commit that the page runs, as C<{sha, short}>, or
+undef when it runs from no checkout.
 
 =cut
 
@@ -40,7 +43,7 @@ sub overview ($self) {
         $counts{$state} = $minion->jobs( { tasks => \@ITEM_TASKS, states => [$state] } )->total;
     }
     my $outages = App::Clod::Outage::summary($minion);
-    return $self->render( json => { stats => $minion->stats, items => \%counts, budget => $budget, outages => $outages, actions => $self->action_items( $budget, $outages ) } );
+    return $self->render( json => { stats => $minion->stats, items => \%counts, budget => $budget, outages => $outages, running => $self->running, actions => $self->action_items( $budget, $outages ) } );
 }
 
 =method action_items
@@ -117,6 +120,8 @@ sub action_items ( $self, $budget, $outages = [] ) {
 
     push @actions, { level => 'warning', text => 'Claude work is paused until the quota resets' . ( $budget->{paused_until} ? q{ at } . gmtime( $budget->{paused_until} ) . ' UTC' : q{} ) . q{.} } if $budget->{paused};
 
+    push @actions, $self->self_items( $minion, App::Clod::Tasks::last_result( $minion, 'self_check' ) );
+
     my $failed = $minion->jobs( { states => ['failed'] } );
     my $shown  = 0;
     while ( my $info = $failed->next ) {
@@ -132,6 +137,86 @@ sub action_items ( $self, $budget, $outages = [] ) {
           };
     }
     return \@actions;
+}
+
+=method self_items
+
+C<($minion, $check)>, with C<$check> the result of the last
+L<App::Clod::Tasks/self_check>.  The action items that it calls for: a bot
+behind its upstream, or a checkout that the bot does not run yet, with an
+Update button, and plugins behind their marketplace, with an Update plugins
+button.  While a job for a button waits or runs, the item names it, and has
+no button.
+
+=cut
+
+sub self_items ( $self, $minion, $check ) {
+    return if !$check;
+    my @items;
+    my $at      = $check->{checkout} // {};
+    my $running = $self->running     // {};
+    if ( $at->{error} ) {
+        push @items, { level => 'warning', text => "The bot cannot tell whether it is up to date: $at->{error}" };
+    }
+    elsif ( $at->{head} ) {
+        my @why;
+        push @why,   "its checkout is $at->{behind} commit(s) behind upstream"                                                                                       if $at->{behind};
+        push @why,   'its checkout is at ' . substr( $at->{head}, 0, 7 ) . ', which it does not run yet'                                                             if !$at->{behind} && $at->{head} ne ( $running->{sha} // q{} );
+        push @items, button_item( $minion, 'self_update', 'The bot is out of date: ' . join( q{, and }, @why ) . q{.}, { label => 'Update', act => 'self/update' } ) if @why;
+    }
+    my @behind = grep { App::Clod::Claude::is_behind($_) } @{ $check->{plugins} // [] };
+    push @items, button_item( $minion, 'plugin_update', 'Plugins have a newer version: ' . join( q{, }, map { "$_->{id} $_->{version} to $_->{latest}" } @behind ) . q{.}, { label => 'Update plugins', act => 'plugins/update' } ) if @behind;
+    push @items, { level => 'warning', text => "The bot cannot tell whether its plugins are up to date: $check->{plugin_error}" } if $check->{plugin_error};
+    return @items;
+}
+
+=func button_item
+
+C<($minion, $task, $text, \%button)>.  A warning with C<$text>, and the button,
+a C<{label, act}>, unless a job of C<$task> waits or runs.  Then it names that
+job, and has no button.
+
+=cut
+
+sub button_item ( $minion, $task, $text, $button ) {
+    my $pending = pending_job( $minion, $task );
+    return $pending ? { level => 'warning', job => $pending, text => "$text It is queued." } : { level => 'warning', text => $text, buttons => [$button] };
+}
+
+=func pending_job
+
+C<($minion, $task)>.  The id of a job of C<$task> that waits or runs, or
+undef.
+
+=cut
+
+sub pending_job ( $minion, $task ) {
+    my $job = $minion->jobs( { tasks => [$task], states => [qw{inactive active}] } )->next // return;
+    return $job->{id};
+}
+
+=method self_update
+
+Queues an L<App::Clod::Tasks/self_update>, unless one waits or runs, and says
+which.
+
+=cut
+
+sub self_update ($self) {
+    my $minion = $self->minion;
+    return $self->render( json => { queued => pending_job( $minion, 'self_update' ) // $minion->enqueue('self_update') } );
+}
+
+=method plugin_update
+
+Queues an L<App::Clod::Tasks/plugin_update>, unless one waits or runs, and says
+which.
+
+=cut
+
+sub plugin_update ($self) {
+    my $minion = $self->minion;
+    return $self->render( json => { queued => pending_job( $minion, 'plugin_update' ) // $minion->enqueue('plugin_update') } );
 }
 
 =func pending_harness_fix

@@ -163,6 +163,7 @@ $conf->spew(
             owners           => ['Test-Org'],
             auth             => { trusted_header => 'X-Test-User' },
             poll_interval    => 0,
+            restart_units    => [qw{clod-test.test.service clod-worker-test.test.service}],
             claude           => { bin    => $here->child( 'bin', 'fake-claude' )->to_string, timeout   => 60 },
             harness          => { flavor => 'test-default',                                  standards => { directory => $here->child( 'data', 'standards' )->to_string } },
         }
@@ -1058,6 +1059,73 @@ subtest harness_fix => sub {
     my $said = calls_of('comment')->[0][2]{body};
     like( $said, qr/changes\ no\ file/,      'and says on the issue that nothing changed' );
     like( $said, qr/`ClaudeMd`:\ Say\ what/, 'and what is left for a person' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest 'self_check and self_update' => sub {
+    %state = ();
+    @calls = ();
+
+    # An upstream with one commit more than the checkout that the bot runs.
+    my $origin = $tmp->child('self-origin.git');
+    git( qw{init --quiet --bare --initial-branch=main}, "$origin" );
+    my $seed = $tmp->child('self-seed')->make_path;
+    git( q{-C}, "$seed", qw{init --quiet --initial-branch=main} );
+    my $commit = sub ($what) {
+        git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet --allow-empty -m}, $what );
+        git( q{-C}, "$seed", 'push', '--quiet', "$origin", 'main' );
+        return git( q{-C}, "$seed", qw{rev-parse HEAD} );
+    };
+    my $first    = $commit->('one');
+    my $checkout = $tmp->child('self-checkout');
+    git( 'clone', '--quiet', "$origin", "$checkout" );
+    my $second = $commit->('two');
+
+    my $self = Test::MockModule->new('App::Clod');
+    $self->redefine( checkout => sub { $checkout } );
+    my $running = { sha => $first, short => substr $first, 0, 7 };
+    $app->helper( running => sub { $running } );
+    my $claude = Test::MockModule->new('App::Clod::Claude');
+    my @updated;
+    $claude->redefine( plugins => sub ($) { [ { id => 'kit@m', version => '1.0', latest => '1.1' }, { id => 'ok@m', version => '2', latest => '2' } ] } );
+    $claude->redefine( cli     => sub ( $, @args ) { push @updated, [@args]; return q{} } );
+
+    my $check = run_job('self_check');
+    is( $check->{state}, 'finished', 'the check finishes' ) or diag Mojo::Util::dumper $check->{result};
+    like( $check->{result}, { running => { sha => $first }, checkout => { head => $first, upstream => $second, behind => 1, ahead => 0 } }, 'it fetches, and finds the checkout one commit behind its upstream' );
+    is( scalar @{ $check->{result}{plugins} }, 2, 'and lists the plugins' );
+
+    my @restarted;
+    my $tasks = Test::MockModule->new('App::Clod::Tasks');
+    $tasks->redefine( restart_unit => sub ($unit) { push @restarted, $unit; return } );
+    my $cgroup = $tmp->child('cgroup');
+    $cgroup->spew("0::/system.slice/clod-worker-test.test.service\n");
+    local $App::Clod::Tasks::CGROUP = "$cgroup";
+
+    my $update = run_job('self_update');
+    is( $update->{state},                              'finished',                                                 'the update finishes' ) or diag Mojo::Util::dumper $update->{result};
+    is( git( q{-C}, "$checkout", qw{rev-parse HEAD} ), $second,                                                    'it pulls the new commit' );
+    is( \@restarted,                                   [qw{clod-test.test.service clod-worker-test.test.service}], 'and restarts the units, its own one last' );
+    is( $update->{result}{restarted},                  \@restarted,                                                'and says which' );
+
+    @restarted = ();
+    $running   = { sha => $second, short => substr $second, 0, 7 };
+    my $again = run_job('self_update');
+    is( [ $again->{result}{to}, \@restarted ], [ $second, [] ], 'with nothing new, and the new commit running, it restarts nothing' );
+
+    git( q{-C}, "$checkout", qw{reset --quiet --hard}, $first );
+    $running = { sha => $first, short => substr $first, 0, 7 };
+    $commit->('three');
+    $checkout->child('local')->spew('a change of somebody');
+    git( q{-C}, "$checkout", qw{add local} );
+    git( q{-C}, "$checkout", qw{-c user.name=t -c user.email=t@test.test commit --quiet -m local} );
+    @restarted = ();
+    is( run_job('self_update')->{state}, 'failed', 'a checkout with commits of its own is not merged, and the update fails' );
+    is( \@restarted,                     [],       'and restarts nothing' );
+
+    my $plugins = run_job('plugin_update');
+    is( $plugins->{result}{updated}, ['kit@m'],                     'the plugins that are behind are updated' );
+    is( \@updated,                   [ [qw{plugin update kit@m}] ], 'with claude plugin update, and the others are not' );
     $minion->reset( { all => 1 } );
 };
 

@@ -24,7 +24,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -101,6 +101,44 @@ subtest 'the buttons of the action items' => sub {
     ok( !action_about(qr/harness\ check/)->{buttons}, 'none' );
     $t->post_ok( '/act/harness/fix' => \%act => json => { repo => 'Test-Org/two' } )->status_is( 404, 'a spoke that fails no check has nothing to fix' );
     $minion->perform_jobs;
+};
+
+subtest 'an update of the bot' => sub {
+    my %act     = ( 'X-Clod-Action' => 'yes' );
+    my $running = $t->app->running;
+    $t->get_ok('/api/overview')->status_is(200)->json_is( '/running' => $running, 'the overview names the commit that the page runs' );
+    like( $running->{short}, qr/\A[[:xdigit:]]{7}\z/, 'which is the short sha of this checkout' );
+
+    job( self_check => { checked_at => time, running => $running, checkout => { head => $running->{sha}, upstream => 'f' x 40, behind => 2, ahead => 0 }, plugins => [ { id => 'kit@m', version => '0.9', latest => '0.10' }, { id => 'ok@m', version => '1', latest => '1' } ] } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    my $behind = action_about(qr/out\ of\ date/);
+    like( $behind, { text => qr/2\ commit\(s\)\ behind\ upstream/, buttons => [ { label => 'Update', act => 'self/update' } ] }, 'a bot behind its upstream can be updated' );
+    my $plugins = action_about(qr/Plugins/);
+    like( $plugins, { text => qr/kit\@m\ 0\.9\ to\ 0\.10\.\z/, buttons => [ { label => 'Update plugins', act => 'plugins/update' } ] }, 'and a plugin behind its marketplace, compared as a version' );
+    unlike( $plugins->{text}, qr/ok\@m/, 'and not a plugin that is current' );
+
+    $t->post_ok( '/act/self/update' => \%act )->status_is(200);
+    my $res    = $t->tx->res;
+    my $queued = $res->json->{queued};
+    is( $minion->job($queued)->info->{task}, 'self_update', 'Update queues self_update' );
+    $t->post_ok( '/act/self/update' => \%act )->status_is(200)->json_is( '/queued' => $queued, 'and a second press no second one' );
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/out\ of\ date/), { job => $queued, text => qr/It\ is\ queued\.\z/ }, 'and while it waits, the item names it' );
+    $t->post_ok( '/act/plugins/update' => \%act )->status_is(200);
+    $res = $t->tx->res;
+    is( $minion->job( $res->json->{queued} )->info->{task}, 'plugin_update', 'Update plugins queues plugin_update' );
+    $minion->perform_jobs;
+
+    job( self_check => { checked_at => time, running => $running, checkout => { head => 'e' x 40, upstream => 'e' x 40, behind => 0, ahead => 0 }, plugins => [] } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/out\ of\ date/)->{text}, qr/at\ eeeeeee,\ which\ it\ does\ not\ run\ yet/, 'a pulled checkout that the bot does not run yet can be updated too' );
+
+    job( self_check => { checked_at => time, running => $running, checkout => { head => $running->{sha}, upstream => $running->{sha}, behind => 0, ahead => 0 }, plugins => [] } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/out\ of\ date|Plugins/), 'and an up-to-date bot is no action item' );
 };
 
 subtest work => sub {

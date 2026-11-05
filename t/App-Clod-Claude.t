@@ -7,6 +7,7 @@ use Test2::Plugin::NoWarnings;
 use FindBin::libs;
 use File::Temp ();
 use Mojo::File ();
+use Mojo::JSON ();
 
 use App::Clod::Claude();
 
@@ -169,6 +170,53 @@ subtest 'run, with a refused token' => sub {
 
     my $limited = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-limited.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } )->run( dir => "$tmp", prompt => 'x' );
     ok( !$limited->{unauthorized}, 'an error that is not a 401 is not a refused token' );
+};
+
+subtest plugins => sub {
+
+    # A claude that answers the two plugin commands as the real one does, and
+    # records that the marketplaces were refreshed first.
+    my $home = Mojo::File->new("$tmp/plugin-home");
+    my $bin  = $home->child('claude');
+    $home->child( '.claude', 'plugins' )->make_path;
+    $bin->spew(<<~'SH');
+        #!/bin/sh
+        case "$*" in
+          'plugin marketplace update') echo refreshed >> "$HOME/log" ;;
+          'plugin list --json') grep -q refreshed "$HOME/log" || exit 3; cat "$HOME/installed.json" ;;
+          *) exit 2 ;;
+        esac
+        SH
+    chmod 0755, "$bin" or die "chmod $bin: $!";
+    my $market = $home->child('market');
+    my $meta   = $market->child('.claude-plugin')->make_path;
+    $meta->child('marketplace.json')->spew( Mojo::JSON::encode_json( { plugins => [ { name => 'kit', version => '0.14.0' }, { name => 'other', version => '9' } ] } ) );
+    $home->child(qw{.claude plugins known_marketplaces.json})->spew( Mojo::JSON::encode_json( { 'test-market' => { installLocation => "$market" }, 'gone-market' => { installLocation => "$home/nowhere" } } ) );
+    $home->child('installed.json')->spew( Mojo::JSON::encode_json( [ { id => 'kit@test-market', version => '0.13.0' }, { id => 'lost@gone-market', version => '1.0' } ] ) );
+
+    local $ENV{HOME} = "$home";
+    my $plugins = App::Clod::Claude->new( bin => "$bin" )->plugins;
+    is(
+        $plugins,
+        [ { id => 'kit@test-market', version => '0.13.0', latest => '0.14.0' }, { id => 'lost@gone-market', version => '1.0', latest => undef } ],
+        'each installed plugin, with the version that its marketplace offers, after a refresh'
+    );
+    like( dies { App::Clod::Claude->new( bin => "$bin" )->cli(qw{no such}) }, qr/\A\S+\ no\ such:\ failed\n\z/, 'a command of claude that fails dies' );
+};
+
+subtest is_behind => sub {
+    my %cases = (
+        'a newer patch'                      => [ '0.13.0', '0.13.1', 1 ],
+        'a two-part version, as dotted'      => [ '0.9',    '0.10',   1 ],
+        'the same version'                   => [ '1.0',    '1.0',    0 ],
+        'an older version offered'           => [ '2.0',    '1.9',    0 ],
+        'no version offered'                 => [ '1.0',    undef,    0 ],
+        'no version string, but a different' => [ 'beta',   'gamma',  1 ],
+    );
+    for my $what ( sort keys %cases ) {
+        my ( $have, $offered, $behind ) = @{ $cases{$what} };
+        is( App::Clod::Claude::is_behind( { version => $have, latest => $offered } ), $behind, $what );
+    }
 };
 
 subtest 'run, past the timeout' => sub {

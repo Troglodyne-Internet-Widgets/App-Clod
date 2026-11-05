@@ -205,9 +205,11 @@ ruleset
 runtime
 scaffolded
 scp
+servicesudo
 setgid
 sftp
 SHA
+sha
 SMTP
 SRV
 sshd
@@ -230,6 +232,7 @@ symlinking
 symlinks
 sysctl
 syslog
+systemctl
 systemd
 TCP
 teardown
@@ -241,6 +244,7 @@ TLDs
 TLS
 TODO
 toolchain
+trog
 Troglodyne
 TXT
 ua
