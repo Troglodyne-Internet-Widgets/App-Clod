@@ -18,8 +18,8 @@ our $MODULE = q{[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)*};
 
 =func schema
 
-C<(\@spokes, %allow)>.  The JSON Schema of an answer, for C<--json-schema>
-and for L</validate>.  Under C<single> and C<multi>, each repository must be
+C<(\@spokes, %allow)>.  The JSON Schema of an answer, for L</validate>.
+L</claude_schema> is the part of it that C<--json-schema> takes.  Under C<single> and C<multi>, each repository must be
 one of C<@spokes>, and the count of them must fit the scope.  C<upstream>
 needs C<upstream.project> and C<upstream.explanation>, and C<clarify> needs
 C<question.text>.  C<follow_up> needs at least one entry of C<follow_ups> and
@@ -54,10 +54,8 @@ sub schema ( $spokes, %allow ) {
         return $spoke if !@orgs;
         return { anyOf => [ $spoke, { type => 'string', pattern => '^(?:' . join( q{|}, map { s{[.]}{\\.}gr } @orgs ) . ")/$NAME\$" } ] };
     };
-    my $repos = sub (%count) {
-        my $entry = { type => 'object', required => [qw{repo order instructions}], properties => { repo => $repo->(), order => { type => 'integer' }, instructions => $text->() } };
-        return { properties => { repos => { %count, items => $entry } } };
-    };
+    my $repos    = sub (%count) { return { properties => { repos => { type => 'array', %count } } } };
+    my $entry    = { type => 'object', required => [qw{repo order instructions}], properties => { repo => $repo->(), order => { type => 'integer' }, instructions => $text->() } };
     my $new_repo = {
         type       => 'object',
         required   => [qw{org name description asked_by quote}],
@@ -81,7 +79,7 @@ sub schema ( $spokes, %allow ) {
         properties => {
             scope      => { type => 'string', enum => [@SCOPES] },
             reason     => $text->(),
-            repos      => { type => 'array' },
+            repos      => { type => 'array', items => $entry },
             new_repos  => { type => 'array',  maxItems => @orgs ? 1 : 0,             items      => $new_repo },
             follow_ups => { type => 'array',  maxItems => $allow{follow_ups} // 0,   items      => $follow_up },
             upstream   => { type => 'object', required => [qw{project explanation}], properties => { project => $text->(), path => { type => 'string' }, explanation => $text->() } },
@@ -92,7 +90,7 @@ sub schema ( $spokes, %allow ) {
             { if => $scope->('multi'),     then => $repos->( minItems => 2 ) },
             { if => $scope->('upstream'),  then => { required => ['upstream'] } },
             { if => $scope->('clarify'),   then => { required => ['question'] } },
-            { if => $scope->('follow_up'), then => { required => ['follow_ups'], properties => { repos => { maxItems => 0 }, follow_ups => { minItems => 1 } } } },
+            { if => $scope->('follow_up'), then => { required => ['follow_ups'], properties => { repos => { type => 'array', maxItems => 0 }, follow_ups => { type => 'array', minItems => 1 } } } },
         ],
     };
 }
@@ -119,6 +117,22 @@ name gives a module name.
 =cut
 
 sub module_of ($entry) { return $entry->{module} // $entry->{name} =~ s/-/::/gr }
+
+=func claude_schema
+
+C<(\@spokes, %allow)>.  L</schema> without its rules for each scope, for
+C<--json-schema>.  The API takes the schema as the input of a tool, and refuses
+C<allOf>, C<anyOf> or C<oneOf> at its top level, where those rules are.  The
+form of every field stays, the spokes that C<repo> may name with it.  The
+triage prompt states the rules, and L</validate> holds the answer to them.
+
+=cut
+
+sub claude_schema ( $spokes, %allow ) {
+    my $schema = schema( $spokes, %allow );
+    delete $schema->{allOf};
+    return $schema;
+}
 
 =func validate
 
@@ -200,7 +214,7 @@ sub intro ($claude_md) {
     use App::Clod::Triage;
 
     my ( $hub, $prompt, @spokes ) = @ARGV;
-    my $outcome = App::Clod::Claude->new->run( dir => $hub, prompt => $prompt, schema => App::Clod::Triage::schema( \@spokes ) );
+    my $outcome = App::Clod::Claude->new->run( dir => $hub, prompt => $prompt, schema => App::Clod::Triage::claude_schema( \@spokes ) );
     my $answer  = App::Clod::Triage::validate( $outcome->{structured}, \@spokes );
 
 =head1 DESCRIPTION
@@ -210,8 +224,9 @@ is this change best made in one repository, in several, or upstream in a
 project that we do not own?  A fourth answer, C<clarify>, says that the request
 cannot be planned without a person's answer to C<question.text>, and a fifth,
 C<follow_up>, that filing the issues in C<follow_ups> settles it.  L</schema> is
-the form of an answer and every rule that it must follow, so that claude gets
-the rules as well as the form.  L</validate> checks an answer against it, and
+the form of an answer and every rule that it must follow.  claude gets the
+form as L</claude_schema>, and the rules in the prompt.  L</validate> checks an
+answer against all of it, and
 checks the rules that JSON Schema cannot say: that no repository is named
 twice, and that each new repository in C<new_repos> is new and has work in
 C<repos>.
