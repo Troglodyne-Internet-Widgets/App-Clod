@@ -122,7 +122,7 @@ allow = re Test2::Plugin::NoWarnings Mojo::Base Mojolicious::Lite
 [ProhibitUnusedDefinitions]
 # startup is called by Mojolicious, and the Dashboard actions by the router,
 # which names them in strings such as 'dashboard#page'.
-allow_subs = startup page overview work harness retry ignore harness_fix self_update plugin_update
+allow_subs = startup page overview work harness retry ignore harness_fix self_update plugin_update deps_upgrade
 # A sub that only one subclass uses, and a sub that two subclasses define where
 # the class above them defines none.  It reads bin/ and lib/ through
 # Perl::Critic::Distribution, as ProhibitUnusedDefinitions does, so the two

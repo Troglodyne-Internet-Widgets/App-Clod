@@ -145,7 +145,8 @@ C<($minion, $check)>, with C<$check> the result of the last
 L<App::Clod::Tasks/self_check>.  The action items that it calls for: a bot
 behind its upstream, or a checkout that the bot does not run yet, with an
 Update button, and plugins behind their marketplace, with an Update plugins
-button.  While a job for a button waits or runs, the item names it, and has
+button, and Perl modules in C<local_lib> with a newer release, with an Upgrade
+modules button.  While a job for a button waits or runs, the item names it, and has
 no button.
 
 =cut
@@ -167,6 +168,9 @@ sub self_items ( $self, $minion, $check ) {
     my @behind = grep { App::Clod::Claude::is_behind($_) } @{ $check->{plugins} // [] };
     push @items, button_item( $minion, 'plugin_update', 'Plugins have a newer version: ' . join( q{, }, map { "$_->{id} $_->{version} to $_->{latest}" } @behind ) . q{.}, { label => 'Update plugins', act => 'plugins/update' } ) if @behind;
     push @items, { level => 'warning', text => "The bot cannot tell whether its plugins are up to date: $check->{plugin_error}" } if $check->{plugin_error};
+    my @old = @{ $check->{deps} // [] };
+    push @items, button_item( $minion, 'deps_upgrade', 'Perl modules have a newer release: ' . join( q{, }, map { "$_->{module} $_->{version} to $_->{latest}" } @old ) . q{.}, { label => 'Upgrade modules', act => 'deps/upgrade' } ) if @old;
+    push @items, { level => 'warning', text => "The bot cannot tell whether its Perl modules are up to date: $check->{deps_error}" } if $check->{deps_error};
     return @items;
 }
 
@@ -217,6 +221,18 @@ which.
 sub plugin_update ($self) {
     my $minion = $self->minion;
     return $self->render( json => { queued => pending_job( $minion, 'plugin_update' ) // $minion->enqueue('plugin_update') } );
+}
+
+=method deps_upgrade
+
+Queues an L<App::Clod::Tasks/deps_upgrade>, unless one waits or runs, and says
+which.
+
+=cut
+
+sub deps_upgrade ($self) {
+    my $minion = $self->minion;
+    return $self->render( json => { queued => pending_job( $minion, 'deps_upgrade' ) // $minion->enqueue('deps_upgrade') } );
 }
 
 =func pending_harness_fix

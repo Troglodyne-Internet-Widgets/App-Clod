@@ -15,6 +15,7 @@ use Time::HiRes qw{time};
 use App::Clod::Budget();
 use App::Clod::Claude();
 use App::Clod::CodeOwners();
+use App::Clod::Deps();
 use App::Clod::GitHub();
 use App::Clod::Harness();
 use App::Clod::Outage();
@@ -48,6 +49,7 @@ our %TASKS = (
     self_check     => \&self_check,
     self_update    => \&self_update,
     plugin_update  => \&plugin_update,
+    deps_upgrade   => \&deps_upgrade,
 );
 
 # Each Minion schedule: its cron line and its task.
@@ -1995,9 +1997,10 @@ that the worker runs, from the helper C<running> of L<App::Clod>, and
 C<checkout>, the L<App::Clod/checkout> after a fetch, with C<head>,
 C<upstream>, its upstream branch, and C<behind> and C<ahead>, the commits
 between the two.  And C<plugins>, from L<App::Clod::Claude/plugins>, for the
-account that claude runs as.  A part that fails has its error in place of its
-result, as C<checkout> with C<error>, or C<plugin_error>.  With no checkout,
-there is no C<checkout>.
+account that claude runs as.  With a C<local_lib>, C<deps>, the modules there
+that have a newer release, from L<App::Clod::Deps/outdated>.  A part that
+fails has its error in place of its result, as C<checkout> with C<error>,
+C<plugin_error> or C<deps_error>.  With no checkout, there is no C<checkout>.
 
 =cut
 
@@ -2014,6 +2017,9 @@ sub self_check ( $job, $config ) {
         } // { error => ( split m{\n}, $@ )[0] };
     }
     $result{plugins} = eval { claude($config)->plugins } // do { $result{plugin_error} = ( split m{\n}, $@ )[0]; [] };
+    if ( my $lib = $config->{local_lib} ) {
+        $result{deps} = eval { App::Clod::Deps::outdated($lib) } // do { $result{deps_error} = ( split m{\n}, $@ )[0]; [] };
+    }
     return $job->finish( \%result );
 }
 
@@ -2021,11 +2027,10 @@ sub self_check ( $job, $config ) {
 
 From the dashboard.  Pulls the L<App::Clod/checkout> from its upstream, fast
 forward only, and restarts the units of C<restart_units> when the worker runs
-another commit than the checkout then has.  It restarts its own unit, the one
-that its process runs in, last, after it finishes, because the restart stops
-it.  With no C<restart_units>, its result says that a person must restart the
-bot.  Its result has C<from> and C<to>, the head before and after the pull,
-and C<restarted>, the units.
+another commit than the checkout then has, as L</restart_and_finish> does.
+With a C<local_lib>, it first installs there what the new commit needs, as
+L<App::Clod::Deps/install> does.  Its result has C<from> and C<to>, the head
+before and after the pull, and C<restarted>, the units.
 
 =cut
 
@@ -2040,15 +2045,46 @@ sub self_update ( $job, $config ) {
     $result{to} = $git->git( q{-C}, "$dir", qw{rev-parse HEAD} );
     return $job->finish( { %result, restarted => [] } ) if $result{to} eq ( ( $job->app->running // {} )->{sha} // q{} );
 
+    App::Clod::Deps::install( $config->{local_lib}, App::Clod::Deps::listdeps($dir) ) if $config->{local_lib};
+    return restart_and_finish( $job, $config, \%result );
+}
+
+=func restart_and_finish
+
+C<($job, $config, \%result)>.  Restarts the units of C<restart_units>, and
+finishes the job with C<%result> and C<restarted>, the units.  It restarts
+its own unit, the one that its process runs in, last, after it finishes,
+because the restart stops it.  With no C<restart_units>, it restarts nothing,
+and C<restart> in the result says that a person must.
+
+=cut
+
+sub restart_and_finish ( $job, $config, $result ) {
     my @units = @{ $config->{restart_units} };
-    return $job->finish( { %result, restarted => [], restart => 'restart_units names no unit, so a person must restart the bot' } ) if !@units;
+    return $job->finish( { %$result, restarted => [], restart => 'restart_units names no unit, so a person must restart the bot' } ) if !@units;
     my $own    = own_unit() // q{};
     my @others = grep { $_ ne $own } @units;
     restart_unit($_) for @others;
     my @mine = grep { $_ eq $own } @units;
-    $job->finish( { %result, restarted => [ @others, @mine ] } );
+    $job->finish( { %$result, restarted => [ @others, @mine ] } );
     restart_unit($_) for @mine;
     return;
+}
+
+=func deps_upgrade
+
+From the dashboard.  Upgrades the modules in C<local_lib> that have a newer
+release, as L<App::Clod::Deps/upgrade> does, and then restarts the units, as
+L</restart_and_finish> does, so the bot loads them.  Its result has
+C<upgraded>, what it found outdated.
+
+=cut
+
+sub deps_upgrade ( $job, $config ) {
+    my $lib      = $config->{local_lib} // return $job->fail( { error => 'clod.conf names no local_lib' } );
+    my $upgraded = App::Clod::Deps::upgrade($lib);
+    return $job->finish( { upgraded => [] } ) if !@$upgraded;
+    return restart_and_finish( $job, $config, { upgraded => $upgraded } );
 }
 
 =func own_unit

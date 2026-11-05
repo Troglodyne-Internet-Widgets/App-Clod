@@ -1,6 +1,13 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Keep the Perl modules of the bot in local_lib, a local lib that the
+      service user owns, when clod.conf names one, so the bot can upgrade
+      them with no sudo.  clod deps install|outdated|upgrade works on it
+      from the shell.  An update installs what the new commit needs there
+      before it restarts, and the dashboard says when a module has a newer
+      release on CPAN, with an Upgrade modules button that upgrades it and
+      restarts the bot.
     - Say on the dashboard when the bot is out of date, with an Update
       button that pulls and restarts the units of restart_units, its own
       unit last.  And when a plugin of the account that claude runs as is
