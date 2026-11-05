@@ -1,6 +1,10 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Fail a fix or an answer to a review that made no commit because
+      claude refused some of its calls, and name each refused call in the
+      error.  Such a run finished as no change before, with a reply that
+      said the change was made.
     - With run_as, the account that claude runs as brings its own Claude
       token.  sudo logged the token of the worker, which went through
       --preserve-env, with its value.

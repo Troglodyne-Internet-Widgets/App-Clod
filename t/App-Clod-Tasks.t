@@ -180,7 +180,8 @@ my %fake;
 
 sub answer ( $structured, %env ) {
     my $stream = $tmp->child( 'stream-' . ++$STREAMS . '.jsonl' );
-    $stream->spew( Mojo::JSON::encode_json( { type => 'result', is_error => Mojo::JSON::false, structured_output => $structured, total_cost_usd => 0.5, usage => {} } ) . "\n" );
+    my %denied = $env{denied} ? ( permission_denials => $env{denied} ) : ();
+    $stream->spew( Mojo::JSON::encode_json( { type => 'result', is_error => Mojo::JSON::false, structured_output => $structured, total_cost_usd => 0.5, usage => {}, %denied } ) . "\n" );
     %fake = ( FAKE_CLAUDE_STREAM => "$stream", FAKE_CLAUDE_COMMIT => $env{commit} ? 1 : 0 );
     return;
 }
@@ -360,6 +361,14 @@ subtest spoke_fix => sub {
     is( $none->{result}{no_change},   1, 'a run that commits nothing opens nothing' );
     is( scalar @{ calls_of('pull') }, 1, 'so no second pull request' );
 
+    # In -p nobody can approve a call that the permissions do not allow, so a
+    # run that committed nothing because of one failed.
+    answer( { title => 't', summary => 'Not committed: the commit was refused.' }, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'rtk git add -A' } } ] );
+    my $refused = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( $refused->{state}, 'failed', 'a run that commits nothing because claude refused a call fails' ) or diag Mojo::Util::dumper $refused->{result};
+    like( $refused->{result}{error}, qr/made\ no\ commit.*\n\ \ Bash\(rtk\ git\ add\ -A\)\z/s, 'and its error names each refused call, as the rule that would allow it' );
+    is( scalar @{ calls_of('pull') }, 1, 'and it opens nothing' );
+
     answer( { title => 't', summary => 's' }, commit => 1 );
     my $unnamed = run_job( spoke_fix => { item => { %item, title => '!!!' }, repo => 'Test-Org/one', instructions => 'x' } );
     is( $unnamed->{result}{branch}, "clod/$unnamed->{id}", 'a title that gives no slug names the branch by the job alone' ) or diag Mojo::Util::dumper $unnamed->{result};
@@ -505,6 +514,14 @@ subtest spoke_address => sub {
     is( $info->{result}{commits}, 1,          'the fix is committed' );
     isnt( git( '--git-dir', $bare, 'rev-parse', 'clod/1-ours' ), git( '--git-dir', $bare, 'rev-parse', 'main' ), 'and pushed to the pull request branch' );
     is( [ map { $_->[1] } @{ calls_of('reply') } ], ['/repos/Test-Org/one/pulls/11/comments/21/replies'], 'only the open thread gets a reply' );
+
+    # A reply would say that the change was made, so a refused run says nothing.
+    @calls = ();
+    answer( { summary => 'Renamed.', replies => [ { id => 21, body => 'Done.' } ] }, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'rtk git commit -m x' } } ] );
+    my $refused = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'answer them' } );
+    is( $refused->{state}, 'failed', 'an answer to a review that commits nothing because claude refused a call fails' ) or diag Mojo::Util::dumper $refused->{result};
+    like( $refused->{result}{error}, qr/Bash\(rtk\ git\ commit\ -m\ x\)/, 'and names the refused call' );
+    is( calls_of('reply'), [], 'and replies to nobody' );
 
     @calls                  = ();
     $state{review_comments} = [];

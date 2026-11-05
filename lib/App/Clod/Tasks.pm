@@ -1044,7 +1044,8 @@ sub spoke_fix ( $job, $config, $args ) {
                 );
                 return $job->finish( { repo => $repo, question => $answer->{question}, summary => $answer->{question}, %$asked, %usage } );
             }
-            return $job->finish( { repo => $repo, no_change => 1, summary => $answer->{summary}, %usage } ) if !$commits;
+            return $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } ) if !$commits && @{ $outcome->{denied} // [] };
+            return $job->finish( { repo => $repo, no_change => 1, summary => $answer->{summary}, %usage } )                                         if !$commits;
 
             $spoke->push_branch( $tree, $branch );
             my $body = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior );
@@ -1212,7 +1213,10 @@ sub spoke_address ( $job, $config, $args ) {
             return $job->fail( { repo => $repo, error => "the run failed: $outcome->{stderr}", %usage } ) if ref $answer ne 'HASH';
 
             my $commits = $spoke->commits_since( $tree, "origin/$branch" );
-            $spoke->push_branch( $tree, $branch ) if $commits;
+
+            # Before the replies, which can say that a change was made.
+            return $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } ) if !$commits && @{ $outcome->{denied} // [] };
+            $spoke->push_branch( $tree, $branch )                                                                                                   if $commits;
             my %open = map { $_->{id} => 1 } @$pending;
             my @replied;
             for my $reply ( grep { $open{ $_->{id} } } @{ $answer->{replies} } ) {
@@ -1223,6 +1227,18 @@ sub spoke_address ( $job, $config, $args ) {
             return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $commits, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, %usage } );
         }
     );
+}
+
+=func refused
+
+C<($outcome)>.  The error of a run that made no commit because claude refused
+some of its tool calls, with each of them.  A run that made no commit and had
+none refused changed nothing on purpose, and is not an error.
+
+=cut
+
+sub refused ($outcome) {
+    return join "\n", 'the run made no commit, and claude refused these calls, which nobody can approve in -p:', map { "  $_" } @{ $outcome->{denied} };
 }
 
 =func reply

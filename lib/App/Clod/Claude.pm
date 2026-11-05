@@ -171,6 +171,12 @@ window.
 
 The epoch second when the quota opens again, set when a run hit the limit.
 
+=item denied
+
+Each tool call that claude refused, as L</denial> gives it.  In C<-p> nobody
+can approve a call that the permissions do not allow, so a refused call did
+not happen.
+
 =item unauthorized
 
 True when the API refused the token with a 401.
@@ -268,12 +274,28 @@ my %ABSORB = (
         $outcome->{is_error}     = $event->{is_error} ? 1 : 0;
         $outcome->{unauthorized} = 1 if $outcome->{is_error} && ( $event->{api_error_status} // 0 ) == 401;
         $outcome->{turns}        = $event->{num_turns};
+        $outcome->{denied}       = [ map { denial($_) } @{ $event->{permission_denials} // [] } ];
         my $usage = $event->{usage} // {};
         $outcome->{usage} = { map { $_ => $usage->{$_} // 0 } qw{input_tokens output_tokens cache_read_input_tokens cache_creation_input_tokens} };
         $outcome->{quota_reset} //= time + $UNKNOWN_RESET
           if $outcome->{is_error} && ( $event->{result} // q{} ) =~ m{usage\ limit | out\ of\ extra\ usage | rate\ limit}i;
     },
 );
+
+=func denial
+
+C<(\%denial)>.  One entry of C<permission_denials> of a result, as the
+permission rule that would have allowed it, such as C<Bash(git add -A)>: the
+tool, and its command or the file that it wanted.
+
+=cut
+
+sub denial ($denial) {
+    my $input = $denial->{tool_input} // {};
+    my $what  = $input->{command}     // $input->{file_path} // $input->{path};
+    my $tool  = $denial->{tool_name}  // 'a tool';
+    return defined $what ? "$tool($what)" : $tool;
+}
 
 sub absorb ( $outcome, $event ) {
     my $absorb = defined $event->{type} ? $ABSORB{ $event->{type} } : undef;
