@@ -770,6 +770,15 @@ subtest claude => sub {
     is( App::Clod::Tasks::claude($config)->run_as, 'test-agent', 'and as the account of run_as when it does' );
 };
 
+subtest system_text => sub {
+    my %config = ( spoke_prompt => 'Test on a guest.', system_prompts => { spoke_fix => 'Fix with care.' } );
+    is( App::Clod::Tasks::system_text( \%config, 'spoke_fix' ), "Test on a guest.\n\nFix with care.", 'a spoke run gets the spoke prompt, then the prompt of its task' );
+    $config{agent_own_lib} = '/bogus/own-lib';
+    my $install = qr/If\ the\ change\ needs\ a\ CPAN\ module.*/;
+    like( App::Clod::Tasks::system_text( \%config, 'spoke_fix' ), qr/\ATest\ on\ a\ guest[.]\n\n$install\n\nFix\ with\ care[.]\z/, 'and with an own lib, how to install a module, between them' );
+    is( App::Clod::Tasks::system_text( \%config, 'triage' ), undef, 'but a run that is not in a spoke gets neither' );
+};
+
 subtest 'tool spokes and the spoke prompt' => sub {
     %state = ();
     @calls = ();
@@ -1145,17 +1154,20 @@ subtest 'self_check and self_update' => sub {
     # it restarts, and an upgrade of the modules restarts too.
     my @deps;
     my $deps = Test::MockModule->new('App::Clod::Deps');
-    $deps->redefine( listdeps => sub ($dir) { push @deps, "listdeps $dir";                     return qw{Foo Bar} } );
-    $deps->redefine( install  => sub ( $lib, @modules ) { push @deps, "install $lib @modules"; return } );
-    $deps->redefine( outdated => sub ($lib) { return [ { module => 'Foo', version => '1', latest => '2' } ] } );
-    $deps->redefine( upgrade  => sub ($lib) { push @deps, "upgrade $lib"; return [ { module => 'Foo', version => '1', latest => '2' } ] } );
+    $deps->redefine( listdeps         => sub ($dir) { push @deps, "listdeps $dir";                     return qw{Foo Bar} } );
+    $deps->redefine( install          => sub ( $lib, @modules ) { push @deps, "install $lib @modules"; return } );
+    $deps->redefine( outdated         => sub ($lib) { return [ { module => 'Foo', version => '1', latest => '2' } ] } );
+    $deps->redefine( upgrade          => sub ($lib) { push @deps, "upgrade $lib";  return [ { module => 'Foo', version => '1', latest => '2' } ] } );
+    $deps->redefine( install_programs => sub ($lib) { push @deps, "programs $lib"; return } );
     $app->clod_config->{local_lib} = '/bogus/perl5';
+    $app->clod_config->{agent_lib} = '/bogus/agent-perl5';
     git( q{-C}, "$checkout", qw{reset --quiet --hard}, '@{upstream}' );
     $commit->('four');
     @restarted = ();
     my $with_lib = run_job('self_update');
-    is( [ $with_lib->{state}, \@deps ], [ 'finished', [ "listdeps $checkout", 'install /bogus/perl5 Foo Bar' ] ], 'with a local lib, the update installs what the checkout needs' ) or diag Mojo::Util::dumper $with_lib->{result};
-    is( scalar @restarted,              2,                                                                        'and then restarts' );
+    delete $app->clod_config->{agent_lib};
+    is( [ $with_lib->{state}, \@deps ], [ 'finished', [ "listdeps $checkout", 'install /bogus/perl5 Foo Bar', 'programs /bogus/agent-perl5' ] ], 'with a local lib, the update installs what the checkout needs, and the programs of the agent lib' ) or diag Mojo::Util::dumper $with_lib->{result};
+    is( scalar @restarted,              2,                                                                                                       'and then restarts' );
 
     is( run_job('self_check')->{result}{deps}, [ { module => 'Foo', version => '1', latest => '2' } ], 'the check lists the modules with a newer release' );
     @deps      = ();
@@ -1223,9 +1235,11 @@ subtest 'the agent lib' => sub {
             return grep { m{Autovivification} } @modules;
         }
     );
-    $deps->redefine( outdated => sub ($lib) { return [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] } );
-    $deps->redefine( install  => sub ( $lib, @modules ) { push @did, "install $lib @modules"; return } );
-    $deps->redefine( upgrade  => sub ($lib) { push @did, "upgrade $lib";                      return $lib =~ m{agent} ? [ { module => 'Perl::Tidy' } ] : [] } );
+    $deps->redefine( outdated         => sub ($lib) { return [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] } );
+    $deps->redefine( install          => sub ( $lib, @modules ) { push @did, "install $lib @modules"; return } );
+    $deps->redefine( install_programs => sub ($lib) { push @did, "programs $lib";                     return } );
+    $deps->redefine( stale_programs   => sub ($lib) { return 'clod-cpm' } );
+    $deps->redefine( upgrade          => sub ($lib) { push @did, "upgrade $lib"; return $lib =~ m{agent} ? [ { module => 'Perl::Tidy' } ] : [] } );
     my $tasks = Test::MockModule->new('App::Clod::Tasks');
     $tasks->redefine( restart_unit => sub ($unit) { push @restarted, $unit; return } );
     my $claude = Test::MockModule->new('App::Clod::Claude');
@@ -1233,12 +1247,15 @@ subtest 'the agent lib' => sub {
 
     $config->{agent_lib} = '/bogus/agent-perl5';
     my $check = run_job('self_check');
-    is( $check->{result}{agent_deps}, { missing => ['Perl::Critic::Policy::Variables::RequireNoAutovivification'], outdated => [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] }, 'the check says what the agent lib lacks, and what has a newer release' );
+    is( $check->{result}{agent_deps}, { missing => [ 'Perl::Critic::Policy::Variables::RequireNoAutovivification', 'clod-cpm' ], outdated => [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] }, 'the check says what the agent lib lacks, and what has a newer release' );
 
     my $upgrade = run_job('deps_upgrade');
-    is( \@did,                                  [ 'install /bogus/agent-perl5 Perl::Critic::Policy::Variables::RequireNoAutovivification', 'upgrade /bogus/agent-perl5' ], 'an upgrade installs what the agent lib lacks, and upgrades what is outdated' );
-    is( [ $upgrade->{state}, \@restarted ],     [ 'finished',                                                                              [] ],                           'and restarts nothing, because the next claude run loads them' );
-    is( App::Clod::Tasks::claude($config)->lib, '/bogus/agent-perl5', 'and claude runs with the agent lib' );
+    is( \@did,                                  [ 'install /bogus/agent-perl5 Perl::Critic::Policy::Variables::RequireNoAutovivification', 'programs /bogus/agent-perl5', 'upgrade /bogus/agent-perl5' ], 'an upgrade installs what the agent lib lacks, and its programs, and upgrades what is outdated' );
+    is( [ $upgrade->{state}, \@restarted ],     [ 'finished', [] ],                                                                                                                                       'and restarts nothing, because the next claude run loads them' );
+    is( App::Clod::Tasks::claude($config)->lib, '/bogus/agent-perl5',                                                                                                                                     'and claude runs with the agent lib' );
+    $config->{agent_own_lib} = '/bogus/own-lib';
+    is( App::Clod::Tasks::claude($config)->own_lib, '/bogus/own-lib', 'and with the own lib of the agent' );
+    delete $config->{agent_own_lib};
     delete $config->{agent_lib};
     $minion->reset( { all => 1 } );
 };

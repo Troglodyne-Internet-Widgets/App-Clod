@@ -9,6 +9,7 @@ use Config     ();
 use File::Temp ();
 use Mojo::File ();
 
+use App::Clod();
 use App::Clod::Deps();
 
 my $tmp = Mojo::File->new( File::Temp->newdir( CLEANUP => 1 )->dirname )->child("clod-deps-$$")->make_path;
@@ -83,6 +84,28 @@ subtest missing => sub {
     my $arch = $lib->child( qw{lib perl5}, $Config::Config{archname}, 'Devel' )->make_path;
     $arch->child('NYTProf.pm')->spew("1;\n");
     is( [ App::Clod::Deps::missing( "$lib", qw{Perl::Critic::Policy Devel::NYTProf Perl::Tidy} ) ], ['Perl::Tidy'], 'what the lib has no file of, where a module with C code is in the directory of the architecture' );
+};
+
+subtest install_programs => sub {
+    my $lib = $tmp->child('programs-lib');
+    is( [ App::Clod::Deps::stale_programs("$lib") ], ['clod-cpm'], 'an agent lib without the programs lacks them' );
+    App::Clod::Deps::install_programs("$lib");
+    is( [ App::Clod::Deps::stale_programs("$lib") ], [], 'and has them once they are installed' );
+    my $cpm = $lib->child(qw{bin clod-cpm});
+    is( sprintf( '%04o', $cpm->stat->mode & oct '7777' ), '0750', 'clod-cpm goes into the bin of the agent lib, for its group to run and not to change' );
+    $cpm->spew("#!/bin/sh\n");
+    is( [ App::Clod::Deps::stale_programs("$lib") ], ['clod-cpm'], 'and lacks one again when it is another version' );
+    App::Clod::Deps::install_programs("$lib");
+
+    # A cpm that prints what it was asked, on the PATH of clod-cpm.
+    my $fake = $tmp->child('fake-cpm')->make_path;
+    $fake->child('cpm')->spew(qq{#!/bin/sh\nprintf '%s ' "\$@"\n})->chmod( oct '0755' );
+    my $own = $tmp->child('own-lib');
+    my @env = ( '/usr/bin/env', "PATH=$fake:$ENV{PATH}" );
+    IPC::Run::run( [ @env, "CLOD_OWN_LIB=$own", "$cpm", 'Test::Module' ], \undef, \my $out, \my $err );
+    is( [ $out, -d $own ], [ "install --without-test -L $own Test::Module ", 1 ], 'which makes the own lib, and installs into it' ) or diag $err;
+    ok( !IPC::Run::run( [ @env, "$cpm", 'Test::Module' ], \undef, \my $none, \my $why ), 'and refuses with no own lib to install into' );
+    like( $why, qr/names\ no\ own\ lib/, 'and says so' );
 };
 
 subtest 'install, readable by its group and no more' => sub {

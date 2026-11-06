@@ -25,7 +25,8 @@ EOF
 C<($what)>, one of C<install>, C<outdated> and C<upgrade>.  Works on
 C<local_lib> and C<agent_lib>, each that F<clod.conf> names.  C<install> puts
 the modules of the checkout into the first and the
-L<App::Clod::Tasks/agent_tools> into the second.  Dies when F<clod.conf> names
+L<App::Clod::Tasks/agent_tools> and the programs of
+L<App::Clod::Deps/install_programs> into the second.  Dies when F<clod.conf> names
 neither, or C<install> into C<local_lib> runs from no checkout.
 
 =cut
@@ -39,7 +40,10 @@ sub run ( $self, $what = q{} ) {
             my $checkout = App::Clod::checkout() // die "the bot runs from no checkout, so there is nothing to list the modules of\n";
             App::Clod::Deps::install( $config->{local_lib}, App::Clod::Deps::listdeps($checkout) );
         }
-        App::Clod::Deps::install( $config->{agent_lib}, App::Clod::Tasks::agent_tools($config) ) if $config->{agent_lib};
+        if ( $config->{agent_lib} ) {
+            App::Clod::Deps::install( $config->{agent_lib}, App::Clod::Tasks::agent_tools($config) );
+            App::Clod::Deps::install_programs( $config->{agent_lib} );
+        }
         return;
     }
     if ( $what eq 'outdated' || $what eq 'upgrade' ) {
