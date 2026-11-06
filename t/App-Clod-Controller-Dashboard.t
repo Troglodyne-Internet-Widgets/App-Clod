@@ -229,6 +229,12 @@ subtest 'system packages' => sub {
     $minion->perform_jobs;
     $t->get_ok('/api/overview')->status_is(200);
     ok( !action_about(qr/needs\ the\ packages|fails,\ and/), 'and once the check finds everything, there is no item' );
+
+    job( self_check => { checked_at => time, plugins => [], system_packages => {}, system_packages_error => 'dpkg-query: Command not found' } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    is( action_about(qr/system\ packages\ of\ the\ spokes/), { level => 'warning', text => 'The bot cannot tell whether it has the system packages of the spokes: dpkg-query: Command not found' }, 'a check that cannot ask dpkg says so, with no button' );
+    ok( !action_about(qr/needs\ the\ packages/), 'and lists no package as missing' );
 };
 
 subtest work => sub {

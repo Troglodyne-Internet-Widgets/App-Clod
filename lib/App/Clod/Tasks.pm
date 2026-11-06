@@ -2131,7 +2131,7 @@ What the host lacks of what each spoke declares there, for the C<packager> of
 C<system_packages>: a hash of each spoke that lacks something to C<missing>,
 the names of the packages that are not installed, and C<failing>, each a
 C<{program, error}> of a declared program that fails, as
-L<App::Clod::Packages/program_error> runs it.  The programs run only when no
+L<App::Clod::Packages/program_error> runs it, as the account of L</claude>.  The programs run only when no
 package is missing, because a program of a package that is not installed
 fails anyway.  It asks once about a package that two spokes declare.
 
@@ -2144,12 +2144,13 @@ without a new scan of every spoke.
 
 sub host_packages ( $config, $scan ) {
     my $packager = $config->{system_packages}{packager};
+    my $claude   = claude($config);
     my ( %lacks, %has );
     my $declared = ( $scan // {} )->{system_packages} // {};
     for my $repo ( sort keys %$declared ) {
         my @missing = grep { !( $has{$_} //= App::Clod::Packages::installed( $packager, $_ ) ? 1 : 0 ) } @{ $declared->{$repo}{$packager} // [] };
         my @failing = @missing ? () : map {
-            my $error = App::Clod::Packages::program_error($_);
+            my $error = App::Clod::Packages::program_error( $claude, $_ );
             defined $error ? { program => $_, error => $error } : ();
         } @{ $declared->{$repo}{programs} // [] };
         $lacks{$repo} = { missing => \@missing, failing => \@failing } if @missing || @failing;

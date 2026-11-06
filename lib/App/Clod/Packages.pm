@@ -37,31 +37,46 @@ sub installed ( $packager, $name ) {
 =func deb_installed
 
 C<($name)>.  True when dpkg says that the package is installed: its status is
-C<install ok installed>.  A package that dpkg does not know is not.
+C<install ok installed>.  A package that dpkg does not know is not: then
+C<dpkg-query> fails, and says C<no packages found matching>.  Dies when
+C<dpkg-query> fails for any other reason, such as not being there, so that
+a host that cannot answer does not look like one that lacks every package.
 
 =cut
 
 sub deb_installed ($name) {
-    my $status = eval { App::Clod::Deps::run( { timeout => $PROGRAM_SECONDS }, @DPKG_QUERY, qw{-W -f ${Status}}, $name ) } // return 0;
+    my $status = eval { App::Clod::Deps::run( { timeout => $PROGRAM_SECONDS }, @DPKG_QUERY, qw{-W -f ${Status}}, $name ) };
+    if ( !defined $status ) {
+        return 0 if $@ =~ m{no\ packages\ found\ matching};
+        die $@;
+    }
     return $status eq 'install ok installed' ? 1 : 0;
 }
 
 =func program_error
 
-C<($line)>, a command line of C<programs>, such as C<ffmpeg -version>.  Undef
-when it exits 0, and else why it failed: what it printed, or why it did not
-run.  The line is split into words as a
-shell does, and runs with no shell, no input, only the C<PATH> of this process
-in its environment, so no token of the bot reaches it, and at most
+C<($claude, $line)>: an L<App::Clod::Claude>, and a command line of
+C<programs>, such as C<ffmpeg -version>.  Undef when it exits 0, and else why
+it failed: what it printed, or why it did not run.  The line is split into
+words as a shell does, and runs with no shell, no input, and at most
 C<$PROGRAM_SECONDS> seconds.
+
+It runs as the account that claude runs as, as
+L<App::Clod::Claude/as_account> runs a command, when there is one.  The line
+comes from a spoke, and that account is the one meant for code from spokes,
+while the worker holds the token of the bot in its environment, and can read
+F<clod.conf>.  Without such an account, it runs as the worker, with only the
+C<PATH> of this process in its environment, so that the token does not reach
+it at least.
 
 =cut
 
-sub program_error ($line) {
+sub program_error ( $claude, $line ) {
     my @words = Text::ParseWords::shellwords($line);
     return 'it is not a command line' if !@words;
-    my $ok = eval { App::Clod::Deps::run( { env => { PATH => $ENV{PATH} }, timeout => $PROGRAM_SECONDS, merge => 1 }, @words ); 1 };
-    return $ok ? undef : $@ =~ s{\A\Q@words\E:\ }{}r =~ s{\s+\z}{}r;
+    my @cmd = $claude->as_account(@words);
+    my $ok  = eval { App::Clod::Deps::run( { env => { PATH => $ENV{PATH} }, timeout => $PROGRAM_SECONDS, merge => 1 }, @cmd ); 1 };
+    return $ok ? undef : $@ =~ s{\A\Q@cmd\E:\ }{}r =~ s{\s+\z}{}r;
 }
 
 =func install
@@ -80,11 +95,12 @@ sub install ( $installer, @names ) {
 =head1 SYNOPSIS
 
     use 5.040;
+    use App::Clod::Claude;
     use App::Clod::Packages;
 
     my @lacks = grep { !App::Clod::Packages::installed( deb => $_ ) } qw{ffmpeg libmagic-dev};
     say App::Clod::Packages::install( '/bogus/clod-install-packages', @lacks ) if @lacks;
-    say App::Clod::Packages::program_error('ffmpeg -version') // 'ffmpeg runs';
+    say App::Clod::Packages::program_error( App::Clod::Claude->new( run_as => 'agent' ), 'ffmpeg -version' ) // 'ffmpeg runs';
 
 =head1 DESCRIPTION
 

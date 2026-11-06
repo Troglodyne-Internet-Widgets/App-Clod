@@ -1350,21 +1350,23 @@ subtest 'system packages' => sub {
     $claude->redefine( plugins => sub ($) { [] } );
     my ( %have, %error, @asked, @ran, @installed );
     my $packages = Test::MockModule->new('App::Clod::Packages');
-    $packages->redefine( installed     => sub ( $packager, $name ) { push @asked, "$packager $name"; return $have{$name} } );
-    $packages->redefine( program_error => sub ($line) { push @ran, $line;                            return $error{$line} } );
+    $packages->redefine( installed     => sub ( $packager, $name ) { push @asked, "$packager $name";          return $have{$name} } );
+    $packages->redefine( program_error => sub ( $claude,   $line ) { push @ran,   [ $claude->run_as, $line ]; return $error{$line} } );
     %have = ( ffmpeg => 1 );
     my $check = run_job('self_check')->{result};
     is( $check->{system_packages}, { map { $_ => { missing => ['libmagic-dev'], failing => [] } } @SPOKES }, 'the check finds the package that the host lacks, for each spoke that declares it' );
     is( [ \@asked, \@ran ],        [ [ 'deb ffmpeg', 'deb libmagic-dev' ], [] ],                             'it asks dpkg once about each package, and runs no program while a package is missing' );
 
-    %have  = ( ffmpeg            => 1, 'libmagic-dev' => 1 );
-    %error = ( 'ffmpeg -version' => 'ffmpeg: error while loading shared libraries' );
-    @ran   = ();
-    $check = run_job('self_check')->{result};
+    %have                     = ( ffmpeg            => 1, 'libmagic-dev' => 1 );
+    %error                    = ( 'ffmpeg -version' => 'ffmpeg: error while loading shared libraries' );
+    @ran                      = ();
+    $config->{claude}{run_as} = 'test-agent';
+    $check                    = run_job('self_check')->{result};
     is( $check->{system_packages}{'Test-Org/one'}, { missing => [], failing => [ { program => 'ffmpeg -version', error => 'ffmpeg: error while loading shared libraries' } ] }, 'with every package there, a program that fails is a finding' );
-    is( \@ran,                                     [ 'ffmpeg -version', 'ffmpeg -version' ],                                                                                    'which it runs for each spoke' );
+    is( \@ran,                                     [ ( [ 'test-agent', 'ffmpeg -version' ] ) x 2 ],                                                                             'which it runs for each spoke, as the account that claude runs as' );
+    $config->{claude}{run_as} = undef;
 
-    $packages->redefine( program_error => sub ($line) { return } );
+    $packages->redefine( program_error => sub ( $claude, $line ) { return } );
     is( run_job('self_check')->{result}{system_packages}, {}, 'and a host with everything finds nothing' );
     $packages->redefine( installed => sub (@) { die "dpkg-query: not found\n" } );
     like( run_job('self_check')->{result}, { system_packages => {}, system_packages_error => 'dpkg-query: not found' }, 'a check that cannot ask says why' );
