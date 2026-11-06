@@ -2303,9 +2303,11 @@ sub assigned_sweep ( $job, $config ) {
 Every fifteen minutes.  Counts, over the hub and every spoke, the open issues
 that nobody is assigned to, the issues opened in the last seven days, and the
 pull requests merged in the last seven days.  Pull requests are not issues.
-Its result has C<checked_at>, C<unassigned>, C<opened_7d>, C<merged_7d>, and
-C<errors>, a hash of repository to error.  A repository that fails adds
-nothing to any of the three counts.
+It makes one search for each count and each owner of a spoke, and keeps the
+items of the spokes, because GitHub allows 30 searches a minute, and a search
+for each spoke went over that.  Its result has C<checked_at>, C<unassigned>,
+C<opened_7d>, C<merged_7d>, and C<errors>, a hash of owner to error.  An owner
+that fails adds nothing to any of the three counts.
 
 =cut
 
@@ -2313,11 +2315,19 @@ sub activity_sweep ( $job, $config ) {
     prune_history( $job->minion, q{activity_sweep} );
     my $gh    = github($config);
     my $since = POSIX::strftime( '%Y-%m-%dT%H:%M:%SZ', gmtime( time - 7 * $DAY ) );
+    my %query = ( unassigned => 'is:issue is:open no:assignee', opened_7d => "is:issue created:>=$since", merged_7d => "is:pr is:merged merged:>=$since" );
+    my %spoke = map { $_ => 1 } @{ spokes( $job->minion, $config ) };
     my ( %total, %errors );
-    for my $repo ( @{ spokes( $job->minion, $config ) } ) {
+    for my $owner ( List::Util::uniq( map { ( split m{/} )[0] } sort keys %spoke ) ) {
         my %count;
-        if ( !eval { $count{unassigned} = @{ $gh->unassigned_issues($repo) }; $count{opened_7d} = @{ $gh->opened_issues( $repo, $since ) }; $count{merged_7d} = @{ $gh->merged_pulls( $repo, $since ) }; 1 } ) {
-            $errors{$repo} = $@;
+        my $ok = eval {
+            for my $what ( sort keys %query ) {
+                $count{$what} = grep { $spoke{ ( $_->{repository_url} // q{} ) =~ s{\A.*/repos/}{}r } } @{ $gh->search_issues("user:$owner $query{$what}") };
+            }
+            1;
+        };
+        if ( !$ok ) {
+            $errors{$owner} = $@;
             next;
         }
         $total{$_} += $count{$_} for keys %count;

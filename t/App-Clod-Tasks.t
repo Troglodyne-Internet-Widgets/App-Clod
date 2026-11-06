@@ -12,7 +12,6 @@ use Mojo::File       ();
 use Mojo::JSON       ();
 use Mojo::UserAgent  ();
 use Mojolicious      ();
-use POSIX            ();
 use Test::MockModule ();
 use Time::HiRes      qw{time};
 
@@ -130,9 +129,13 @@ $r->get('/repos/:o/:n/issues')->to(
 );
 $r->get('/search/issues')->to(
     cb => sub ($c) {
-        push @{ $state{searches} }, $c->param('q');
-        my ($repo) = $c->param('q') =~ m{repo:(\S+)};
-        $c->render( json => { items => $state{merged}{$repo} // [] } );
+        my $q = $c->param('q');
+        push @{ $state{searches} }, $q;
+        my ($owner) = $q =~ m{user:(\S+)};
+        return $c->render( json => { message => 'API rate limit exceeded' }, status => 403 ) if $state{search_fail}{$owner};
+        my ($what) = grep { index( $q, $state{search_kinds}{$_} ) >= 0 } sort keys %{ $state{search_kinds} // {} };
+        my @items = grep { $_->{repository_url} =~ m{/repos/\Q$owner\E/} } @{ $state{found}{ $what // q{} } // [] };
+        $c->render( json => { total_count => scalar @items, items => \@items } );
     }
 );
 $r->get('/repos/:o/:n')->to(
@@ -1315,33 +1318,29 @@ subtest assigned_sweep => sub {
 
 subtest activity_sweep => sub {
     %state = ();
-    my $stamp  = sub ($days) { return POSIX::strftime( '%Y-%m-%dT%H:%M:%SZ', gmtime( time - $days * 86_400 ) ) };
-    my $recent = $stamp->(1);
-    my $old    = $stamp->(30);
-    $state{issues}{'Test-Org/one'} = [
-        { number => 1, created_at => $recent },
-        { number => 2, created_at => $old },
-        { number => 3, created_at => $recent, assignee     => { login => 'someone' } },
-        { number => 4, created_at => $recent, pull_request => {} },
-    ];
-    $state{issues}{'Test-Org/two'} = [ { number => 1, created_at => $old } ];
-    $state{merged}{'Test-Org/one'} = [ { number => 4 }, { number => 9 } ];
+    my $item = sub ( $repo, $number ) { return { number => $number, repository_url => "https://api.test.test/repos/$repo" } };
+    $state{search_kinds} = { unassigned => 'is:issue is:open no:assignee', opened => 'is:issue created:>=', merged => 'is:pr is:merged merged:>=' };
+    $state{found}        = {
+        unassigned => [ $item->( 'Test-Org/one', 1 ), $item->( 'Test-Org/two', 2 ), $item->( 'Test-Org/private', 3 ) ],
+        opened     => [ $item->( 'Test-Org/one', 1 ) ],
+        merged     => [ $item->( 'Test-Org/one', 4 ), $item->( 'Test-Org/two', 9 ) ],
+    };
     my $swept = run_job('activity_sweep')->{result};
-    is( $swept->{unassigned}, 3,  'issues that nobody is assigned to are counted, and neither an assigned issue nor a pull request is' );
-    is( $swept->{opened_7d},  2,  'the issues of the last 7 days are counted, and an old one and a pull request are not' );
-    is( $swept->{merged_7d},  2,  'the pull requests that were merged in the last 7 days are counted' );
-    is( $swept->{errors},     {}, 'and nothing failed' );
+    is( [ @{$swept}{qw{unassigned opened_7d merged_7d}} ], [ 2, 1, 2 ], 'each count is over the spokes, and not over another repository of the owner' );
+    is( $swept->{errors},                                  {},          'and nothing failed' );
     ok( $swept->{checked_at}, 'with the time of the check' );
-    my $date   = qr{\d{4}-\d\d-\d\d};
-    my $clock  = qr{\d\d:\d\d:\d\d};
-    my $window = qr{merged:>=${date}T${clock}Z};
-    like( $state{searches}[0], qr{\Arepo:Test-Org/one\ is:pr\ is:merged\ $window\z}, 'the search names the repository and the 7 day window' );
-    is( [ map { $_->{assignee} } grep { defined $_->{assignee} } @{ $state{issue_queries} } ], [ ('none') x 2 ], 'the unassigned issues of each spoke are asked for with assignee=none' );
+    is( scalar @{ $state{searches} }, 3, 'one search for each count, and not one for each spoke, because GitHub allows 30 searches a minute' );
+    my $window = qr{\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ};
+    is(
+        [ sort @{ $state{searches} } ],
+        [ map { match($_) } qr{\Auser:Test-Org\ is:issue\ created:>=$window\z}, qr{\Auser:Test-Org\ is:issue\ is:open\ no:assignee\z}, qr{\Auser:Test-Org\ is:pr\ is:merged\ merged:>=$window\z} ],
+        'each search names the owner, and the 7 day window where it has one'
+    );
 
-    $state{issues_fail}{'Test-Org/two'} = 1;
+    $state{search_fail}{'Test-Org'} = 1;
     my $failed = run_job('activity_sweep')->{result};
-    like( $failed->{errors}{'Test-Org/two'}, qr/404/, 'a repository that fails is recorded' );
-    is( [ @{$failed}{qw{unassigned opened_7d merged_7d}} ], [ 2, 2, 2 ], 'and the other one is still counted' );
+    like( $failed->{errors}{'Test-Org'}, qr/403/, 'an owner whose search fails is recorded' );
+    is( [ @{$failed}{qw{unassigned opened_7d merged_7d}} ], [ 0, 0, 0 ], 'and adds nothing' );
     ok( App::Clod::Tasks::last_result( $minion, 'activity_sweep' ), 'the last result is there for the dashboard' );
 };
 
