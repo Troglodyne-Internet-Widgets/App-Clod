@@ -6,8 +6,10 @@ use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
 
+use Config              ();
 use Config::Tiny        ();
 use IPC::Run            ();
+use Module::Metadata    ();
 use Perl::Critic::Utils ();
 
 # The programs, found on the PATH.  A test points them at fakes.
@@ -73,15 +75,14 @@ sub policies (@profiles) {
 =func missing
 
 C<($lib, @modules)>.  The modules of C<@modules> that the local lib C<$lib>
-does not have a file of.
+does not have a file of, in its directory for this architecture or in the one
+for every architecture.
 
 =cut
 
 sub missing ( $lib, @modules ) {
-    return grep {
-        my $file = "$lib/lib/perl5/" . (s{::}{/}gr) . '.pm';
-        !-e $file
-    } @modules;
+    my @dirs = ( "$lib/lib/perl5/$Config::Config{archname}", "$lib/lib/perl5" );
+    return grep { !Module::Metadata->find_module_by_name( $_, \@dirs ) } @modules;
 }
 
 =func outdated
