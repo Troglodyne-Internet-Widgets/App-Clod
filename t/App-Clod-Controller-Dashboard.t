@@ -179,6 +179,13 @@ subtest 'an update of the bot' => sub {
     $res = $t->tx->res;
     is( $minion->job( $res->json->{queued} )->info->{task}, 'deps_upgrade', 'Upgrade modules queues deps_upgrade' );
     $minion->perform_jobs;
+
+    my $check = $minion->enqueue( self_check => [] => { delay => 60 } );
+    $t->get_ok('/api/overview')->status_is(200);
+    my $rechecked = action_about(qr/agent/);
+    like( $rechecked, { job => $check, text => qr/A\ new\ check\ is\ queued\.\z/ }, 'after the action, the item names the check that it queued' );
+    ok( !$rechecked->{buttons}, 'and has no button, because the check will say whether the action worked' );
+    $minion->job($check)->remove;
 };
 
 subtest work => sub {

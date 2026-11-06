@@ -193,13 +193,20 @@ sub self_items ( $self, $minion, $check ) {
 
 C<($minion, $task, $text, \%button)>.  A warning with C<$text>, and the button,
 a C<{label, act}>, unless a job of C<$task> waits or runs.  Then it names that
-job, and has no button.
+job, and has no button.  The same goes for a L<App::Clod::Tasks/self_check>,
+which the job queues when it finishes, because C<$text> comes from the check
+before it.
 
 =cut
 
 sub button_item ( $minion, $task, $text, $button ) {
-    my $pending = pending_job( $minion, $task );
-    return $pending ? { level => 'warning', job => $pending, text => "$text It is queued." } : { level => 'warning', text => $text, buttons => [$button] };
+    if ( my $pending = pending_job( $minion, $task ) ) {
+        return { level => 'warning', job => $pending, text => "$text It is queued." };
+    }
+    if ( my $check = pending_job( $minion, 'self_check' ) ) {
+        return { level => 'warning', job => $check, text => "$text A new check is queued." };
+    }
+    return { level => 'warning', text => $text, buttons => [$button] };
 }
 
 =func pending_job

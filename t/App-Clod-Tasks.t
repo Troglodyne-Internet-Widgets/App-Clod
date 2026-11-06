@@ -1199,6 +1199,10 @@ subtest 'self_check and self_update' => sub {
     my $plugins = run_job('plugin_update');
     is( $plugins->{result}{updated}, ['kit@m'],                     'the plugins that are behind are updated' );
     is( \@updated,                   [ [qw{plugin update kit@m}] ], 'with claude plugin update, and the others are not' );
+
+    my $checks = $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } );
+    is( $checks->total, 1, 'each action queues a new check, so its action item does not wait half an hour, and no second while one waits' );
+    ok( $checks->next->{delayed} >= time + $App::Clod::Tasks::RECHECK_DELAY - 5, 'which waits, so that it does not start in the worker that the action restarts' );
     $minion->reset( { all => 1 } );
 };
 
