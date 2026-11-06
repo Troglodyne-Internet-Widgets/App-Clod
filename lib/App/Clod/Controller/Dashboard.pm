@@ -3,6 +3,7 @@ package App::Clod::Controller::Dashboard;
 # ABSTRACT: The health page and the JSON behind it
 
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base 'Mojolicious::Controller', -signatures;
@@ -31,7 +32,9 @@ sub page ($self) { return $self->render( template => 'dashboard', bot => $self->
 
 Item counts by state, the Minion stats, the budget, the outages, the action
 items, and C<running>, the commit that the page runs, as C<{sha, short}>, or
-undef when it runs from no checkout.
+undef when it runs from no checkout.  C<activity> is the result of the last
+L<App::Clod::Tasks/activity_sweep>, with C<unassigned>, C<opened_7d>,
+C<merged_7d> and C<checked_at>, and it is undef until one has finished.
 
 =cut
 
@@ -43,7 +46,7 @@ sub overview ($self) {
         $counts{$state} = $minion->jobs( { tasks => \@ITEM_TASKS, states => [$state] } )->total;
     }
     my $outages = App::Clod::Outage::summary($minion);
-    return $self->render( json => { stats => $minion->stats, items => \%counts, budget => $budget, outages => $outages, running => $self->running, actions => $self->action_items( $budget, $outages ) } );
+    return $self->render( json => { stats => $minion->stats, items => \%counts, budget => $budget, outages => $outages, running => $self->running, activity => App::Clod::Tasks::last_result( $minion, 'activity_sweep' ), actions => $self->action_items( $budget, $outages ) } );
 }
 
 =method action_items
@@ -124,6 +127,9 @@ sub action_items ( $self, $budget, $outages = [] ) {
 
     push @actions, { level => 'danger', text => "$_ is not a spoke: $sweep->{dropped}{$_}" } for sort keys %{ $sweep->{dropped} // {} };
 
+    my $activity = App::Clod::Tasks::last_result( $minion, 'activity_sweep' ) // {};
+    push @actions, { level => 'warning', text => "The counts of issues and pull requests leave out the spokes of $_, because their search failed: $activity->{errors}{$_}" } for sort keys %{ $activity->{errors} // {} };
+
     push @actions, { level => 'warning', text => 'Claude work is paused until the quota resets' . ( $budget->{paused_until} ? q{ at } . gmtime( $budget->{paused_until} ) . ' UTC' : q{} ) . q{.} } if $budget->{paused};
 
     push @actions, $self->self_items( $minion, App::Clod::Tasks::last_result( $minion, 'self_check' ) );
@@ -152,7 +158,8 @@ L<App::Clod::Tasks/self_check>.  The action items that it calls for: a bot
 behind its upstream, or a checkout that the bot does not run yet, with an
 Update button, and plugins behind their marketplace, with an Update plugins
 button, and Perl modules in C<local_lib> with a newer release, with an Upgrade
-modules button.  While a job for a button waits or runs, the item names it, and has
+modules button, and tools that the agent lacks, or that have a newer release,
+in C<agent_lib>, with an Install tools button.  While a job for a button waits or runs, the item names it, and has
 no button.
 
 =cut
@@ -177,6 +184,13 @@ sub self_items ( $self, $minion, $check ) {
     my @old = @{ $check->{deps} // [] };
     push @items, button_item( $minion, 'deps_upgrade', 'Perl modules have a newer release: ' . join( q{, }, map { "$_->{module} $_->{version} to $_->{latest}" } @old ) . q{.}, { label => 'Upgrade modules', act => 'deps/upgrade' } ) if @old;
     push @items, { level => 'warning', text => "The bot cannot tell whether its Perl modules are up to date: $check->{deps_error}" } if $check->{deps_error};
+    my $tools = $check->{agent_deps} // {};
+    my @why   = (
+        ( @{ $tools->{missing}  // [] } ? 'The agent lacks these tools: ' . join( q{, }, @{ $tools->{missing} } ) . q{.}                                                                   : () ),
+        ( @{ $tools->{outdated} // [] } ? 'Tools of the agent have a newer release: ' . join( q{, }, map { "$_->{module} $_->{version} to $_->{latest}" } @{ $tools->{outdated} } ) . q{.} : () ),
+    );
+    push @items, button_item( $minion, 'deps_upgrade', join( q{ }, @why ), { label => 'Install tools', act => 'deps/upgrade' } ) if @why;
+    push @items, { level => 'warning', text => "The bot cannot tell whether the tools of the agent are up to date: $check->{agent_deps_error}" } if $check->{agent_deps_error};
     return @items;
 }
 
@@ -184,13 +198,20 @@ sub self_items ( $self, $minion, $check ) {
 
 C<($minion, $task, $text, \%button)>.  A warning with C<$text>, and the button,
 a C<{label, act}>, unless a job of C<$task> waits or runs.  Then it names that
-job, and has no button.
+job, and has no button.  The same goes for a L<App::Clod::Tasks/self_check>,
+which the job queues when it finishes, because C<$text> comes from the check
+before it.
 
 =cut
 
 sub button_item ( $minion, $task, $text, $button ) {
-    my $pending = pending_job( $minion, $task );
-    return $pending ? { level => 'warning', job => $pending, text => "$text It is queued." } : { level => 'warning', text => $text, buttons => [$button] };
+    if ( my $pending = pending_job( $minion, $task ) ) {
+        return { level => 'warning', job => $pending, text => "$text It is queued." };
+    }
+    if ( my $check = pending_job( $minion, 'self_check' ) ) {
+        return { level => 'warning', job => $check, text => "$text A new check is queued." };
+    }
+    return { level => 'warning', text => $text, buttons => [$button] };
 }
 
 =func pending_job
@@ -422,10 +443,12 @@ sub harness ($self) {
     return $self->render( json => $result // { repos => {}, checks => [] } );
 }
 
+1;
+
 =head1 DESCRIPTION
 
 The controller behind F</> and F</api>.  Everything it shows comes from Minion:
 the jobs of the items, and the results of the last C<harness_scan>,
-C<assigned_sweep> and C<inbox_poll>.
+C<assigned_sweep>, C<activity_sweep> and C<inbox_poll>.
 
 =cut

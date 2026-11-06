@@ -52,7 +52,7 @@ our %SCHEMA = (
                 model         => { type => 'string', nullable => 1, default => undef },
                 run_as        => { type => 'string', nullable => 1, default => undef, pattern => '\A[a-z_][a-z0-9_-]*\z' },
                 timeout       => seconds(3600),
-                allowed_tools => list_of( $TEXT, default => [qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*) Bash(perlcritic:*) Bash(perltidy:*) Bash(make:*) Bash(nytprofhtml:*) Bash(nytprofmerge:*)}] ),
+                allowed_tools => list_of( $TEXT, default => [qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*) Bash(perlcritic:*) Bash(perltidy:*) Bash(make:*) Bash(nytprofhtml:*) Bash(nytprofmerge:*) Bash(clod-cpm:*)}] ),
                 read_tools    => list_of( $TEXT, default => [ qw{Read Grep Glob}, 'Bash(git log:*)', 'Bash(git grep:*)', 'Bash(git show:*)', 'Bash(git diff:*)' ] ),
                 extra_tools   => list_of($TEXT),
             }
@@ -75,6 +75,8 @@ our %SCHEMA = (
         create_repos   => { type => 'boolean', default  => 0 },
         restart_units  => list_of( { type => 'string', pattern => '\A[\w@.:-]+[.]service\z' } ),
         local_lib      => { type => 'string', nullable => 1, default => undef },
+        agent_lib      => { type => 'string', nullable => 1, default => undef },
+        agent_own_lib  => { type => 'string', nullable => 1, default => undef },
     },
 );
 
@@ -101,10 +103,13 @@ sub validate ($raw) {
     $config = Clone::clone($config);
     $config->{minion}             //= "sqlite:$config->{workspace}/minion.db";
     $config->{bot_email}          //= "$config->{bot}\@users.noreply.github.com";
+    $config->{agent_own_lib}      //= "$config->{workspace}/agent-own-lib" if $config->{agent_lib};
     $config->{harness}{standards} //= { git => "$config->{github_web}/$config->{harness}{plugin_repo}.git", path => 'skills/packaging-perl' };
     App::Clod::Harness::default_config( $config->{harness} );
     return $config;
 }
+
+1;
 
 =head1 SYNOPSIS
 
@@ -211,9 +216,10 @@ a repository, and C<read_tools> for runs that only read.
 The default C<allowed_tools> are the tools of the files and the Perl
 programs that a spoke is built and checked with: C<Read>, C<Edit>, C<Write>,
 C<Grep> and C<Glob>, and C<git>, C<prove>, C<perl>, C<dzil>, C<podchecker>,
-C<perlcritic>, C<perltidy>, C<make>, C<nytprofhtml> and C<nytprofmerge>.  So a
-run can criticize and tidy the whole tree, and not only what the hooks of a
-commit see, and profile with C<perl -d:NYTProf> and read the profile.  The
+C<perlcritic>, C<perltidy>, C<make>, C<nytprofhtml>, C<nytprofmerge> and
+C<clod-cpm>.  So a run can criticize and tidy the whole tree, and not only what
+the hooks of a commit see, profile with C<perl -d:NYTProf> and read the
+profile, and install a module into C<agent_own_lib>.  The
 default C<read_tools> are C<Read>, C<Grep> and C<Glob>, and C<git log>, C<git
 grep>, C<git show> and C<git diff>.
 
@@ -327,6 +333,30 @@ With one, L<App::Clod::Deps> keeps every module of the bot there:
 L<App::Clod::Tasks/self_update> installs what a new version needs, and the
 dashboard can upgrade what has a newer release, with no sudo.  The clod recipe
 of trog-provisioner makes it, and fills this in.
+
+=item agent_lib
+
+A local lib, such as F</opt/domains/example.test/agent-perl5>, for the tools
+of the agent: Perl::Critic and every policy of the critic profiles of the
+standards, Perl::Tidy and Devel::NYTProf.  Default none.  With one, every
+claude run gets it first on C<PERL5LIB> and its F<bin> first on C<PATH>, so
+perlcritic in a spoke, and in its hooks, finds the policies that the
+standards name.  C<clod deps install> fills it, and the dashboard installs
+what it lacks and upgrades what has a newer release, with no sudo and no
+provision.
+
+The service user owns it, and the account of C<run_as> must be able to read
+it and not to change it.  The clod recipe of trog-provisioner makes it so,
+and fills this in.
+
+=item agent_own_lib
+
+A local lib that the agent installs into, with F<clod-cpm> in the bin of
+C<agent_lib>, when a change needs a module that nothing installed.  It comes
+after C<agent_lib> on C<PERL5LIB> and C<PATH>, so a module there cannot
+replace a tool or a policy.  Default F<agent-own-lib> in the workspace when
+there is an C<agent_lib>, because the account of C<run_as> can write there,
+and none otherwise.
 
 =item otel
 

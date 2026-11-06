@@ -3,6 +3,7 @@ package App::Clod::Claude;
 # ABSTRACT: Run claude -p in a directory and read what it did
 
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
@@ -107,6 +108,44 @@ L<App::Clod::Spoke/DESCRIPTION>.
 
 has run_as => undef;
 
+=attr lib
+
+A local lib, such as C<agent_lib> of F<clod.conf>, that comes first on the
+C<PERL5LIB> of every program that claude runs, with its F<bin> first on
+C<PATH>.  It holds the tools of the agent.  Default none: then claude gets the
+C<PATH> of the worker, and no C<PERL5LIB>, so not the modules of the bot.
+
+=cut
+
+has lib => undef;
+
+=attr own_lib
+
+A local lib that the agent may install into, such as C<agent_own_lib> of
+F<clod.conf>.  It comes after L</lib> on C<PERL5LIB>, with its F<bin> after
+that of L</lib> on C<PATH>, so that it adds modules and cannot replace one of
+L</lib>.  C<CLOD_OWN_LIB> names it, for F<clod-cpm>.  Default none.
+
+=cut
+
+has own_lib => undef;
+
+=method run_env
+
+The C<PATH> and C<PERL5LIB> that claude runs with, as a hash, from L</lib>
+and L</own_lib>, and C<CLOD_OWN_LIB> with an L</own_lib>.
+
+=cut
+
+sub run_env ($self) {
+    my @libs = grep { defined } $self->lib, $self->own_lib;
+    my $path = join q{:}, ( map { "$_/bin" } @libs ), $ENV{PATH} // ();
+    return ( PATH => $path ) if !@libs;
+    my %env = ( PATH => $path, PERL5LIB => join q{:}, map { "$_/lib/perl5" } @libs );
+    $env{CLOD_OWN_LIB} = $self->own_lib if defined $self->own_lib;
+    return %env;
+}
+
 =method command
 
 The argument list, for C<%run> as C<run> takes it.  Separate so that a test can
@@ -126,6 +165,26 @@ sub command ( $self, %run ) {
     return \@cmd;
 }
 
+=method child_env
+
+The environment that claude runs with: C<%ENV>, the C<env> of claude, and,
+when there is no L</run_as>, the C<PATH> and C<PERL5LIB> of L</run_env>, and no
+other C<PERL5LIB>.  None of C<@WITHHELD>.  With an account, L</as_account>
+passes C<PATH> and C<PERL5LIB> to F</usr/bin/env> instead, because sudo resets
+the environment.
+
+=cut
+
+sub child_env ($self) {
+    my %env = ( %ENV, %{ $self->env } );
+    delete @env{@WITHHELD};
+    if ( !$self->run_as ) {
+        delete $env{PERL5LIB};
+        %env = ( %env, $self->run_env );
+    }
+    return %env;
+}
+
 =method as_account
 
 C<(@cmd)>.  The argument list that runs C<@cmd> as L</run_as>, through sudo as
@@ -136,7 +195,8 @@ L</run_as> describes, or C<@cmd> itself when there is no such account.
 sub as_account ( $self, @cmd ) {
     my $account = $self->run_as // return @cmd;
     my @kept    = sort { $a cmp $b } grep { $_ ne 'CLAUDE_CODE_OAUTH_TOKEN' } keys %{ $self->env };
-    return ( qw{sudo -n -H -u}, $account, ( @kept ? '--preserve-env=' . join( q{,}, @kept ) : () ), qw{-- /usr/bin/env}, 'PATH=' . ( $ENV{PATH} // q{} ), @cmd );
+    my %env     = $self->run_env;
+    return ( qw{sudo -n -H -u}, $account, ( @kept ? '--preserve-env=' . join( q{,}, @kept ) : () ), qw{-- /usr/bin/env}, ( map { "$_=$env{$_}" } sort keys %env ), @cmd );
 }
 
 =method cli
@@ -158,8 +218,7 @@ on its standard error if it fails.
 =cut
 
 sub as_account_run ( $self, @cmd ) {
-    local %ENV = ( %ENV, %{ $self->env } );
-    delete @ENV{@WITHHELD};
+    local %ENV = $self->child_env;
     my ( $out, $err ) = ( q{}, q{} );
     my $ok = eval { IPC::Run::run( [ $self->as_account(@cmd) ], '<', \undef, '>', \$out, '2>', \$err, IPC::Run::timeout(600) ) };
     die "@cmd: " . ( $err ne q{} ? $err : $@ || 'failed' ) . "\n" if !$ok;
@@ -293,8 +352,7 @@ sub run ( $self, %run ) {
         while ( ( my $at = index $buffer, "\n" ) >= 0 ) { $take->( substr $buffer, 0, $at + 1, q{} ) }
     };
 
-    local %ENV = ( %ENV, %{ $self->env } );
-    delete @ENV{@WITHHELD};
+    local %ENV = $self->child_env;
     my $ok = eval {
         IPC::Run::run( $cmd, init => sub { chdir $dir or die "chdir $dir: $!\n" }, '<', \$prompt, '>', $read, '2>', \$stderr, IPC::Run::timeout( $self->timeout ) );
         1;
@@ -380,6 +438,8 @@ sub absorb ( $outcome, $event ) {
     $absorb->( $outcome, $event ) if $absorb;
     return;
 }
+
+1;
 
 =head1 SYNOPSIS
 

@@ -5,6 +5,36 @@ Revision history for App-Clod
       the header, Failures, Warnings and Info, each switch one level on or
       off, and all are on by default.  A person could not hide the harness
       warnings to see only the failures.
+    - Add the autovivification pragma as a runtime requirement. The modules
+      that read nested data now say "no autovivification", so that a read of
+      a missing key does not create it. Variables::RequireNoAutovivification
+      asks for this. Paired hash reads are now slices, and the retry loop in
+      triage has a named loop variable.
+    - Show two cards at the top of the Overview tab of the health page: the
+      open issues that nobody is assigned to, with the issues opened in the
+      last 7 days under it, and the pull requests merged in the last 7 days.
+      A new task, activity_sweep, counts them every fifteen minutes over the
+      hub and every spoke.  The cards are now four to a row, so that eight
+      of them lay out evenly.
+    - Keep the tools of the agent in agent_lib, a local lib of the service
+      user that the agent may read and not change, when clod.conf names
+      one: Perl::Critic, each policy of the critic profiles of the
+      standards, Perl::Tidy and Devel::NYTProf.  Every claude run gets it
+      first on PERL5LIB and PATH.  clod deps install fills it, and the
+      dashboard installs what it lacks and upgrades what is outdated, so a
+      policy that the standards add reaches the agent with no provision.
+      Without an agent_lib, claude gets no PERL5LIB, so not the modules of
+      the bot either.
+    - Refresh the references of the spokes once after each spoke sweep, in
+      refresh_references, and let a triage or a reply refresh only the one
+      of its request.  Each of them refreshed every spoke, so two at once
+      cloned and fetched the same repositories, and one failed with
+      "invalid reference: origin/master".
+    - Take a lock of the bare clone of a spoke, with Mutex::Flock, while one
+      process clones or fetches it, set its fetch refspec on every fetch,
+      and make a missing reference again after git forgets its worktree.
+      The builtin flock is banned in .preferred_modules.ini in favor of
+      Mutex::Flock, which lets go of the lock when the code under it dies.
     - Allow a run that changes a spoke perlcritic, perltidy, make,
       nytprofhtml and nytprofmerge by default.  The hooks criticize and
       tidy only what a commit stages, so a change to the profile could not

@@ -28,9 +28,12 @@ my $HASH = 'f' x 64;
 
 subtest validate => sub {
     my $config = App::Clod::Config::validate( {%minimal} );
-    is( $config->{minion},      'sqlite:/bogus/workspace/minion.db', 'the Minion database defaults to the workspace' );
-    is( $config->{bot_email},   'test-bot@users.noreply.github.com', 'the commit address defaults to the no-reply one' );
-    is( $config->{claude}{bin}, 'claude',                            'the claude section gets its defaults' );
+    is( $config->{minion},        'sqlite:/bogus/workspace/minion.db', 'the Minion database defaults to the workspace' );
+    is( $config->{bot_email},     'test-bot@users.noreply.github.com', 'the commit address defaults to the no-reply one' );
+    is( $config->{claude}{bin},   'claude',                            'the claude section gets its defaults' );
+    is( $config->{agent_own_lib}, undef,                               'with no agent lib, the agent has no own lib' );
+    ok( ( grep { $_ eq 'Bash(clod-cpm:*)' } @{ $config->{claude}{allowed_tools} } ), 'a run that changes a repository may install a module into it' );
+    is( App::Clod::Config::validate( { %minimal, agent_lib => '/bogus/agent-perl5' } )->{agent_own_lib}, '/bogus/workspace/agent-own-lib', 'and with one, its own lib is in the workspace, which the agent can write' );
 
     my $merged = App::Clod::Config::validate( { %minimal, claude => { model => 'test-model' } } );
     is( $merged->{claude}{model}, 'test-model', 'a section key from the file is kept' );

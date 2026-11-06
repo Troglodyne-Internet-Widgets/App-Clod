@@ -3,6 +3,7 @@ package App::Clod::Tasks;
 # ABSTRACT: The Minion tasks: inbox, triage, the spokes, and the scans
 
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 
@@ -10,6 +11,7 @@ use IPC::Run    ();
 use List::Util  ();
 use Mojo::File  ();
 use Mojo::JSON  ();
+use POSIX       ();
 use Time::HiRes qw{time};
 
 use App::Clod::Budget();
@@ -31,25 +33,27 @@ our %KIND = (
 );
 
 our %TASKS = (
-    inbox_poll     => \&inbox_poll,
-    triage         => \&triage,
-    spoke_fix      => \&spoke_fix,
-    spoke_review   => \&spoke_review,
-    spoke_address  => \&spoke_address,
-    sort_review    => \&sort_review,
-    reply          => \&reply,
-    report         => \&report,
-    kickback       => \&kickback,
-    harness_scan   => \&harness_scan,
-    assigned_sweep => \&assigned_sweep,
-    spoke_sweep    => \&spoke_sweep,
-    create_repo    => \&create_repo,
-    file_issues    => \&file_issues,
-    harness_fix    => \&harness_fix,
-    self_check     => \&self_check,
-    self_update    => \&self_update,
-    plugin_update  => \&plugin_update,
-    deps_upgrade   => \&deps_upgrade,
+    inbox_poll         => \&inbox_poll,
+    triage             => \&triage,
+    spoke_fix          => \&spoke_fix,
+    spoke_review       => \&spoke_review,
+    spoke_address      => \&spoke_address,
+    sort_review        => \&sort_review,
+    reply              => \&reply,
+    report             => \&report,
+    kickback           => \&kickback,
+    harness_scan       => \&harness_scan,
+    assigned_sweep     => \&assigned_sweep,
+    activity_sweep     => \&activity_sweep,
+    spoke_sweep        => \&spoke_sweep,
+    refresh_references => \&refresh_references,
+    create_repo        => \&create_repo,
+    file_issues        => \&file_issues,
+    harness_fix        => \&harness_fix,
+    self_check         => \&self_check,
+    self_update        => \&self_update,
+    plugin_update      => \&plugin_update,
+    deps_upgrade       => \&deps_upgrade,
 );
 
 # Each Minion schedule: its cron line and its task.
@@ -57,6 +61,7 @@ our %SCHEDULES = (
     inbox    => [ '* * * * *',    'inbox_poll' ],
     harness  => [ '17 * * * *',   'harness_scan' ],
     assigned => [ '*/15 * * * *', 'assigned_sweep' ],
+    activity => [ '*/15 * * * *', 'activity_sweep' ],
     spokes   => [ '*/15 * * * *', 'spoke_sweep' ],
     self     => [ '7,37 * * * *', 'self_check' ],
 );
@@ -122,7 +127,7 @@ sub hold ($job) {
 =func schedule
 
 C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>,
-C<harness_scan>, C<assigned_sweep> and C<spoke_sweep>.
+C<harness_scan>, C<assigned_sweep>, C<activity_sweep> and C<spoke_sweep>.
 
 =cut
 
@@ -172,6 +177,8 @@ sub claude ($config) {
         bin           => $c->{bin},
         model         => $c->{model},
         run_as        => $c->{run_as},
+        lib           => $config->{agent_lib},
+        own_lib       => $config->{agent_own_lib},
         timeout       => $c->{timeout},
         allowed_tools => [ @{ $c->{allowed_tools} }, @{ $c->{extra_tools} } ],
         env           => \%env,
@@ -239,14 +246,16 @@ sub log_note ( $job, $message ) {
 =func system_text
 
 C<($config, $task)>.  The text that the claude runs of the task append to
-their system prompt: C<spoke_prompt> for a spoke task, then the
-C<system_prompts> text of the task, a blank line between them.  Undef when
-there is neither.
+their system prompt: C<spoke_prompt> for a spoke task, and with an
+C<agent_own_lib> F<share/prompts/install.md>, which says how to install a
+module, then the C<system_prompts> text of the task, a blank line between
+them.  Undef when there is none.
 
 =cut
 
 sub system_text ( $config, $task ) {
-    my @parts = grep { ( $_ // q{} ) ne q{} } ( $SPOKE_TASKS{$task} ? $config->{spoke_prompt} : undef ), $config->{system_prompts}{$task};
+    my @spoke = $SPOKE_TASKS{$task} ? ( $config->{spoke_prompt}, $config->{agent_own_lib} ? prompt('install') : undef ) : ();
+    my @parts = grep { ( $_ // q{} ) ne q{} } @spoke, $config->{system_prompts}{$task};
     return @parts ? join( "\n\n", @parts ) : undef;
 }
 
@@ -585,7 +594,7 @@ entries of its L</conversation>, as Markdown for a prompt.
 =cut
 
 sub context ( $config, $gh, $item ) {
-    my $issue = $gh->issue( $item->{repo}, $item->{number} );
+    my $issue = $gh->issue( $item->@{qw(repo number)} );
     my @said  = @{ conversation( $gh, $item ) };
     @said = @said[ -20 .. -1 ] if @said > 20;
     my @lines = ( "# $issue->{title}", "by $issue->{user}{login}, " . origin_url( $config, $item ), q{}, $issue->{body} // q{}, q{} );
@@ -603,10 +612,10 @@ not entries: they belong to their threads.
 =cut
 
 sub conversation ( $gh, $item ) {
-    my @said = @{ $gh->issue_comments( $item->{repo}, $item->{number} ) };
+    my @said = @{ $gh->issue_comments( $item->@{qw(repo number)} ) };
     if ( $item->{is_pr} ) {
         push @said, map { { id => $_->{id}, user => $_->{user}, body => $_->{body}, created_at => $_->{submitted_at}, review => 1 } }
-          grep { ( $_->{body} // q{} ) ne q{} } @{ $gh->reviews( $item->{repo}, $item->{number} ) };
+          grep { ( $_->{body} // q{} ) ne q{} } @{ $gh->reviews( $item->@{qw(repo number)} ) };
     }
     return [ sort { ( $a->{created_at} // q{} ) cmp ( $b->{created_at} // q{} ) || $a->{id} <=> $b->{id} } @said ];
 }
@@ -621,17 +630,25 @@ sub default_branch ( $gh, $repo ) { return $gh->repo($repo)->{default_branch} }
 
 =func prepare_hub
 
-C<($config, $gh, \@spokes)>.  Refreshes the reference worktree of every spoke
-and writes the hub CLAUDE.md.  Returns the hub directory and a hash of
-repository to reference worktree.
+C<($config, $gh, \@spokes, @fresh)>.  Makes sure that each spoke has a
+reference worktree, writes the hub CLAUDE.md, and returns the hub directory and
+a hash of repository to reference worktree.  It refreshes the reference of each
+spoke of C<@fresh>, the repository of the request, and of a spoke that has no
+reference yet.  The others are as L</refresh_references> left them, at most a
+sweep old.
+
+Triage reads every spoke to judge which ones a request needs, and does not
+change any of them, so a reference a quarter of an hour old is good enough.  A
+spoke run fetches its own worktree, so no change starts from it.
 
 =cut
 
-# Every spoke at its default branch, and the hub workspace that describes them.
-sub prepare_hub ( $config, $gh, $spokes ) {
+sub prepare_hub ( $config, $gh, $spokes, @fresh ) {
+    my %fresh = map { $_ => 1 } grep { defined } @fresh;
     my %ref;
     for my $repo (@$spokes) {
-        $ref{$repo} = spoke( $config, $repo )->refresh_reference( default_branch( $gh, $repo ) );
+        my $spoke = spoke( $config, $repo );
+        $ref{$repo} = $fresh{$repo} || !-d $spoke->reference ? $spoke->refresh_reference( default_branch( $gh, $repo ) ) : $spoke->reference;
     }
     my $hub = Mojo::File->new( $config->{workspace}, 'hub' )->make_path;
     my $md  = App::Clod::Triage::hub_claude_md(
@@ -742,8 +759,8 @@ comment of its review threads, each a C<{by, body}>.
 =cut
 
 sub written ( $gh, $item ) {
-    my $issue = $gh->issue( $item->{repo}, $item->{number} );
-    my @lines = $item->{is_pr} ? @{ $gh->review_comments( $item->{repo}, $item->{number} ) } : ();
+    my $issue = $gh->issue( $item->@{qw(repo number)} );
+    my @lines = $item->{is_pr} ? @{ $gh->review_comments( $item->@{qw(repo number)} ) } : ();
     return [ map { { by => $_->{user}{login} // q{}, body => $_->{body} // q{} } } $issue, @{ conversation( $gh, $item ) }, @lines ];
 }
 
@@ -792,7 +809,7 @@ C<follow_up> has no chain and no C<report>: filing the issues settles it.
 sub triage ( $job, $config, $item ) {
     my $gh     = github($config);
     my $spokes = spokes( $job->minion, $config );
-    my ( $hub, $ref ) = prepare_hub( $config, $gh, $spokes );
+    my ( $hub, $ref ) = prepare_hub( $config, $gh, $spokes, $item->{repo} );
     my %create  = creation( $job->minion, $config, $item );
     my $written = %create ? written( $gh, $item ) : [];
     my %vars    = (
@@ -808,11 +825,11 @@ sub triage ( $job, $config, $item ) {
     );
 
     my ( @outcomes, $answer, $error );
-    for ( 1 .. 2 ) {
+    for my $attempt ( 1 .. 2 ) {
         my $outcome = run_claude(
             $job, $config,
             dir             => $hub,
-            prompt          => prompt( triage => %vars, retry => $error ? "\nYour last answer was rejected: $error\n" : q{} ),
+            prompt          => prompt( triage => %vars, retry => $attempt > 1 ? "\nYour last answer was rejected: $error\n" : q{} ),
             tools           => $config->{claude}{read_tools},
             permission_mode => 'default',
             add_dirs        => [ map { "$_" } values %$ref ],
@@ -1324,7 +1341,7 @@ references.
 =cut
 
 sub pending ( $config, $gh, $item ) {
-    return ( pending_threads( $config, $gh->review_comments( $item->{repo}, $item->{number} ) ), pending_comments( $config, conversation( $gh, $item ) ) );
+    return ( pending_threads( $config, $gh->review_comments( $item->@{qw(repo number)} ) ), pending_comments( $config, conversation( $gh, $item ) ) );
 }
 
 =func sort_review
@@ -1495,7 +1512,7 @@ sub spoke_address ( $job, $config, $args ) {
             my %open   = map { $_->{id} => 1 } @$pending;
             my @replied;
             for my $reply ( grep { $open{ $_->{id} } } @{ $answer->{replies} } ) {
-                $gh->reply_review_comment( $repo, $item->{number}, $reply->{id}, $reply->{body} );
+                $gh->reply_review_comment( $repo, $item->{number}, $reply->@{qw(id body)} );
                 push @replied, $reply->{id};
             }
             my $answered = @$comments && ( $answer->{comment} // q{} ) ne q{} ? $gh->comment( $repo, $item->{number}, $answer->{comment} )->{html_url} : undef;
@@ -1582,7 +1599,7 @@ its own.  A mention on the bot's own pull request goes to L</sort_review>.
 
 sub reply ( $job, $config, $item ) {
     my $gh = github($config);
-    my ( $hub, $ref ) = prepare_hub( $config, $gh, spokes( $job->minion, $config ) );
+    my ( $hub, $ref ) = prepare_hub( $config, $gh, spokes( $job->minion, $config ), $item->{repo} );
     my $outcome = run_claude(
         $job, $config,
         dir             => $hub,
@@ -1596,7 +1613,7 @@ sub reply ( $job, $config, $item ) {
     my $answer = $outcome->{structured};
     return $job->fail( { error => "no answer: $outcome->{stderr}", %usage } ) if ref $answer ne 'HASH';
 
-    $gh->comment( $item->{repo}, $item->{number}, $answer->{body} );
+    $gh->comment( $item->@{qw(repo number)}, $answer->{body} );
     my %result = ( action => $answer->{action}, summary => $answer->{body}, %usage );
     if ( $answer->{action} eq 'fix' ) {
         my %next = ( %$item, kind => 'fix' );
@@ -1630,13 +1647,13 @@ sub report ( $job, $config, $args ) {
     my @lines = map { "- $_->{repo}: $_->{pr_url}" } @done;
     my $rest  = $asked         ? 'the rest wait for the answer to the question above'                                     : 'see the jobs for the rest';
     my $note  = @done < $total ? sprintf( "\n\n%d of %d spokes opened a pull request; %s.", scalar @done, $total, $rest ) : q{};
-    $gh->comment( $item->{repo}, $item->{number}, @lines ? join( "\n", 'The change is in these pull requests:', @lines ) . $note : "No pull request came of this.$note" );
+    $gh->comment( $item->@{qw(repo number)}, @lines ? join( "\n", 'The change is in these pull requests:', @lines ) . $note : "No pull request came of this.$note" );
 
     if ( @done > 1 ) {
         for my $pr (@done) {
-            my $pull     = $gh->pull( $pr->{repo}, $pr->{pr} );
+            my $pull     = $gh->pull( $pr->@{qw(repo pr)} );
             my @siblings = map { "- $_->{pr_url}" } grep { $_->{pr_url} ne $pr->{pr_url} } @done;
-            $gh->update_pull( $pr->{repo}, $pr->{pr}, { body => join( "\n", $pull->{body} // q{}, q{}, 'Merge together with:', @siblings ) } );
+            $gh->update_pull( $pr->@{qw(repo pr)}, { body => join( "\n", $pull->{body} // q{}, q{}, 'Merge together with:', @siblings ) } );
         }
     }
     return $job->finish( { prs => [ map { $_->{pr_url} } @done ], of => $total } );
@@ -1783,8 +1800,8 @@ sub create_repo ( $job, $config, $args ) {
         log_note( $job, "opened $release->{url} for $release->{assignee}" . ( $release->{assigned} ? q{} : ', but GitHub did not assign them' ) );
     }
     $gh->comment(
-        $item->{repo}, $item->{number},
-        join "\n\n",   "I made the repository $repo for this: $made->{url}",
+        $item->@{qw(repo number)},
+        join "\n\n", "I made the repository $repo for this: $made->{url}",
         "The work on it follows, in a pull request there. Its first release is $release->{url}, for $release->{assignee}."
     );
     return $job->finish( { repo => $repo, created => 1, created_at => $made->{at}, repo_url => $made->{url}, release_url => $release->{url}, summary => "Made $repo: $args->{description}" } );
@@ -1896,7 +1913,7 @@ sub file_issues ( $job, $config, $args ) {
         log_note( $job, "filed $issue->{html_url} for $who" );
     }
     my @done = map { $filed->{$_} } 0 .. $#issues;
-    $gh->comment( $item->{repo}, $item->{number}, join "\n", 'I filed these follow-up issues:', map { "- $_->{repo}: $_->{url} ($_->{title})" } @done );
+    $gh->comment( $item->@{qw(repo number)}, join "\n", 'I filed these follow-up issues:', map { "- $_->{repo}: $_->{url} ($_->{title})" } @done );
     return $job->finish( { filed => \@done, issues => [ map { $_->{url} } @done ], summary => 'Filed ' . scalar(@done) . ' follow-up issue(s).' } );
 }
 
@@ -2048,10 +2065,13 @@ that the worker runs, from the helper C<running> of L<App::Clod>, and
 C<checkout>, the L<App::Clod/checkout> after a fetch, with C<head>,
 C<upstream>, its upstream branch, and C<behind> and C<ahead>, the commits
 between the two.  And C<plugins>, from L<App::Clod::Claude/plugins>, for the
-account that claude runs as.  With a C<local_lib>, C<deps>, the modules there
+account that claude runs as.  With an C<agent_lib>, C<agent_deps>: the tools
+of L</agent_tools> that it lacks, and the programs of
+L<App::Clod::Deps/stale_programs>, as C<missing>, and those with a newer
+release, as C<outdated>.  With a C<local_lib>, C<deps>, the modules there
 that have a newer release, from L<App::Clod::Deps/outdated>.  A part that
 fails has its error in place of its result, as C<checkout> with C<error>,
-C<plugin_error> or C<deps_error>.  With no checkout, there is no C<checkout>.
+C<plugin_error>, C<deps_error> or C<agent_deps_error>.  With no checkout, there is no C<checkout>.
 
 =cut
 
@@ -2071,6 +2091,12 @@ sub self_check ( $job, $config ) {
     if ( my $lib = $config->{local_lib} ) {
         $result{deps} = eval { App::Clod::Deps::outdated($lib) } // do { $result{deps_error} = ( split m{\n}, $@ )[0]; [] };
     }
+    if ( my $lib = $config->{agent_lib} ) {
+        $result{agent_deps} = eval {
+            my @tools = agent_tools($config);
+            +{ missing => [ App::Clod::Deps::missing( $lib, @tools ), App::Clod::Deps::stale_programs($lib) ], outdated => App::Clod::Deps::outdated($lib) };
+        } // do { $result{agent_deps_error} = ( split m{\n}, $@ )[0]; { missing => [], outdated => [] } };
+    }
     return $job->finish( \%result );
 }
 
@@ -2080,12 +2106,32 @@ From the dashboard.  Pulls the L<App::Clod/checkout> from its upstream, fast
 forward only, and restarts the units of C<restart_units> when the worker runs
 another commit than the checkout then has, as L</restart_and_finish> does.
 With a C<local_lib>, it first installs there what the new commit needs, as
-L<App::Clod::Deps/install> does.  Its result has C<from> and C<to>, the head
-before and after the pull, and C<restarted>, the units.
+L<App::Clod::Deps/install> does, and with an C<agent_lib>, the programs of
+L<App::Clod::Deps/install_programs>.  It queues a L</recheck>.  Its result has
+C<from> and C<to>, the head before and after the pull, and C<restarted>, the
+units.
 
 =cut
 
 our $CGROUP = '/proc/self/cgroup';
+
+=func recheck
+
+C<($job)>.  Queues a L</self_check>, so that the action items of the dashboard
+show what the button of C<$job> changed.  It waits C<$RECHECK_DELAY> seconds,
+so that it does not start in the worker that the job then restarts.  No second
+one, while one waits.
+
+=cut
+
+our $RECHECK_DELAY = 60;
+
+sub recheck ($job) {
+    my $minion = $job->minion;
+    return if $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } )->total;
+    $minion->enqueue( self_check => [] => { delay => $RECHECK_DELAY } );
+    return;
+}
 
 sub self_update ( $job, $config ) {
     my $dir    = App::Clod::checkout() // return $job->fail( { error => 'the bot does not run from a git checkout' } );
@@ -2094,9 +2140,11 @@ sub self_update ( $job, $config ) {
     $git->git_remote( q{-C}, "$dir", qw{fetch --quiet origin} );
     $git->git( q{-C}, "$dir", qw{merge --ff-only --quiet}, '@{upstream}' );
     $result{to} = $git->git( q{-C}, "$dir", qw{rev-parse HEAD} );
+    recheck($job);
     return $job->finish( { %result, restarted => [] } ) if $result{to} eq ( ( $job->app->running // {} )->{sha} // q{} );
 
     App::Clod::Deps::install( $config->{local_lib}, App::Clod::Deps::listdeps($dir) ) if $config->{local_lib};
+    App::Clod::Deps::install_programs( $config->{agent_lib} )                         if $config->{agent_lib};
     return restart_and_finish( $job, $config, \%result );
 }
 
@@ -2122,20 +2170,47 @@ sub restart_and_finish ( $job, $config, $result ) {
     return;
 }
 
+=func agent_tools
+
+C<($config)>.  The modules that the agent lib must hold: the tools of
+C<@App::Clod::Deps::TOOLS>, and the policy of each critic profile of the
+standards, as L<App::Clod::Harness/critic_profiles> finds them.  So a policy
+that the standards add reaches the agent with the next install, and no
+provision.
+
+=cut
+
+sub agent_tools ($config) {
+    my @profiles = App::Clod::Harness::critic_profiles( $config->{harness}, cache => "$config->{workspace}/conformance" );
+    return ( @App::Clod::Deps::TOOLS, App::Clod::Deps::policies(@profiles) );
+}
+
 =func deps_upgrade
 
 From the dashboard.  Upgrades the modules in C<local_lib> that have a newer
 release, as L<App::Clod::Deps/upgrade> does, and then restarts the units, as
-L</restart_and_finish> does, so the bot loads them.  Its result has
-C<upgraded>, what it found outdated.
+L</restart_and_finish> does, so the bot loads them.  With an C<agent_lib>, it
+also installs the tools of L</agent_tools> that it lacks, and upgrades those
+there with a newer release.  The next claude run loads them, so they restart
+nothing.  It queues a L</recheck>.  Its result has C<upgraded> and
+C<agent_upgraded>, what it found outdated, and C<agent_installed>.
 
 =cut
 
 sub deps_upgrade ( $job, $config ) {
-    my $lib      = $config->{local_lib} // return $job->fail( { error => 'clod.conf names no local_lib' } );
-    my $upgraded = App::Clod::Deps::upgrade($lib);
-    return $job->finish( { upgraded => [] } ) if !@$upgraded;
-    return restart_and_finish( $job, $config, { upgraded => $upgraded } );
+    my ( $lib, $agent ) = @$config{qw{local_lib agent_lib}};
+    return $job->fail( { error => 'clod.conf names no local_lib and no agent_lib' } ) if !$lib && !$agent;
+    my %result = ( upgraded => [] );
+    if ($agent) {
+        my @missing = App::Clod::Deps::missing( $agent, agent_tools($config) );
+        App::Clod::Deps::install( $agent, @missing );
+        App::Clod::Deps::install_programs($agent);
+        @result{qw{agent_installed agent_upgraded}} = ( \@missing, App::Clod::Deps::upgrade($agent) );
+    }
+    $result{upgraded} = App::Clod::Deps::upgrade($lib) if $lib;
+    recheck($job);
+    return $job->finish( \%result ) if !@{ $result{upgraded} };
+    return restart_and_finish( $job, $config, \%result );
 }
 
 =func own_unit
@@ -2171,14 +2246,38 @@ sub restart_unit ($unit) {
 From the dashboard.  Updates each plugin that L<App::Clod::Claude/is_behind>
 finds behind its marketplace, with C<claude plugin update>, for the account
 that claude runs as.  The next run of claude loads the new version, so
-nothing restarts.  Its result has C<updated>, the ids.
+nothing restarts.  It queues a L</recheck>.  Its result has C<updated>, the
+ids.
 
 =cut
 
 sub plugin_update ( $job, $config ) {
     my $claude  = claude($config);
     my @updated = map { $claude->cli( qw{plugin update}, $_->{id} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
+    recheck($job);
     return $job->finish( { updated => \@updated } );
+}
+
+=func refresh_references
+
+After each L</spoke_sweep>.  Refreshes the reference worktree of every spoke,
+one after another, which L</prepare_hub> reads.  A spoke that fails does not
+stop the rest.  Its result has C<refreshed>, the count, and C<errors>, a hash of
+repository to error.
+
+=cut
+
+sub refresh_references ( $job, $config ) {
+    prune_history( $job->minion, q{refresh_references} );
+    my $gh = github($config);
+    my ( $refreshed, %errors ) = (0);
+    for my $repo ( @{ spokes( $job->minion, $config ) } ) {
+        if ( eval { spoke( $config, $repo )->refresh_reference( default_branch( $gh, $repo ) ); 1 } ) {
+            $refreshed++;
+        }
+        else { $errors{$repo} = ( split m{\n}, $@ )[0] }
+    }
+    return $job->finish( { checked_at => time, refreshed => $refreshed, errors => \%errors } );
 }
 
 =func assigned_sweep
@@ -2200,9 +2299,47 @@ sub assigned_sweep ( $job, $config ) {
     return $job->finish( { checked_at => time, issues => \@issues, errors => \%errors } );
 }
 
+=func activity_sweep
+
+Every fifteen minutes.  Counts, over the hub and every spoke, the open issues
+that nobody is assigned to, the issues opened in the last seven days, and the
+pull requests merged in the last seven days.  Pull requests are not issues.
+It makes one search for each count and each owner of a spoke, and keeps the
+items of the spokes, because GitHub allows 30 searches a minute, and a search
+for each spoke went over that.  Its result has C<checked_at>, C<unassigned>,
+C<opened_7d>, C<merged_7d>, and C<errors>, a hash of owner to error.  An owner
+that fails adds nothing to any of the three counts.
+
+=cut
+
+sub activity_sweep ( $job, $config ) {
+    prune_history( $job->minion, q{activity_sweep} );
+    my $gh    = github($config);
+    my $since = POSIX::strftime( '%Y-%m-%dT%H:%M:%SZ', gmtime( time - 7 * $DAY ) );
+    my %query = ( unassigned => 'is:issue is:open no:assignee', opened_7d => "is:issue created:>=$since", merged_7d => "is:pr is:merged merged:>=$since" );
+    my %spoke = map { $_ => 1 } @{ spokes( $job->minion, $config ) };
+    my ( %total, %errors );
+    for my $owner ( List::Util::uniq( map { ( split m{/} )[0] } sort keys %spoke ) ) {
+        my %count;
+        my $ok = eval {
+            for my $what ( sort keys %query ) {
+                $count{$what} = grep { $spoke{ ( $_->{repository_url} // q{} ) =~ s{\A.*/repos/}{}r } } @{ $gh->search_issues("user:$owner $query{$what}") };
+            }
+            1;
+        };
+        if ( !$ok ) {
+            $errors{$owner} = $@;
+            next;
+        }
+        $total{$_} += $count{$_} for keys %count;
+    }
+    return $job->finish( { checked_at => time, unassigned => $total{unassigned} // 0, opened_7d => $total{opened_7d} // 0, merged_7d => $total{merged_7d} // 0, errors => \%errors } );
+}
+
 =func spoke_sweep
 
-Every fifteen minutes, also when C<spoke_orgs> is empty.  Lists the public
+Every fifteen minutes, also when C<spoke_orgs> is empty.  When it is done, it
+queues L</refresh_references>, unless one waits or runs already.  Lists the public
 repositories of each organization of C<spoke_orgs>, without forks and archived
 ones.  Its result has C<started_at>, the time before the first listing, so
 that L</made_repos> can tell whether it saw a repository made since.  If
@@ -2246,8 +2383,12 @@ sub spoke_sweep ( $job, $config ) {
         }
         $by_org{$org} = [ sort map { $_->{full_name} } grep { !$_->{fork} && !$_->{archived} } @$list ];
     }
-    return $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, dropped => \%dropped, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
+    $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, dropped => \%dropped, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
+    $minion->enqueue('refresh_references') if !$minion->jobs( { tasks => ['refresh_references'], states => [qw{inactive active}] } )->total;
+    return;
 }
+
+1;
 
 =head1 SYNOPSIS
 

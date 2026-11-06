@@ -117,7 +117,27 @@ $r->get('/orgs/:o/repos')->to(
         );
     }
 );
-$r->get('/repos/:o/:n/issues')->to( cb => sub ($c) { $c->render( json => [ { number => 5, title => 'Assigned', html_url => 'https://test.test/5', updated_at => 'today' } ] ) } );
+$r->get('/repos/:o/:n/issues')->to(
+    cb => sub ($c) {
+        my $repo = $c->param('o') . q{/} . $c->param('n');
+        return $c->render( json => { message => 'Not Found' }, status => 404 ) if $state{issues_fail}{$repo};
+        my $list = $state{issues}{$repo} // [ { number => 5, title => 'Assigned', html_url => 'https://test.test/5', updated_at => 'today' } ];
+        push @{ $state{issue_queries} }, $c->req->params->to_hash;
+        $list = [ grep { !$_->{assignee} } @$list ] if ( $c->param('assignee') // q{} ) eq 'none';
+        $c->render( json => $list );
+    }
+);
+$r->get('/search/issues')->to(
+    cb => sub ($c) {
+        my $q = $c->param('q');
+        push @{ $state{searches} }, $q;
+        my ($owner) = $q =~ m{user:(\S+)};
+        return $c->render( json => { message => 'API rate limit exceeded' }, status => 403 ) if $state{search_fail}{$owner};
+        my ($what) = grep { index( $q, $state{search_kinds}{$_} ) >= 0 } sort keys %{ $state{search_kinds} // {} };
+        my @items = grep { $_->{repository_url} =~ m{/repos/\Q$owner\E/} } @{ $state{found}{ $what // q{} } // [] };
+        $c->render( json => { total_count => scalar @items, items => \@items } );
+    }
+);
 $r->get('/repos/:o/:n')->to(
     cb => sub ($c) {
         return $c->render( json => { message => 'Not Found' }, status => 404 ) if $state{absent}{ $c->param('o') . q{/} . $c->param('n') };
@@ -770,6 +790,15 @@ subtest claude => sub {
     is( App::Clod::Tasks::claude($config)->run_as, 'test-agent', 'and as the account of run_as when it does' );
 };
 
+subtest system_text => sub {
+    my %config = ( spoke_prompt => 'Test on a guest.', system_prompts => { spoke_fix => 'Fix with care.' } );
+    is( App::Clod::Tasks::system_text( \%config, 'spoke_fix' ), "Test on a guest.\n\nFix with care.", 'a spoke run gets the spoke prompt, then the prompt of its task' );
+    $config{agent_own_lib} = '/bogus/own-lib';
+    my $install = qr/If\ the\ change\ needs\ a\ CPAN\ module.*/;
+    like( App::Clod::Tasks::system_text( \%config, 'spoke_fix' ), qr/\ATest\ on\ a\ guest[.]\n\n$install\n\nFix\ with\ care[.]\z/, 'and with an own lib, how to install a module, between them' );
+    is( App::Clod::Tasks::system_text( \%config, 'triage' ), undef, 'but a run that is not in a spoke gets neither' );
+};
+
 subtest 'tool spokes and the spoke prompt' => sub {
     %state = ();
     @calls = ();
@@ -1145,17 +1174,20 @@ subtest 'self_check and self_update' => sub {
     # it restarts, and an upgrade of the modules restarts too.
     my @deps;
     my $deps = Test::MockModule->new('App::Clod::Deps');
-    $deps->redefine( listdeps => sub ($dir) { push @deps, "listdeps $dir";                     return qw{Foo Bar} } );
-    $deps->redefine( install  => sub ( $lib, @modules ) { push @deps, "install $lib @modules"; return } );
-    $deps->redefine( outdated => sub ($lib) { return [ { module => 'Foo', version => '1', latest => '2' } ] } );
-    $deps->redefine( upgrade  => sub ($lib) { push @deps, "upgrade $lib"; return [ { module => 'Foo', version => '1', latest => '2' } ] } );
+    $deps->redefine( listdeps         => sub ($dir) { push @deps, "listdeps $dir";                     return qw{Foo Bar} } );
+    $deps->redefine( install          => sub ( $lib, @modules ) { push @deps, "install $lib @modules"; return } );
+    $deps->redefine( outdated         => sub ($lib) { return [ { module => 'Foo', version => '1', latest => '2' } ] } );
+    $deps->redefine( upgrade          => sub ($lib) { push @deps, "upgrade $lib";  return [ { module => 'Foo', version => '1', latest => '2' } ] } );
+    $deps->redefine( install_programs => sub ($lib) { push @deps, "programs $lib"; return } );
     $app->clod_config->{local_lib} = '/bogus/perl5';
+    $app->clod_config->{agent_lib} = '/bogus/agent-perl5';
     git( q{-C}, "$checkout", qw{reset --quiet --hard}, '@{upstream}' );
     $commit->('four');
     @restarted = ();
     my $with_lib = run_job('self_update');
-    is( [ $with_lib->{state}, \@deps ], [ 'finished', [ "listdeps $checkout", 'install /bogus/perl5 Foo Bar' ] ], 'with a local lib, the update installs what the checkout needs' ) or diag Mojo::Util::dumper $with_lib->{result};
-    is( scalar @restarted,              2,                                                                        'and then restarts' );
+    delete $app->clod_config->{agent_lib};
+    is( [ $with_lib->{state}, \@deps ], [ 'finished', [ "listdeps $checkout", 'install /bogus/perl5 Foo Bar', 'programs /bogus/agent-perl5' ] ], 'with a local lib, the update installs what the checkout needs, and the programs of the agent lib' ) or diag Mojo::Util::dumper $with_lib->{result};
+    is( scalar @restarted,              2,                                                                                                       'and then restarts' );
 
     is( run_job('self_check')->{result}{deps}, [ { module => 'Foo', version => '1', latest => '2' } ], 'the check lists the modules with a newer release' );
     @deps      = ();
@@ -1170,6 +1202,85 @@ subtest 'self_check and self_update' => sub {
     my $plugins = run_job('plugin_update');
     is( $plugins->{result}{updated}, ['kit@m'],                     'the plugins that are behind are updated' );
     is( \@updated,                   [ [qw{plugin update kit@m}] ], 'with claude plugin update, and the others are not' );
+
+    my $checks = $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } );
+    is( $checks->total, 1, 'each action queues a new check, so its action item does not wait half an hour, and no second while one waits' );
+    ok( $checks->next->{delayed} >= time + $App::Clod::Tasks::RECHECK_DELAY - 5, 'which waits, so that it does not start in the worker that the action restarts' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest 'the references that triage reads' => sub {
+    %state = ();
+    @calls = ();
+    my @refreshed;
+    my $mock = Test::MockModule->new('App::Clod::Spoke');
+    my $real = $mock->original('refresh_reference');
+    $mock->redefine( refresh_reference => sub ( $self, @args ) { push @refreshed, $self->repo; return $real->( $self, @args ) } );
+    my $config = $app->clod_config;
+    my $gh     = App::Clod::Tasks::github($config);
+
+    App::Clod::Tasks::prepare_hub( $config, $gh, \@SPOKES );
+    @refreshed = ();
+    my ( undef, $ref ) = App::Clod::Tasks::prepare_hub( $config, $gh, \@SPOKES, 'Test-Org/two' );
+    is( \@refreshed,         ['Test-Org/two'], 'with every reference there, triage refreshes only the one of its request' );
+    is( [ sort keys %$ref ], \@SPOKES,         'and still reads every spoke' );
+
+    App::Clod::Tasks::spoke( $config, 'Test-Org/one' )->reference->remove_tree;
+    @refreshed = ();
+    App::Clod::Tasks::prepare_hub( $config, $gh, \@SPOKES, 'Test-Org/two' );
+    is( [ sort @refreshed ], \@SPOKES, 'and a spoke that has no reference yet, so that it can read it' );
+
+    $minion->reset( { all => 1 } );
+    run_job('spoke_sweep');
+    my $next = $minion->jobs( { tasks => ['refresh_references'] } )->next;
+    ok( $next, 'a spoke sweep queues a refresh of the references' ) or return;
+    run_job('spoke_sweep');
+    is( $minion->jobs( { tasks => ['refresh_references'] } )->total, 1, 'and no second one while one waits' );
+
+    @refreshed = ();
+    my $refresh = run_id( $next->{id} );
+    is( [ $refresh->{result}{refreshed}, [ sort @refreshed ] ], [ 2, \@SPOKES ], 'the refresh refreshes every spoke' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest 'the agent lib' => sub {
+    %state = ();
+    my $config = $app->clod_config;
+    is(
+        [ App::Clod::Tasks::agent_tools($config) ],
+        [qw{Perl::Critic Perl::Tidy Devel::NYTProf Perl::Critic::Policy::ProhibitPipeOpen Perl::Critic::Policy::Variables::RequireNoAutovivification}],
+        'the agent needs its tools, and each policy of the critic profiles of the standards'
+    );
+
+    my ( @did, @restarted );
+    my $deps = Test::MockModule->new('App::Clod::Deps');
+    $deps->redefine(
+        missing => sub ( $lib, @modules ) {
+            return grep { m{Autovivification} } @modules;
+        }
+    );
+    $deps->redefine( outdated         => sub ($lib) { return [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] } );
+    $deps->redefine( install          => sub ( $lib, @modules ) { push @did, "install $lib @modules"; return } );
+    $deps->redefine( install_programs => sub ($lib) { push @did, "programs $lib";                     return } );
+    $deps->redefine( stale_programs   => sub ($lib) { return 'clod-cpm' } );
+    $deps->redefine( upgrade          => sub ($lib) { push @did, "upgrade $lib"; return $lib =~ m{agent} ? [ { module => 'Perl::Tidy' } ] : [] } );
+    my $tasks = Test::MockModule->new('App::Clod::Tasks');
+    $tasks->redefine( restart_unit => sub ($unit) { push @restarted, $unit; return } );
+    my $claude = Test::MockModule->new('App::Clod::Claude');
+    $claude->redefine( plugins => sub ($) { [] } );
+
+    $config->{agent_lib} = '/bogus/agent-perl5';
+    my $check = run_job('self_check');
+    is( $check->{result}{agent_deps}, { missing => [ 'Perl::Critic::Policy::Variables::RequireNoAutovivification', 'clod-cpm' ], outdated => [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] }, 'the check says what the agent lib lacks, and what has a newer release' );
+
+    my $upgrade = run_job('deps_upgrade');
+    is( \@did,                                  [ 'install /bogus/agent-perl5 Perl::Critic::Policy::Variables::RequireNoAutovivification', 'programs /bogus/agent-perl5', 'upgrade /bogus/agent-perl5' ], 'an upgrade installs what the agent lib lacks, and its programs, and upgrades what is outdated' );
+    is( [ $upgrade->{state}, \@restarted ],     [ 'finished', [] ],                                                                                                                                       'and restarts nothing, because the next claude run loads them' );
+    is( App::Clod::Tasks::claude($config)->lib, '/bogus/agent-perl5',                                                                                                                                     'and claude runs with the agent lib' );
+    $config->{agent_own_lib} = '/bogus/own-lib';
+    is( App::Clod::Tasks::claude($config)->own_lib, '/bogus/own-lib', 'and with the own lib of the agent' );
+    delete $config->{agent_own_lib};
+    delete $config->{agent_lib};
     $minion->reset( { all => 1 } );
 };
 
@@ -1203,6 +1314,34 @@ subtest assigned_sweep => sub {
     my $info = run_job('assigned_sweep');
     is( scalar @{ $info->{result}{issues} }, 2,              'the assigned issues of each spoke are listed' );
     is( $info->{result}{issues}[0]{repo},    'Test-Org/one', 'with their repo' );
+};
+
+subtest activity_sweep => sub {
+    %state = ();
+    my $item = sub ( $repo, $number ) { return { number => $number, repository_url => "https://api.test.test/repos/$repo" } };
+    $state{search_kinds} = { unassigned => 'is:issue is:open no:assignee', opened => 'is:issue created:>=', merged => 'is:pr is:merged merged:>=' };
+    $state{found}        = {
+        unassigned => [ $item->( 'Test-Org/one', 1 ), $item->( 'Test-Org/two', 2 ), $item->( 'Test-Org/private', 3 ) ],
+        opened     => [ $item->( 'Test-Org/one', 1 ) ],
+        merged     => [ $item->( 'Test-Org/one', 4 ), $item->( 'Test-Org/two', 9 ) ],
+    };
+    my $swept = run_job('activity_sweep')->{result};
+    is( [ @{$swept}{qw{unassigned opened_7d merged_7d}} ], [ 2, 1, 2 ], 'each count is over the spokes, and not over another repository of the owner' );
+    is( $swept->{errors},                                  {},          'and nothing failed' );
+    ok( $swept->{checked_at}, 'with the time of the check' );
+    is( scalar @{ $state{searches} }, 3, 'one search for each count, and not one for each spoke, because GitHub allows 30 searches a minute' );
+    my $window = qr{\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ};
+    is(
+        [ sort @{ $state{searches} } ],
+        [ map { match($_) } qr{\Auser:Test-Org\ is:issue\ created:>=$window\z}, qr{\Auser:Test-Org\ is:issue\ is:open\ no:assignee\z}, qr{\Auser:Test-Org\ is:pr\ is:merged\ merged:>=$window\z} ],
+        'each search names the owner, and the 7 day window where it has one'
+    );
+
+    $state{search_fail}{'Test-Org'} = 1;
+    my $failed = run_job('activity_sweep')->{result};
+    like( $failed->{errors}{'Test-Org'}, qr/403/, 'an owner whose search fails is recorded' );
+    is( [ @{$failed}{qw{unassigned opened_7d merged_7d}} ], [ 0, 0, 0 ], 'and adds nothing' );
+    ok( App::Clod::Tasks::last_result( $minion, 'activity_sweep' ), 'the last result is there for the dashboard' );
 };
 
 subtest spoke_sweep => sub {

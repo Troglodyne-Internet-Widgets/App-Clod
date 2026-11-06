@@ -65,6 +65,7 @@ return sub {
     # Read by the tests, never loaded by them.
     return qw{t/App-Clod-Tasks.t t/App-Clod.t}                if $path =~ m{\Ashare/prompts/}sx;
     return qw{t/App-Clod.t t/App-Clod-Controller-Dashboard.t} if $path =~ m{\Ashare/templates/}sx;
+    return qw{t/App-Clod-Deps.t}                              if $path =~ m{\Ashare/agent-bin/}sx;
     return qw{t/App-Clod-Claude.t t/App-Clod-Tasks.t}         if $path eq q{t/bin/fake-claude};
     return qw{t/App-Clod-Harness.t t/App-Clod-Tasks.t}        if $path =~ m{\At/data/standards/}sx;
     return 't/App-Clod-Claude.t'                              if $path =~ m{\At/data/}sx;

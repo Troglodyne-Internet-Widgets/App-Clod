@@ -128,6 +128,19 @@ sub update ( $tree, $settings, %options ) {
     return $conformance->update;
 }
 
+=func critic_profiles
+
+C<($settings, %options)>, as L</standards> takes them.  The texts of the critic
+profiles of the standards, each F<templates/perlcriticrc*> of them, so that
+L<App::Clod::Deps/policies> can name the policies that the agent must have.
+
+=cut
+
+sub critic_profiles ( $settings, %options ) {
+    my $templates = standards( $settings, %options )->base->child('templates');
+    return map { $_->slurp } sort { $a cmp $b } grep { $_->basename =~ m{\Aperlcriticrc} } $templates->list->each;
+}
+
 =func marketplace_check
 
 C<($plugin_json, $marketplace_json, $plugin)>, the texts of the plugin's
@@ -150,6 +163,8 @@ sub marketplace_check ( $plugin_json, $marketplace_json, $plugin ) {
     return { %result, status => 'fail', detail => "the marketplace pins $pinned; the plugin is at $latest" } if $behind;
     return { %result, status => 'pass', detail => "the marketplace pins $pinned" };
 }
+
+1;
 
 =head1 SYNOPSIS
 

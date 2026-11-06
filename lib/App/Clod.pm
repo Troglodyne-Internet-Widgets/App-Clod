@@ -152,6 +152,8 @@ sub viewer ( $c, $auth ) {
     return ( split /:/, $userinfo, 2 )[0];
 }
 
+1;
+
 =head1 SYNOPSIS
 
     # clod.conf is a perl hash; see App::Clod::Config for every key.

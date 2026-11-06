@@ -7,14 +7,10 @@
 # copies one, because the answer decides more than this file: it decides the
 # use line in every module and test, and perl: in prereqs.yml.
 #
-# The difference between the two is five policies.  A modern perl refuses what
-# they report, so naming them here would buy nothing:
-#
-#   TestingAndDebugging::RequireUseStrict       strict is on from 5.012
-#   Objects::ProhibitIndirectSyntax             no indirect from 5.036
-#   InputOutput::ProhibitBarewordFileHandles    no bareword_filehandles from
-#   InputOutput::ProhibitBarewordDirHandles       5.038
-#   Modules::RequireEndWithOne                  module_true from 5.038
+# Five policies are redundant under a modern perl, because the language refuses
+# what they report: RequireUseStrict, ProhibitIndirectSyntax, the two bareword
+# handle policies and RequireEndWithOne.  This file keeps them on anyway, so
+# that a file which drops its use line is still reported.
 #
 # Two more go the same way at 5.042, and are named below because this file
 # assumes only 5.040.  Delete them once your floor is 5.041 or later, which
@@ -155,9 +151,6 @@ allow_subs = startup page overview work harness retry ignore harness_fix self_up
 #   ErrorHandling::RequireCarping               die with context, and
 #                                                 Carp::Always for the trace
 #
-# Nor the five the language enforces under this file's floor.  The header says
-# which they are, and perlcriticrc.compat is where they live.
-#
 # Documentation::RequirePodSections is out as well: the sections it asks for are
 # the ones Pod::Weaver writes at build, and weaver.ini names them AUTHORS and
 # COPYRIGHT AND LICENSE where the policy wants AUTHOR and LICENSE AND COPYRIGHT.
@@ -201,6 +194,8 @@ stop_words_file = .pod_stopwords
 [InputOutput::ProhibitInteractiveTest]
 [InputOutput::ProhibitJoinedReadline]
 [InputOutput::ProhibitOneArgSelect]
+[InputOutput::ProhibitBarewordDirHandles]
+[InputOutput::ProhibitBarewordFileHandles]
 [InputOutput::ProhibitReadlineInForLoop]
 [InputOutput::ProhibitTwoArgOpen]
 [InputOutput::RequireBracedFileHandleWithPrint]
@@ -216,13 +211,17 @@ exclude_functions = print
 [Modules::ProhibitAutomaticExportation]
 [Modules::ProhibitConditionalUseStatements]
 [Modules::RequireBarewordIncludes]
+[Modules::RequireEndWithOne]
 [Modules::RequireFilenameMatchesPackage]
 [Modules::RequireNoMatchVarsWithUseEnglish]
 [NamingConventions::Capitalization]
+[Objects::ProhibitIndirectSyntax]
 [RegularExpressions::ProhibitCaptureWithoutTest]
 [RegularExpressions::ProhibitComplexRegexes]
 [RegularExpressions::ProhibitEnumeratedClasses]
 [RegularExpressions::ProhibitFixedStringMatches]
+[RegularExpressions::ProhibitIneffectiveModifiers]
+[RegularExpressions::ProhibitRegexToSplitAtDelimiter]
 [RegularExpressions::ProhibitSingleCharAlternation]
 [RegularExpressions::ProhibitUnusedCapture]
 [RegularExpressions::RequireBracesForMultiline]
@@ -239,8 +238,11 @@ exclude_functions = print
 [Subroutines::RequireFinalReturn]
 [TestingAndDebugging::ProhibitProlongedStrictureOverride]
 [TestingAndDebugging::RequireTestLabels]
+[TestingAndDebugging::RequireUseStrict]
 [ValuesAndExpressions::ProhibitCommaSeparatedStatements]
 [ValuesAndExpressions::ProhibitComplexVersion]
+[ValuesAndExpressions::ProhibitDescendingRanges]
+[ValuesAndExpressions::RequireSlices]
 [ValuesAndExpressions::ProhibitEscapedCharacters]
 [ValuesAndExpressions::ProhibitLongChainsOfMethodCalls]
 [ValuesAndExpressions::ProhibitMismatchedOperators]
@@ -260,6 +262,8 @@ exclude_functions = print
 # Drop this one at 5.041 and later, with RequireASCII above.
 [Variables::ProhibitPerl4PackageNames]
 [Variables::ProhibitReusedNames]
+[Variables::ProhibitTopicIterator]
+[Variables::RequireNoAutovivification]
 # Stricter than the core ProhibitUnusedVariables, which reports only a bare
 # `my $x;` and misses a variable that is assigned and never read.
 [Variables::ProhibitUnusedVarsStricter]

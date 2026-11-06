@@ -34,6 +34,11 @@ get '/repos/Test-Org/one/contents/*file' => sub ($c) {
 get '/repos/Test-Org/one/git/trees/*ref' => sub ($c) {
     return $c->render( json => { tree => [ { path => 'a', sha => 'sha-a' }, { path => 'b/c', sha => 'sha-c' } ] } );
 };
+get '/search/issues' => sub ($c) {
+    $seen{q} = $c->param('q');
+    my $count = $c->param('q') =~ m{many} ? $App::Clod::GitHub::SEARCH_MAX : 1;
+    return $c->render( json => { items => [ map { { number => $_ } } 1 .. $count ] } );
+};
 get '/repos/Test-Org/one' => sub ($c) { return $c->render( json => { message => 'Bad credentials' }, status => 401 ) };
 
 # Answers each request with the next status of its queue, and then with 200.
@@ -69,6 +74,13 @@ subtest tree => sub {
     my $tree = $gh->tree( 'Test-Org/one', 'main' );
     is( [ sort keys %$tree ], [ 'a', 'b/c' ], 'the tree is keyed by path' );
     is( $tree->{'b/c'}{sha},  'sha-c',        'and keeps each blob SHA' );
+};
+
+subtest search_issues => sub {
+    my $found = $gh->search_issues('user:Test-Org is:issue is:open');
+    is( [ map { $_->{number} } @$found ], [1],                              'the items of the search' );
+    is( $seen{q},                         'user:Test-Org is:issue is:open', 'of the query as given' );
+    like( dies { $gh->search_issues('user:Test-Org many') }, qr/finds\ more\ than\ 1000\ items/, 'and a search that finds more than GitHub returns dies, because its count would be too low' );
 };
 
 subtest request => sub {

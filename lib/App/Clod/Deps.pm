@@ -6,12 +6,21 @@ use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
 
-use IPC::Run ();
+use Config              ();
+use Config::Tiny        ();
+use IPC::Run            ();
+use Mojo::File          ();
+use Module::Metadata    ();
+use Perl::Critic::Utils ();
 
 # The programs, found on the PATH.  A test points them at fakes.
 our @DZIL     = ('dzil');
 our @CPM      = ('cpm');
 our @OUTDATED = ('cpan-outdated');
+
+# The tools of the agent that every spoke needs, beside the policies of the
+# critic profiles of the standards.  App::Clod::Config lets a run use them.
+our @TOOLS = qw{Perl::Critic Perl::Tidy Devel::NYTProf};
 
 =func listdeps
 
@@ -27,15 +36,85 @@ sub listdeps ($checkout) {
 =func install
 
 C<($lib, @modules)>.  Installs each module of C<@modules> into the local lib
-C<$lib>, with cpm and no tests, whether or not the perl has it already.  A
+C<$lib>, with cpm and no tests, whether or not the perl has it already.  It
+installs with C<umask 0027>, so the group of the lib may read what it installs
+and not change it.  A
 module can carry a version range in the syntax of cpm, such as C<Foo~1.2>.
 
 =cut
 
 sub install ( $lib, @modules ) {
     return if !@modules;
-    run( {}, @CPM, qw{install --without-test -L}, "$lib", @modules );
+    my $umask = umask oct '0027';
+    my $ok    = eval { run( {}, @CPM, qw{install --without-test -L}, "$lib", @modules ); 1 };
+    umask $umask;
+    die $@ if !$ok;
     return;
+}
+
+=func install_programs
+
+C<($lib)>.  Puts each program of F<share/agent-bin>, such as F<clod-cpm>, in
+the F<bin> of the agent lib C<$lib>, for its group to read and run, and replaces what is
+there.
+
+=cut
+
+sub install_programs ($lib) {
+    my $bin = Mojo::File->new( "$lib", 'bin' )->make_path;
+    for my $program ( App::Clod::share_dir()->child('agent-bin')->list->each ) {
+        $program->copy_to( $bin->child( $program->basename ) )->chmod( oct '0750' );
+    }
+    return;
+}
+
+=func stale_programs
+
+C<($lib)>.  The names of the programs of F<share/agent-bin> that the bin of
+the agent lib C<$lib> lacks, or has another version of.
+
+=cut
+
+sub stale_programs ($lib) {
+    my $bin = Mojo::File->new( "$lib", 'bin' );
+    return map { $_->basename } grep {
+        my $there = $bin->child( $_->basename );
+        !-e $there || $there->slurp ne $_->slurp
+    } App::Clod::share_dir()->child('agent-bin')->list->each;
+}
+
+=func policies
+
+C<(@profiles)>, the texts of F<.perlcriticrc> files.  The module of each policy
+that a profile turns on, sorted and once each.  Config::Tiny reads a profile,
+as Perl::Critic does, and each section names a policy,
+which C<policy_long_name> of L<Perl::Critic::Utils> turns into its module, a
+short name too.  A section C<[-X]> turns X off.  Dies with the error of
+Config::Tiny when a profile does not parse.
+
+=cut
+
+sub policies (@profiles) {
+    my %on;
+    for my $text (@profiles) {
+        my $ini = Config::Tiny->read_string($text) // die 'A critic profile does not parse: ' . Config::Tiny->errstr . "\n";
+        $on{ Perl::Critic::Utils::policy_long_name($_) } = 1 for grep { $_ ne q{_} && !m{\A-} } keys %$ini;
+    }
+    my @policies = sort keys %on;
+    return @policies;
+}
+
+=func missing
+
+C<($lib, @modules)>.  The modules of C<@modules> that the local lib C<$lib>
+does not have a file of, in its directory for this architecture or in the one
+for every architecture.
+
+=cut
+
+sub missing ( $lib, @modules ) {
+    my @dirs = ( "$lib/lib/perl5/$Config::Config{archname}", "$lib/lib/perl5" );
+    return grep { !Module::Metadata->find_module_by_name( $_, \@dirs ) } @modules;
 }
 
 =func outdated

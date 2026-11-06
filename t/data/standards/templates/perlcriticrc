@@ -1,0 +1,9 @@
+# A profile of the test standards, which App::Clod::Deps::policies reads.
+severity = 1
+
+[Variables::RequireNoAutovivification]
+
+[ProhibitPipeOpen]
+max = 1
+
+[-Subroutines::ProhibitExplicitReturnUndef]

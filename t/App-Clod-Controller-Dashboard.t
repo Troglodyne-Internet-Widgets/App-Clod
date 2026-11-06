@@ -24,7 +24,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -43,27 +43,36 @@ sub job ( $task, $result, %opt ) {
 }
 
 subtest 'overview, with nothing done yet' => sub {
-    $t->get_ok('/api/overview')->status_is(200)->json_is( '/items/active' => 0, 'no items' );
+    $t->get_ok('/api/overview')->status_is(200);
+    $t->json_is( '/items/active' => 0, 'no items' )->json_is( '/activity' => undef, 'and no activity' );
     my $texts = action_texts();
     like( $texts, qr/No\ harness\ scan\ has\ finished\ yet/, 'says that no scan ran' );
     like( $texts, qr/inbox\ has\ not\ been\ read/,           'and that no worker read the inbox' );
 };
 
 subtest overview => sub {
-    job( harness_scan => { repos     => { 'Test-Org/one' => { checks => [ { check => 'CLAUDE.md', status => 'fail' }, { check => 'git hooks', status => 'pass' } ] } }, errors => { 'Test-Org/two' => 'no response' }, marketplace => { status => 'fail', detail => 'the marketplace pins 0.1; the plugin is at 0.2' }, checks => [ 'CLAUDE.md', 'git hooks' ] } );
-    job( inbox_poll   => { polled_at => time, scopes => 'notifications, read:org' } );
-    job( spoke_sweep  => { repos     => [], dropped => { 'Test-Org/hidden' => 'its visibility is private, and a spoke must be public' }, errors => { 'Test-Org' => 'GitHub GET /orgs/Test-Org/repos: 404' } } );
-    job( spoke_fix    => { error     => 'it broke', cost => 2 }, fail => 1, notes => { origin => 'Test-Org/one#3' } );
+    job( harness_scan   => { repos      => { 'Test-Org/one' => { checks => [ { check => 'CLAUDE.md', status => 'fail' }, { check => 'git hooks', status => 'pass' } ] } }, errors => { 'Test-Org/two' => 'no response' }, marketplace => { status => 'fail', detail => 'the marketplace pins 0.1; the plugin is at 0.2' }, checks => [ 'CLAUDE.md', 'git hooks' ] } );
+    job( inbox_poll     => { polled_at  => time, scopes => 'notifications, read:org' } );
+    job( spoke_sweep    => { repos      => [], dropped => { 'Test-Org/hidden' => 'its visibility is private, and a spoke must be public' }, errors => { 'Test-Org' => 'GitHub GET /orgs/Test-Org/repos: 404' } } );
+    job( spoke_fix      => { error      => 'it broke', cost => 2 }, fail => 1, notes => { origin => 'Test-Org/one#3' } );
+    job( activity_sweep => { checked_at => 1, unassigned => 4, opened_7d => 5, merged_7d => 3, errors => { 'Test-Other' => 'GitHub GET /search/issues: 403 API rate limit exceeded' } } );
     $minion->perform_jobs;
 
-    $t->get_ok('/api/overview')->status_is(200)->json_is( '/budget/cost_7d' => 2, 'a failed run still counts against the budget' );
+    $t->get_ok('/api/overview')->status_is(200);
+    $t->json_is( '/budget/cost_7d'      => 2, 'a failed run still counts against the budget' );
+    $t->json_is( '/activity/unassigned' => 4, 'the open issues come from the last activity sweep' );
+    $t->json_is( '/activity/opened_7d'  => 5, 'with the issues of 7 days' );
+    $t->json_is( '/activity/merged_7d'  => 3, 'and the merged pull requests' );
     my $texts = action_texts();
-    like( $texts, qr/Marketplace:\ the\ marketplace\ pins\ 0\.1/,                 'a stale marketplace pin is an action item' );
-    like( $texts, qr/Test-Org\/one\ fails\ 1\ harness\ check\(s\):\ CLAUDE\.md/,  'so is a failing harness check' );
-    like( $texts, qr/Harness\ scan\ of\ Test-Org\/two\ failed:\ no\ response/,    'and a scan that failed' );
-    like( $texts, qr/lacks\ the\ scopes:\ repo\./,                                'and a missing token scope' );
-    like( $texts, qr/repositories\ of\ Test-Org\ failed:\ GitHub\ GET\ \S+\ 404/, 'and an organization that could not be listed' );
-    like( $texts, qr/hidden\ is\ not\ a\ spoke:\ its\ visibility\ is\ private/,   'and a configured repository that is not public' );
+    like( $texts, qr/Marketplace:\ the\ marketplace\ pins\ 0\.1/,                'a stale marketplace pin is an action item' );
+    like( $texts, qr/Test-Org\/one\ fails\ 1\ harness\ check\(s\):\ CLAUDE\.md/, 'so is a failing harness check' );
+    like( $texts, qr/Harness\ scan\ of\ Test-Org\/two\ failed:\ no\ response/,   'and a scan that failed' );
+    like( $texts, qr/lacks\ the\ scopes:\ repo\./,                               'and a missing token scope' );
+    my $counts   = qr/counts\ of\ issues\ and\ pull\ requests/;
+    my $left_out = qr/$counts\ leave\ out\ the\ spokes\ of\ Test-Other,/;
+    like( $texts, qr/$left_out\ because\ their\ search\ failed:\ GitHub\ GET\ \S+\ 403/, 'and counts that leave out an owner whose search failed' );
+    like( $texts, qr/repositories\ of\ Test-Org\ failed:\ GitHub\ GET\ \S+\ 404/,        'and an organization that could not be listed' );
+    like( $texts, qr/hidden\ is\ not\ a\ spoke:\ its\ visibility\ is\ private/,          'and a configured repository that is not public' );
     unlike( $texts, qr/Test-Org\/one\ is\ not\ a\ spoke/, 'but not a public spoke' );
     like( $texts, qr/\(spoke_fix\ for\ Test-Org\/one\#3\)\ failed:\ it\ broke/, 'and a failed job, with its origin and error' );
     unlike( $texts, qr/inbox\ has\ not\ been\ read/, 'a recent poll is not an action item' );
@@ -163,10 +172,23 @@ subtest 'an update of the bot' => sub {
     $t->get_ok('/api/overview')->status_is(200);
     ok( !action_about(qr/out\ of\ date|Plugins/), 'and an up-to-date bot is no action item' );
     like( action_about(qr/Perl\ modules/), { text => qr/Try::Tiny\ 0\.30\ to\ 0\.32/, buttons => [ { label => 'Upgrade modules', act => 'deps/upgrade' } ] }, 'a module with a newer release can be upgraded' );
+    job( self_check => { checked_at => time, running => $running, checkout => { head => $running->{sha}, upstream => $running->{sha}, behind => 0, ahead => 0 }, plugins => [], agent_deps => { missing => ['Perl::Critic::Policy::ProhibitPipeOpen'], outdated => [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] } } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    my $tools = action_about(qr/agent/);
+    like( $tools,         { text => qr/lacks\ these\ tools:\ \S+ProhibitPipeOpen\./, buttons => [ { label => 'Install tools', act => 'deps/upgrade' } ] }, 'tools that the agent lacks can be installed' );
+    like( $tools->{text}, qr/Perl::Tidy\ 1\ to\ 2\.\z/,                                                                                                    'and so can those with a newer release' );
     $t->post_ok( '/act/deps/upgrade' => \%act )->status_is(200);
     $res = $t->tx->res;
     is( $minion->job( $res->json->{queued} )->info->{task}, 'deps_upgrade', 'Upgrade modules queues deps_upgrade' );
     $minion->perform_jobs;
+
+    my $check = $minion->enqueue( self_check => [] => { delay => 60 } );
+    $t->get_ok('/api/overview')->status_is(200);
+    my $rechecked = action_about(qr/agent/);
+    like( $rechecked, { job => $check, text => qr/A\ new\ check\ is\ queued\.\z/ }, 'after the action, the item names the check that it queued' );
+    ok( !$rechecked->{buttons}, 'and has no button, because the check will say whether the action worked' );
+    $minion->job($check)->remove;
 };
 
 subtest work => sub {

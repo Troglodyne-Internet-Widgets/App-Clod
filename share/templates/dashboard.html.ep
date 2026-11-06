@@ -104,7 +104,7 @@
     const jobLink = id => `<a href="${minion}/jobs?id=${encodeURIComponent(id)}">#${esc(id)}</a>`;
 
     function card(title, value, sub, icon) {
-      return `<div class="col-6 col-md-4 col-xl-2"><div class="card h-100"><div class="card-body">
+      return `<div class="col-6 col-md-3"><div class="card h-100"><div class="card-body">
         <div class="text-body-secondary small"><i class="bi bi-${icon}"></i> ${esc(title)}</div>
         <div class="stat my-1">${esc(value)}</div><div class="small text-body-secondary">${esc(sub)}</div></div></div></div>`;
     }
@@ -117,7 +117,11 @@
     async function overview() {
       const d = await (await fetch(`${base}/api/overview`)).json();
       const b = d.budget, five = meter(b.five_hour), seven = meter(b.seven_day);
+      const a = d.activity;
+      const opened = a ? `↑ ${a.opened_7d} ${a.opened_7d === 1 ? 'issue' : 'issues'} in last 7 days` : 'no sweep yet';
       document.getElementById('cards').innerHTML =
+        card('Open issues', a ? a.unassigned : '–', opened, 'exclamation-circle') +
+        card('PRs merged', a ? a.merged_7d : '–', a ? 'in last 7 days' : 'no sweep yet', 'git') +
         card('In progress', d.items.active, 'items being worked', 'play-circle') +
         card('Queued', d.items.inactive, 'items waiting', 'hourglass-split') +
         card('Failed', d.items.failed, 'items that need a person', 'x-octagon') +

@@ -386,6 +386,23 @@ sub assigned_issues ( $self, $repo, $login ) {
     return $self->paginate( "/repos/$repo/issues", query => { assignee => $login, state => 'open' } );
 }
 
+=method search_issues
+
+C<($query)>.  The issues and pull requests that the search C<$query> finds,
+such as C<user:Test-Org is:issue is:open>, each with C<repository_url>.  Dies
+when it finds more than GitHub returns for one search, 1000, because a count
+of them would then be too low.
+
+=cut
+
+our $SEARCH_MAX = 1000;
+
+sub search_issues ( $self, $query ) {
+    my $items = $self->paginate( '/search/issues', query => { q => $query } );
+    die "GitHub search '$query' finds more than $SEARCH_MAX items, which it does not return\n" if @$items >= $SEARCH_MAX;
+    return $items;
+}
+
 =method tree
 
 C<($repo, $ref)>.  The recursive tree as a hash of path to entry.
@@ -414,6 +431,8 @@ sub file ( $self, $repo, $path, $ref = undef ) {
     return if $res->code == 404;
     return $res->body;
 }
+
+1;
 
 =head1 SYNOPSIS
 

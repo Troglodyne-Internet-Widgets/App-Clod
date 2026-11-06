@@ -204,6 +204,35 @@ subtest plugins => sub {
     like( dies { App::Clod::Claude->new( bin => "$bin" )->cli(qw{no such}) }, qr/\A\S+\ no\ such:\ failed\n\z/, 'a command of claude that fails dies' );
 };
 
+subtest 'the agent lib' => sub {
+
+    # A claude that prints what the agent lib gives each program it runs.
+    my $bin = Mojo::File->new("$tmp/lib-claude");
+    $bin->spew(qq{#!/bin/sh\nprintf '%s|%s' "\${PERL5LIB:-none}" "\${PATH%%:*}"\n});
+    chmod 0755, "$bin" or die "chmod $bin: $!";
+    local $ENV{PERL5LIB} = '/bogus/bot-lib/lib/perl5';
+
+    is( App::Clod::Claude->new( bin => "$bin", lib => '/bogus/agent-lib' )->cli('x'), '/bogus/agent-lib/lib/perl5|/bogus/agent-lib/bin', 'claude gets the agent lib first on PERL5LIB and its bin first on PATH' );
+    like( App::Clod::Claude->new( bin => "$bin" )->cli('x'), qr/\Anone\|/, 'and without one, no PERL5LIB, so not the modules of the bot' );
+
+    local $ENV{PATH} = join q{:}, $here->child( 'bin', 'sudo-dir' ), $ENV{PATH};
+    is( App::Clod::Claude->new( bin => "$bin", lib => '/bogus/agent-lib', run_as => 'test-agent' )->cli('x'), '/bogus/agent-lib/lib/perl5|/bogus/agent-lib/bin', 'also as another account, through sudo, which resets the environment' );
+};
+
+subtest 'the own lib of the agent' => sub {
+
+    # A claude that prints the lib path, the first two of PATH, and the own lib.
+    my $bin = Mojo::File->new("$tmp/own-lib-claude");
+    $bin->spew(qq{#!/bin/sh\nIFS=:; set -- \$PATH; printf '%s|%s:%s|%s' "\$PERL5LIB" "\$1" "\$2" "\${CLOD_OWN_LIB:-none}"\n});
+    chmod 0755, "$bin" or die "chmod $bin: $!";
+    my %libs   = ( lib => '/bogus/agent-lib', own_lib => '/bogus/own-lib' );
+    my $wanted = '/bogus/agent-lib/lib/perl5:/bogus/own-lib/lib/perl5|/bogus/agent-lib/bin:/bogus/own-lib/bin|/bogus/own-lib';
+    is( App::Clod::Claude->new( bin => "$bin", %libs )->cli('x'), $wanted, 'comes after the agent lib on PERL5LIB and PATH, so it cannot replace a tool, and CLOD_OWN_LIB names it' );
+
+    local $ENV{PATH} = join q{:}, $here->child( 'bin', 'sudo-dir' ), $ENV{PATH};
+    is( App::Clod::Claude->new( bin => "$bin", %libs, run_as => 'test-agent' )->cli('x'), $wanted, 'also through sudo' );
+};
+
 subtest is_behind => sub {
     my %cases = (
         'a newer patch'                      => [ '0.13.0', '0.13.1', 1 ],
