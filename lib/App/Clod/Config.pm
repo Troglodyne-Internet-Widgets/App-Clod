@@ -338,7 +338,8 @@ of trog-provisioner makes it, and fills this in.
 
 A local lib, such as F</opt/domains/example.test/agent-perl5>, for the tools
 of the agent: Perl::Critic and every policy of the critic profiles of the
-standards, Perl::Tidy and Devel::NYTProf.  Default none.  With one, every
+standards, Perl::Tidy, Devel::NYTProf, and Dist::Zilla::App::Command::podchecker
+for C<dzil podchecker>.  Default none.  With one, every
 claude run gets it first on C<PERL5LIB> and its F<bin> first on C<PATH>, so
 perlcritic in a spoke, and in its hooks, finds the policies that the
 standards name.  C<clod deps install> fills it, and the dashboard installs

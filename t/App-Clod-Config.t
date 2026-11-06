@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Test2::V0;
@@ -49,7 +50,7 @@ subtest validate => sub {
     refused( { %minimal, system_prompts => { inbox_poll => 'x' } },   '/system_prompts: Properties not allowed: inbox_poll.', 'a system prompt for a task that runs no claude dies' );
     refused( { %minimal, system_prompts => { triage     => ['x'] } }, '/system_prompts/triage: Expected string',              'a system prompt that is not text dies' );
     refused( { %minimal, system_prompts => 'x' }, '/system_prompts: Expected object', 'system prompts that are not a hash die' );
-    is( [ $config->{spoke_prompt}, $config->{tool_spokes}, $config->{claude}{extra_tools} ], [ undef, [], [] ], 'no spoke prompt, tool spokes or extra tools by default' );
+    is( [ $config->@{qw{spoke_prompt tool_spokes}}, $config->{claude}{extra_tools} ], [ undef, [], [] ], 'no spoke prompt, tool spokes or extra tools by default' );
     ok( lives { App::Clod::Config::validate( { %minimal, spoke_prompt => 'Test on a guest.' } ) }, 'a spoke prompt that is text lives' );
     refused( { %minimal, spoke_prompt => ['x'] }, '/spoke_prompt: Expected string', 'a spoke prompt that is not text dies' );
     is( App::Clod::Config::validate( { %minimal, tool_spokes => ['Test-Org/tools'] } )->{tool_spokes}, ['Test-Org/tools'], 'a tool spoke that is Owner/Name lives' );

@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Test2::V0;
@@ -858,7 +859,7 @@ subtest 'tool spokes and the spoke prompt' => sub {
     answer( { title => 't', summary => 's' }, commit => 1 );
     $state{refuse_pull} = 1;
     my $died = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
-    like( [ $died->{state}, $died->{result} ], [ 'failed', qr/500/ ], 'a job that dies after the run fails' );
+    like( [ $died->@{qw{state result}} ], [ 'failed', qr/500/ ], 'a job that dies after the run fails' );
     ok( !-e $tmp->child( 'workspace', 'work', $died->{id} ), 'and its tool worktree is gone too' );
     delete $state{refuse_pull};
 
@@ -1248,7 +1249,7 @@ subtest 'the agent lib' => sub {
     my $config = $app->clod_config;
     is(
         [ App::Clod::Tasks::agent_tools($config) ],
-        [qw{Perl::Critic Perl::Tidy Devel::NYTProf Perl::Critic::Policy::ProhibitPipeOpen Perl::Critic::Policy::Variables::RequireNoAutovivification}],
+        [qw{Perl::Critic Perl::Tidy Devel::NYTProf Dist::Zilla::App::Command::podchecker Perl::Critic::Policy::ProhibitPipeOpen Perl::Critic::Policy::Variables::RequireNoAutovivification}],
         'the agent needs its tools, and each policy of the critic profiles of the standards'
     );
 

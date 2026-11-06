@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Test2::V0;
@@ -142,7 +143,7 @@ subtest 'follow-up issues' => sub {
     my $issue = { repo => 'Test-Org/two', title => 'Log less', body => 'The log says too much.', asked_by => 'trusted', quote => 'File a follow-up issue about it.' };
     my %only  = ( scope => 'follow_up', reason => 'filing settles it', repos => [], follow_ups => [$issue] );
     my $filed = App::Clod::Triage::validate( {%only}, \@spokes, follow_ups => 1 );
-    is( [ $filed->{repos}, $filed->{follow_ups} ],                                                                                                      [ [], [$issue] ], 'an answer that only files a follow-up issue is valid' );
+    is( [ $filed->@{qw{repos follow_ups}} ],                                                                                                            [ [], [$issue] ], 'an answer that only files a follow-up issue is valid' );
     is( App::Clod::Triage::validate( +{ %only, scope => 'single', repos => [ entry( 'Test-Org/one', 1 ) ] }, \@spokes, follow_ups => 1 )->{follow_ups}, [$issue],         'and so is one that files it beside spoke work' );
     is( App::Clod::Triage::validate( +{ scope => 'single', reason => 'r', repos => [ entry( 'Test-Org/one', 1 ) ] }, \@spokes )->{follow_ups},          [],               'an answer that files none has an empty list' );
     my $fresh = { org => 'Test-Org', name => 'Fresh', description => 'd', asked_by => 'trusted', quote => 'Make a new repository for it.' };

@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Test2::V0;
