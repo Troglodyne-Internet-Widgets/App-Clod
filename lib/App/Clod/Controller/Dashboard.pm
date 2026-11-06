@@ -3,6 +3,7 @@ package App::Clod::Controller::Dashboard;
 # ABSTRACT: The health page and the JSON behind it
 
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base 'Mojolicious::Controller', -signatures;

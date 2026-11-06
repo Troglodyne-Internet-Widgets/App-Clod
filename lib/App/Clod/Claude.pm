@@ -3,6 +3,7 @@ package App::Clod::Claude;
 # ABSTRACT: Run claude -p in a directory and read what it did
 
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;

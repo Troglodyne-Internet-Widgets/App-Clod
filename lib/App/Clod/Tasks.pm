@@ -3,6 +3,7 @@ package App::Clod::Tasks;
 # ABSTRACT: The Minion tasks: inbox, triage, the spokes, and the scans
 
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 
@@ -593,7 +594,7 @@ entries of its L</conversation>, as Markdown for a prompt.
 =cut
 
 sub context ( $config, $gh, $item ) {
-    my $issue = $gh->issue( $item->{repo}, $item->{number} );
+    my $issue = $gh->issue( $item->@{qw(repo number)} );
     my @said  = @{ conversation( $gh, $item ) };
     @said = @said[ -20 .. -1 ] if @said > 20;
     my @lines = ( "# $issue->{title}", "by $issue->{user}{login}, " . origin_url( $config, $item ), q{}, $issue->{body} // q{}, q{} );
@@ -611,10 +612,10 @@ not entries: they belong to their threads.
 =cut
 
 sub conversation ( $gh, $item ) {
-    my @said = @{ $gh->issue_comments( $item->{repo}, $item->{number} ) };
+    my @said = @{ $gh->issue_comments( $item->@{qw(repo number)} ) };
     if ( $item->{is_pr} ) {
         push @said, map { { id => $_->{id}, user => $_->{user}, body => $_->{body}, created_at => $_->{submitted_at}, review => 1 } }
-          grep { ( $_->{body} // q{} ) ne q{} } @{ $gh->reviews( $item->{repo}, $item->{number} ) };
+          grep { ( $_->{body} // q{} ) ne q{} } @{ $gh->reviews( $item->@{qw(repo number)} ) };
     }
     return [ sort { ( $a->{created_at} // q{} ) cmp ( $b->{created_at} // q{} ) || $a->{id} <=> $b->{id} } @said ];
 }
@@ -758,8 +759,8 @@ comment of its review threads, each a C<{by, body}>.
 =cut
 
 sub written ( $gh, $item ) {
-    my $issue = $gh->issue( $item->{repo}, $item->{number} );
-    my @lines = $item->{is_pr} ? @{ $gh->review_comments( $item->{repo}, $item->{number} ) } : ();
+    my $issue = $gh->issue( $item->@{qw(repo number)} );
+    my @lines = $item->{is_pr} ? @{ $gh->review_comments( $item->@{qw(repo number)} ) } : ();
     return [ map { { by => $_->{user}{login} // q{}, body => $_->{body} // q{} } } $issue, @{ conversation( $gh, $item ) }, @lines ];
 }
 
@@ -824,11 +825,11 @@ sub triage ( $job, $config, $item ) {
     );
 
     my ( @outcomes, $answer, $error );
-    for ( 1 .. 2 ) {
+    for my $attempt ( 1 .. 2 ) {
         my $outcome = run_claude(
             $job, $config,
             dir             => $hub,
-            prompt          => prompt( triage => %vars, retry => $error ? "\nYour last answer was rejected: $error\n" : q{} ),
+            prompt          => prompt( triage => %vars, retry => $attempt > 1 ? "\nYour last answer was rejected: $error\n" : q{} ),
             tools           => $config->{claude}{read_tools},
             permission_mode => 'default',
             add_dirs        => [ map { "$_" } values %$ref ],
@@ -1340,7 +1341,7 @@ references.
 =cut
 
 sub pending ( $config, $gh, $item ) {
-    return ( pending_threads( $config, $gh->review_comments( $item->{repo}, $item->{number} ) ), pending_comments( $config, conversation( $gh, $item ) ) );
+    return ( pending_threads( $config, $gh->review_comments( $item->@{qw(repo number)} ) ), pending_comments( $config, conversation( $gh, $item ) ) );
 }
 
 =func sort_review
@@ -1511,7 +1512,7 @@ sub spoke_address ( $job, $config, $args ) {
             my %open   = map { $_->{id} => 1 } @$pending;
             my @replied;
             for my $reply ( grep { $open{ $_->{id} } } @{ $answer->{replies} } ) {
-                $gh->reply_review_comment( $repo, $item->{number}, $reply->{id}, $reply->{body} );
+                $gh->reply_review_comment( $repo, $item->{number}, $reply->@{qw(id body)} );
                 push @replied, $reply->{id};
             }
             my $answered = @$comments && ( $answer->{comment} // q{} ) ne q{} ? $gh->comment( $repo, $item->{number}, $answer->{comment} )->{html_url} : undef;
@@ -1612,7 +1613,7 @@ sub reply ( $job, $config, $item ) {
     my $answer = $outcome->{structured};
     return $job->fail( { error => "no answer: $outcome->{stderr}", %usage } ) if ref $answer ne 'HASH';
 
-    $gh->comment( $item->{repo}, $item->{number}, $answer->{body} );
+    $gh->comment( $item->@{qw(repo number)}, $answer->{body} );
     my %result = ( action => $answer->{action}, summary => $answer->{body}, %usage );
     if ( $answer->{action} eq 'fix' ) {
         my %next = ( %$item, kind => 'fix' );
@@ -1646,13 +1647,13 @@ sub report ( $job, $config, $args ) {
     my @lines = map { "- $_->{repo}: $_->{pr_url}" } @done;
     my $rest  = $asked         ? 'the rest wait for the answer to the question above'                                     : 'see the jobs for the rest';
     my $note  = @done < $total ? sprintf( "\n\n%d of %d spokes opened a pull request; %s.", scalar @done, $total, $rest ) : q{};
-    $gh->comment( $item->{repo}, $item->{number}, @lines ? join( "\n", 'The change is in these pull requests:', @lines ) . $note : "No pull request came of this.$note" );
+    $gh->comment( $item->@{qw(repo number)}, @lines ? join( "\n", 'The change is in these pull requests:', @lines ) . $note : "No pull request came of this.$note" );
 
     if ( @done > 1 ) {
         for my $pr (@done) {
-            my $pull     = $gh->pull( $pr->{repo}, $pr->{pr} );
+            my $pull     = $gh->pull( $pr->@{qw(repo pr)} );
             my @siblings = map { "- $_->{pr_url}" } grep { $_->{pr_url} ne $pr->{pr_url} } @done;
-            $gh->update_pull( $pr->{repo}, $pr->{pr}, { body => join( "\n", $pull->{body} // q{}, q{}, 'Merge together with:', @siblings ) } );
+            $gh->update_pull( $pr->@{qw(repo pr)}, { body => join( "\n", $pull->{body} // q{}, q{}, 'Merge together with:', @siblings ) } );
         }
     }
     return $job->finish( { prs => [ map { $_->{pr_url} } @done ], of => $total } );
@@ -1799,8 +1800,8 @@ sub create_repo ( $job, $config, $args ) {
         log_note( $job, "opened $release->{url} for $release->{assignee}" . ( $release->{assigned} ? q{} : ', but GitHub did not assign them' ) );
     }
     $gh->comment(
-        $item->{repo}, $item->{number},
-        join "\n\n",   "I made the repository $repo for this: $made->{url}",
+        $item->@{qw(repo number)},
+        join "\n\n", "I made the repository $repo for this: $made->{url}",
         "The work on it follows, in a pull request there. Its first release is $release->{url}, for $release->{assignee}."
     );
     return $job->finish( { repo => $repo, created => 1, created_at => $made->{at}, repo_url => $made->{url}, release_url => $release->{url}, summary => "Made $repo: $args->{description}" } );
@@ -1912,7 +1913,7 @@ sub file_issues ( $job, $config, $args ) {
         log_note( $job, "filed $issue->{html_url} for $who" );
     }
     my @done = map { $filed->{$_} } 0 .. $#issues;
-    $gh->comment( $item->{repo}, $item->{number}, join "\n", 'I filed these follow-up issues:', map { "- $_->{repo}: $_->{url} ($_->{title})" } @done );
+    $gh->comment( $item->@{qw(repo number)}, join "\n", 'I filed these follow-up issues:', map { "- $_->{repo}: $_->{url} ($_->{title})" } @done );
     return $job->finish( { filed => \@done, issues => [ map { $_->{url} } @done ], summary => 'Filed ' . scalar(@done) . ' follow-up issue(s).' } );
 }
 

@@ -3,6 +3,7 @@ package App::Clod::Outage;
 # ABSTRACT: Hold the work while GitHub or Claude refuses its token
 
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 
