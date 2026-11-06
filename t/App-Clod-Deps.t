@@ -5,6 +5,7 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
+use Config     ();
 use File::Temp ();
 use Mojo::File ();
 
@@ -79,7 +80,9 @@ subtest missing => sub {
     my $lib = $tmp->child('agent-lib');
     my $dir = $lib->child(qw{lib perl5 Perl Critic})->make_path;
     $dir->child('Policy.pm')->spew("1;\n");
-    is( [ App::Clod::Deps::missing( "$lib", qw{Perl::Critic::Policy Perl::Tidy} ) ], ['Perl::Tidy'], 'what the lib has no file of' );
+    my $arch = $lib->child( qw{lib perl5}, $Config::Config{archname}, 'Devel' )->make_path;
+    $arch->child('NYTProf.pm')->spew("1;\n");
+    is( [ App::Clod::Deps::missing( "$lib", qw{Perl::Critic::Policy Devel::NYTProf Perl::Tidy} ) ], ['Perl::Tidy'], 'what the lib has no file of, where a module with C code is in the directory of the architecture' );
 };
 
 subtest 'install, readable by its group and no more' => sub {
