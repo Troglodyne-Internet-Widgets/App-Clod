@@ -125,6 +125,9 @@ sub action_items ( $self, $budget, $outages = [] ) {
 
     push @actions, { level => 'danger', text => "$_ is not a spoke: $sweep->{dropped}{$_}" } for sort keys %{ $sweep->{dropped} // {} };
 
+    my $activity = App::Clod::Tasks::last_result( $minion, 'activity_sweep' ) // {};
+    push @actions, { level => 'warning', text => "The counts of issues and pull requests leave out the spokes of $_, because their search failed: $activity->{errors}{$_}" } for sort keys %{ $activity->{errors} // {} };
+
     push @actions, { level => 'warning', text => 'Claude work is paused until the quota resets' . ( $budget->{paused_until} ? q{ at } . gmtime( $budget->{paused_until} ) . ' UTC' : q{} ) . q{.} } if $budget->{paused};
 
     push @actions, $self->self_items( $minion, App::Clod::Tasks::last_result( $minion, 'self_check' ) );

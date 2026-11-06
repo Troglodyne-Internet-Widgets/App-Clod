@@ -55,7 +55,7 @@ subtest overview => sub {
     job( inbox_poll     => { polled_at  => time, scopes => 'notifications, read:org' } );
     job( spoke_sweep    => { repos      => [], dropped => { 'Test-Org/hidden' => 'its visibility is private, and a spoke must be public' }, errors => { 'Test-Org' => 'GitHub GET /orgs/Test-Org/repos: 404' } } );
     job( spoke_fix      => { error      => 'it broke', cost => 2 }, fail => 1, notes => { origin => 'Test-Org/one#3' } );
-    job( activity_sweep => { checked_at => 1, unassigned => 4, opened_7d => 5, merged_7d => 3, errors => {} } );
+    job( activity_sweep => { checked_at => 1, unassigned => 4, opened_7d => 5, merged_7d => 3, errors => { 'Test-Other' => 'GitHub GET /search/issues: 403 API rate limit exceeded' } } );
     $minion->perform_jobs;
 
     $t->get_ok('/api/overview')->status_is(200);
@@ -64,12 +64,15 @@ subtest overview => sub {
     $t->json_is( '/activity/opened_7d'  => 5, 'with the issues of 7 days' );
     $t->json_is( '/activity/merged_7d'  => 3, 'and the merged pull requests' );
     my $texts = action_texts();
-    like( $texts, qr/Marketplace:\ the\ marketplace\ pins\ 0\.1/,                 'a stale marketplace pin is an action item' );
-    like( $texts, qr/Test-Org\/one\ fails\ 1\ harness\ check\(s\):\ CLAUDE\.md/,  'so is a failing harness check' );
-    like( $texts, qr/Harness\ scan\ of\ Test-Org\/two\ failed:\ no\ response/,    'and a scan that failed' );
-    like( $texts, qr/lacks\ the\ scopes:\ repo\./,                                'and a missing token scope' );
-    like( $texts, qr/repositories\ of\ Test-Org\ failed:\ GitHub\ GET\ \S+\ 404/, 'and an organization that could not be listed' );
-    like( $texts, qr/hidden\ is\ not\ a\ spoke:\ its\ visibility\ is\ private/,   'and a configured repository that is not public' );
+    like( $texts, qr/Marketplace:\ the\ marketplace\ pins\ 0\.1/,                'a stale marketplace pin is an action item' );
+    like( $texts, qr/Test-Org\/one\ fails\ 1\ harness\ check\(s\):\ CLAUDE\.md/, 'so is a failing harness check' );
+    like( $texts, qr/Harness\ scan\ of\ Test-Org\/two\ failed:\ no\ response/,   'and a scan that failed' );
+    like( $texts, qr/lacks\ the\ scopes:\ repo\./,                               'and a missing token scope' );
+    my $counts   = qr/counts\ of\ issues\ and\ pull\ requests/;
+    my $left_out = qr/$counts\ leave\ out\ the\ spokes\ of\ Test-Other,/;
+    like( $texts, qr/$left_out\ because\ their\ search\ failed:\ GitHub\ GET\ \S+\ 403/, 'and counts that leave out an owner whose search failed' );
+    like( $texts, qr/repositories\ of\ Test-Org\ failed:\ GitHub\ GET\ \S+\ 404/,        'and an organization that could not be listed' );
+    like( $texts, qr/hidden\ is\ not\ a\ spoke:\ its\ visibility\ is\ private/,          'and a configured repository that is not public' );
     unlike( $texts, qr/Test-Org\/one\ is\ not\ a\ spoke/, 'but not a public spoke' );
     like( $texts, qr/\(spoke_fix\ for\ Test-Org\/one\#3\)\ failed:\ it\ broke/, 'and a failed job, with its origin and error' );
     unlike( $texts, qr/inbox\ has\ not\ been\ read/, 'a recent poll is not an action item' );
