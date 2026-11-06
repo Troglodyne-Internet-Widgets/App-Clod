@@ -195,9 +195,11 @@ subtest 'an update of the bot' => sub {
 subtest 'system packages' => sub {
     my %act = ( 'X-Clod-Action' => 'yes' );
     job( harness_scan => { checked_at => time, repos => {}, checks => [ 'CLAUDE.md', 'git hooks' ], system_packages => {}, system_package_errors => { 'Test-Org/two' => "metamerge.yml is not valid:\n  /x_system_packages/deb/0: String does not match" } } );
-    my %lacks = (
-        'Test-Org/one' => { missing => [qw{ffmpeg libmagic-dev}], failing => [] },
-        'Test-Org/two' => { missing => [],                        failing => [ { program => 'ffmpeg -version', error => 'ffmpeg: not found' } ] },
+    my %jellyfin = ( name => 'jellyfin', uri => 'https://repo.test.test/ubuntu', suites => ['noble'], components => ['main'], key => 'https://repo.test.test/key.gpg', fingerprint => '0123456789ABCDEF0123456789ABCDEF01234567' );
+    my %lacks    = (
+        'Test-Org/one'   => { missing => [qw{ffmpeg libmagic-dev}], sources => [ \%jellyfin ], failing => [] },
+        'Test-Org/three' => { missing => [], sources => [], failing => [], error => 'The source jellyfin needs the codename of the host, for the suite {codename}' },
+        'Test-Org/two'   => { missing => [], failing => [ { program => 'ffmpeg -version', error => 'ffmpeg: not found' } ] },
     );
     job( self_check => { checked_at => time, plugins => [], system_packages => \%lacks } );
     $minion->perform_jobs;
@@ -205,15 +207,19 @@ subtest 'system packages' => sub {
     my $unreadable = qr/\AHarness\ scan\ of\ Test-Org\/two\ cannot\ read\ .+:\ /;
     like( action_about(qr/system\ packages\ that\ it\ needs/), { level => 'danger', text => qr/${unreadable}metamerge\.yml\ is\ not\ valid:/ }, 'a declaration that is not valid is a finding of its spoke, as a scan that failed is' );
     my $needs = action_about(qr/needs\ the\ packages/);
-    is( $needs, { level => 'warning', text => 'Test-Org/one needs the packages: ffmpeg, libmagic-dev.', buttons => [ { label => 'Install packages', act => 'packages/install', body => { repo => 'Test-Org/one' } } ] }, 'packages that the host lacks are an item of their spoke, with a button that installs them' );
-    is( action_about(qr/fails,\ and/), { level => 'warning', text => 'ffmpeg -version fails, and Test-Org/two needs it: ffmpeg: not found' }, 'and a program that fails with every package there is an item with no button' );
+    is(
+        $needs, { level => 'warning', text => "Test-Org/one needs the packages: ffmpeg, libmagic-dev, from the archive jellyfin (key 0123\N{HORIZONTAL ELLIPSIS}4567).", buttons => [ { label => 'Install packages', act => 'packages/install', body => { repo => 'Test-Org/one' } } ] },
+        'packages that the host lacks are an item of their spoke, which names the archive that an install adds, with its key, and a button that installs them'
+    );
+    is( action_about(qr/Test-Org\/three/), { level => 'warning', text => 'The bot cannot tell what Test-Org/three needs on this host: The source jellyfin needs the codename of the host, for the suite {codename}' }, 'and a declaration that does not resolve on this host says why, with no button' );
+    is( action_about(qr/fails,\ and/),     { level => 'warning', text => 'ffmpeg -version fails, and Test-Org/two needs it: ffmpeg: not found' },                                                                      'and a program that fails with every package there is an item with no button' );
 
     $t->post_ok( '/act/packages/install' => json => { repo => 'Test-Org/one' } )->status_is( 403, 'an install without the header is refused' );
-    $t->post_ok( '/act/packages/install' => \%act => json => { repo => 'Test-Org/one', packages => ['bogus-package'] } )->status_is(200);
+    $t->post_ok( '/act/packages/install' => \%act => json => { repo => 'Test-Org/one', packages => ['bogus-package'], sources => [ { name => 'bogus' } ] } )->status_is(200);
     my $res  = $t->tx->res;
     my $id   = $res->json->{queued};
     my $info = $minion->job($id)->info;
-    is( [ $info->@{qw{task args}} ], [ 'packages_install', [ { repo => 'Test-Org/one', packages => [qw{ffmpeg libmagic-dev}] } ] ], 'Install packages queues an install of the names that the check found, and none that the request names' );
+    is( [ $info->@{qw{task args}} ], [ 'packages_install', [ { repo => 'Test-Org/one', packages => [qw{ffmpeg libmagic-dev}], sources => [ \%jellyfin ] } ] ], 'Install packages queues an install of the names and the archives that the check found, and none that the request names' );
     $t->post_ok( '/act/packages/install' => \%act => json => { repo => 'Test-Org/one' } )->status_is(200)->json_is( '/queued' => $id, 'and a second press queues no second one' );
     $t->get_ok('/api/overview')->status_is(200);
     like( action_about(qr/needs\ the\ packages/), { job => $id, text => qr/It\ is\ queued\.\z/ }, 'while it waits, the item names it' );

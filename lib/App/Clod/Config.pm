@@ -384,10 +384,13 @@ L<App::Clod::Packages>.
 C<packager> is the packager of the host, a key of
 C<%App::Clod::Packages::INSTALLED>: C<deb> for now.  C<installer> is the
 absolute path of a program that the service user may run with C<sudo -n> and
-no password, with the names of the packages as its arguments.  It must
-install them from the archives that the host trusts, exit 0 when it did,
-print what the packager printed, and refuse a name that is not a plain
-package name.  The clod recipe of trog-provisioner makes it, and fills this
+no password, as C<installer [--sources-file FILE] NAME...>.  FILE holds the
+archives that the packages come from and the host does not have yet, one
+JSON object on each line, as a source of
+L<Dist::Conformance::Check::SystemPackages> resolves it.  It must add those
+archives, refusing a key with another fingerprint, install the packages,
+exit 0 when it did, print what the packager printed, and refuse a name that
+is not a plain package name.  The clod recipe of trog-provisioner makes it, and fills this
 in.
 
 =item otel

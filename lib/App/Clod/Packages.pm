@@ -7,7 +7,10 @@ no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 
+use Mojo::File       ();
 use Text::ParseWords ();
+
+use Dist::Conformance::Check::SystemPackages();
 
 use App::Clod::Deps();
 
@@ -18,8 +21,31 @@ our @SUDO       = qw{sudo -n};
 # How long a declared program may run before it counts as failing.
 our $PROGRAM_SECONDS = 60;
 
-# For each packager, whether the host has a package of it.
-our %INSTALLED = ( deb => \&deb_installed );
+# For each packager, whether the host has a package of it, and an archive of it.
+our %INSTALLED  = ( deb => \&deb_installed );
+our %HAS_SOURCE = ( deb => \&deb_has_source );
+
+# Where the host says what it is, and where apt keeps its archives.  A test points them at fixtures.
+our $OS_RELEASE  = '/etc/os-release';
+our $APT_SOURCES = '/etc/apt/sources.list.d';
+
+=func os_release
+
+The distribution of the host, from C<$OS_RELEASE>, as
+L<Dist::Conformance::Check::SystemPackages/resolve> takes it: C<distro> from
+C<ID>, C<release> from C<VERSION_ID> and C<codename> from
+C<VERSION_CODENAME>, each left out when the file does not have it, as
+L<Dist::Conformance::Check::SystemPackages/os_release> reads the file.  Dies
+when the file cannot be read.
+
+=cut
+
+sub os_release () {
+    my $text  = eval { Mojo::File->new($OS_RELEASE)->slurp('UTF-8') } // die "$OS_RELEASE cannot be read: $@";
+    my %field = %{ Dist::Conformance::Check::SystemPackages::os_release($text) };
+    my %as    = ( ID => 'distro', VERSION_ID => 'release', VERSION_CODENAME => 'codename' );
+    return map { defined $field{$_} && $field{$_} ne q{} ? ( $as{$_} => $field{$_} ) : () } sort keys %as;
+}
 
 =func installed
 
@@ -53,6 +79,29 @@ sub deb_installed ($name) {
     return $status eq 'install ok installed' ? 1 : 0;
 }
 
+=func has_source
+
+C<($packager, $source)>, a source as
+L<Dist::Conformance::Check::SystemPackages/resolve> returns it.  True when the
+host has that archive.  Dies for a packager that is not a key of
+C<%HAS_SOURCE>.
+
+=cut
+
+sub has_source ( $packager, $source ) {
+    my $has = $HAS_SOURCE{$packager} // die "There is no way to ask whether the host has a $packager archive\n";
+    return $has->($source);
+}
+
+=func deb_has_source
+
+C<($source)>.  True when apt has F<NAME.sources> in C<$APT_SOURCES>, as the
+installer writes it.
+
+=cut
+
+sub deb_has_source ($source) { return -e "$APT_SOURCES/$source->{name}.sources" ? 1 : 0 }
+
 =func program_error
 
 C<($claude, $line)>: an L<App::Clod::Claude>, and a command line of
@@ -81,13 +130,14 @@ sub program_error ( $claude, $line ) {
 
 =func install
 
-C<($installer, @names)>.  Runs C<sudo -n $installer @names>, and returns what
+C<($installer, $sources_file, @names)>.  Runs C<sudo -n $installer @names>,
+with C<--sources-file $sources_file> first when it is defined, and returns what
 it printed, its standard error too.  Dies with that when it fails.
 
 =cut
 
-sub install ( $installer, @names ) {
-    return App::Clod::Deps::run( { merge => 1 }, @SUDO, $installer, @names );
+sub install ( $installer, $sources_file, @names ) {
+    return App::Clod::Deps::run( { merge => 1 }, @SUDO, $installer, ( defined $sources_file ? ( '--sources-file', $sources_file ) : () ), @names );
 }
 
 1;
@@ -99,7 +149,7 @@ sub install ( $installer, @names ) {
     use App::Clod::Packages;
 
     my @lacks = grep { !App::Clod::Packages::installed( deb => $_ ) } qw{ffmpeg libmagic-dev};
-    say App::Clod::Packages::install( '/bogus/clod-install-packages', @lacks ) if @lacks;
+    say App::Clod::Packages::install( '/bogus/clod-install-packages', undef, @lacks ) if @lacks;
     say App::Clod::Packages::program_error( App::Clod::Claude->new( run_as => 'agent' ), 'ffmpeg -version' ) // 'ffmpeg runs';
 
 =head1 DESCRIPTION
@@ -109,8 +159,11 @@ C<x_system_packages> in its F<metamerge.yml>, as
 L<Dist::Conformance::Check::SystemPackages> reads it.  The C<system_packages>
 of F<clod.conf> names the packager of the host, such as C<deb>, and the
 program that installs packages, which the service user may run with sudo and
-no password.  The installer installs only from the archives that the host
-trusts, and refuses a name that is not a plain package name.
+no password.  The installer installs from the archives that the host trusts,
+and from the archives in the file of sources that it is given, and refuses a
+name that is not a plain package name.  A spoke can name another package for
+a distribution or a release of one, and an archive for some of them, so what
+the host needs comes from L</os_release>.
 
 L<App::Clod::Tasks/self_check> asks this module what the host lacks, and
 L<App::Clod::Tasks/packages_install> installs it, from a button of the

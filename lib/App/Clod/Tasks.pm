@@ -2127,13 +2127,19 @@ sub self_check ( $job, $config ) {
 =func host_packages
 
 C<($config, $scan)>, with C<$scan> the result of the last L</harness_scan>.
-What the host lacks of what each spoke declares there, for the C<packager> of
-C<system_packages>: a hash of each spoke that lacks something to C<missing>,
-the names of the packages that are not installed, and C<failing>, each a
+What the host lacks of what each spoke declares there, resolved for the
+C<packager> of C<system_packages> and the distribution of the host, as
+L<Dist::Conformance::Check::SystemPackages/resolve> resolves it from
+L<App::Clod::Packages/os_release>: a hash of each spoke that lacks something
+to C<missing>, the names of the packages that are not installed, C<sources>,
+the archives that they come from that the host does not have yet, as
+L<App::Clod::Packages/has_source> asks, and C<failing>, each a
 C<{program, error}> of a declared program that fails, as
 L<App::Clod::Packages/program_error> runs it, as the account of L</claude>.  The programs run only when no
 package is missing, because a program of a package that is not installed
-fails anyway.  It asks once about a package that two spokes declare.
+fails anyway.  It asks once about a package that two spokes declare.  A
+spoke whose declaration does not resolve for this host has only C<error>, why,
+and does not stop the others.
 
 The scan reads the declarations, because it fetches each spoke anyway, and
 this check finds what the host has, because it is cheap, and runs again after
@@ -2145,15 +2151,22 @@ without a new scan of every spoke.
 sub host_packages ( $config, $scan ) {
     my $packager = $config->{system_packages}{packager};
     my $claude   = claude($config);
+    my %host     = App::Clod::Packages::os_release();
     my ( %lacks, %has );
     my $declared = ( $scan // {} )->{system_packages} // {};
     for my $repo ( sort keys %$declared ) {
-        my @missing = grep { !( $has{$_} //= App::Clod::Packages::installed( $packager, $_ ) ? 1 : 0 ) } @{ $declared->{$repo}{$packager} // [] };
+        my $resolved = eval { Dist::Conformance::Check::SystemPackages->resolve( $declared->{$repo}, packager => $packager, %host ) };
+        if ( !$resolved ) {
+            $lacks{$repo} = { missing => [], sources => [], failing => [], error => $@ =~ s{\s+\z}{}r };
+            next;
+        }
+        my @missing = grep { !( $has{$_} //= App::Clod::Packages::installed( $packager, $_ ) ? 1 : 0 ) } @{ $resolved->{packages} // [] };
+        my @sources = @missing ? grep { !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} // [] } : ();
         my @failing = @missing ? () : map {
             my $error = App::Clod::Packages::program_error( $claude, $_ );
             defined $error ? { program => $_, error => $error } : ();
-        } @{ $declared->{$repo}{programs} // [] };
-        $lacks{$repo} = { missing => \@missing, failing => \@failing } if @missing || @failing;
+        } @{ $resolved->{programs} // [] };
+        $lacks{$repo} = { missing => \@missing, sources => \@sources, failing => \@failing } if @missing || @failing;
     }
     return \%lacks;
 }
@@ -2318,12 +2331,16 @@ sub plugin_update ( $job, $config ) {
 
 =func packages_install
 
-C<($job, $config, $args)>, where C<$args> has C<repo> and C<packages>, the
-names that the last L</self_check> found missing for that spoke, from the
-dashboard.  Runs the C<installer> of C<system_packages> with sudo, as
-L<App::Clod::Packages/install> does, and queues a L</recheck>, so that the
+C<($job, $config, $args)>, where C<$args> has C<repo>, C<packages>, the
+names that the last L</self_check> found missing for that spoke, and
+C<sources>, the archives that it found missing for them, from the dashboard.
+Runs the C<installer> of C<system_packages> with sudo, as
+L<App::Clod::Packages/install> does.  With sources, it writes them, one JSON
+object on each line, to F<sources.jsonl> in the directory of the job under
+F<work> of the workspace, passes that file, and removes the directory
+afterwards.  It queues a L</recheck>, so that the
 item clears, or shows what still fails.  Its result has C<repo>,
-C<packages> and C<output>, what the installer printed.  When the installer
+C<packages>, C<sources>, the names of the archives, and C<output>, what the installer printed.  When the installer
 fails, the job fails with that as C<error>.
 
 =cut
@@ -2332,9 +2349,15 @@ sub packages_install ( $job, $config, $args ) {
     my $how      = $config->{system_packages} // return $job->fail( { error => 'clod.conf has no system_packages' } );
     my @packages = @{ $args->{packages} // [] };
     return $job->fail( { error => 'there is no package to install' } ) if !@packages;
-    my %result = ( repo => $args->{repo}, packages => \@packages );
-    my $output = eval { App::Clod::Packages::install( $how->{installer}, @packages ) };
-    my $error  = $@;
+    my @sources = @{ $args->{sources} // [] };
+    my %result  = ( repo => $args->{repo}, packages => \@packages, sources => [ map { $_->{name} } @sources ] );
+    my $dir     = Mojo::File->new( $config->{workspace}, 'work', $job->id );
+    my $output  = eval {
+        my $file = @sources ? $dir->make_path->child('sources.jsonl')->spew( join q{}, map { Mojo::JSON::encode_json($_) . "\n" } @sources ) : undef;
+        App::Clod::Packages::install( $how->{installer}, $file ? "$file" : undef, @packages );
+    };
+    my $error = $@;
+    $dir->remove_tree;
     recheck($job);
     return $job->fail( { %result, error => $error } ) if !defined $output;
     return $job->finish( { %result, output => $output } );

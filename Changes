@@ -9,7 +9,10 @@ Revision history for App-Clod
       lacks and runs the programs, and the dashboard shows each spoke that
       needs packages, with an Install packages button.  The button queues
       packages_install, which runs the installer of the configuration with
-      sudo and checks again when it is done.  A declaration that is not
+      sudo and checks again when it is done.  The packages resolve for the
+      distribution and release of the host, from /etc/os-release, and the
+      item names each third-party archive that an install adds, with its
+      key.  The declared programs run as the account of run_as.  A declaration that is not
       valid is a finding of its spoke.  Needs Dist::Conformance 0.003.
     - Filter the action items of the dashboard by type.  Three buttons in
       the header, Failures, Warnings and Info, each switch one level on or

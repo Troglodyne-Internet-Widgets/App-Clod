@@ -78,8 +78,29 @@ subtest install => sub {
         [ "$1" = bad ] && exit 2
         exit 0
         SH
-    is( App::Clod::Packages::install( $installer, qw{ffmpeg libmagic-dev} ), "installing ffmpeg libmagic-dev\na warning\n", 'the installer gets the names, and what it printed comes back, its errors too' );
-    like( dies { App::Clod::Packages::install( $installer, 'bad' ) }, qr/installing\ bad\na\ warning\n/, 'an installer that fails dies with what it printed' );
+    is( App::Clod::Packages::install( $installer, undef,                  qw{ffmpeg libmagic-dev} ), "installing ffmpeg libmagic-dev\na warning\n",                          'the installer gets the names, and what it printed comes back, its errors too' );
+    is( App::Clod::Packages::install( $installer, '/bogus/sources.jsonl', 'jellyfin' ),              "installing --sources-file /bogus/sources.jsonl jellyfin\na warning\n", 'and a file of sources, before the names, when there is one' );
+    like( dies { App::Clod::Packages::install( $installer, undef, 'bad' ) }, qr/installing\ bad\na\ warning\n/, 'an installer that fails dies with what it printed' );
+};
+
+subtest os_release => sub {
+    my $release = $tmp->child('os-release');
+    $release->spew(qq{NAME="Ubuntu"\nID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\nID_LIKE=debian\n});
+    local $App::Clod::Packages::OS_RELEASE = "$release";
+    is( { App::Clod::Packages::os_release() }, { distro => 'ubuntu', release => '24.04', codename => 'noble' }, 'the distribution, its release and its codename, quoted or not' );
+    $release->spew(qq{ID=debian\nVERSION_CODENAME=\n});
+    is( { App::Clod::Packages::os_release() }, { distro => 'debian' }, 'and only what the file says, as on a release of Debian testing' );
+    local $App::Clod::Packages::OS_RELEASE = '/bogus/os-release';
+    like( dies { App::Clod::Packages::os_release() }, qr{\A/bogus/os-release\ cannot\ be\ read:}, 'a host that does not say dies' );
+};
+
+subtest has_source => sub {
+    my $apt = $tmp->child('sources.list.d')->make_path;
+    $apt->child('jellyfin.sources')->spew("Types: deb\n");
+    local $App::Clod::Packages::APT_SOURCES = "$apt";
+    ok( App::Clod::Packages::has_source( deb  => { name => 'jellyfin' } ), 'an archive whose .sources file apt has is there' );
+    ok( !App::Clod::Packages::has_source( deb => { name => 'other' } ),    'and one without is not' );
+    like( dies { App::Clod::Packages::has_source( rpm => { name => 'other' } ) }, qr/no\ way\ to\ ask/, 'and a packager that it cannot ask about dies' );
 };
 
 done_testing;

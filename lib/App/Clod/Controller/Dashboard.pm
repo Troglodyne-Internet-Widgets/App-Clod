@@ -199,11 +199,28 @@ sub self_items ( $self, $minion, $check ) {
     my $packages = $check->{system_packages} // {};
     for my $repo ( sort keys %$packages ) {
         my @missing = @{ $packages->{$repo}{missing} // [] };
-        push @items, button_item( $minion, 'packages_install', "$repo needs the packages: " . join( q{, }, @missing ) . q{.}, { label => 'Install packages', act => 'packages/install', body => { repo => $repo } }, $repo ) if @missing;
+        push @items, button_item( $minion, 'packages_install', "$repo needs the packages: " . join( q{, }, @missing ) . archives( @{ $packages->{$repo}{sources} // [] } ) . q{.}, { label => 'Install packages', act => 'packages/install', body => { repo => $repo } }, $repo ) if @missing;
+        push @items, { level => 'warning', text => "The bot cannot tell what $repo needs on this host: $packages->{$repo}{error}" } if $packages->{$repo}{error};
         push @items, map { { level => 'warning', text => "$_->{program} fails, and $repo needs it: " . substr( $_->{error}, 0, 300 ) } } @{ $packages->{$repo}{failing} // [] };
     }
     push @items, { level => 'warning', text => "The bot cannot tell whether it has the system packages of the spokes: $check->{system_packages_error}" } if $check->{system_packages_error};
     return @items;
+}
+
+=func archives
+
+C<(@sources)>, the sources that an install adds.  The words that name them,
+each with the fingerprint of its key, shortened, such as
+C<, from the archive jellyfin (key 0123...4567)>, so that the person who presses
+the button sees whom it gives the trust of root.  Empty with none.
+
+=cut
+
+sub archives (@sources) {
+    return q{} if !@sources;
+    my @named = map { my $key = $_->{fingerprint} // q{}; "$_->{name} (key " . substr( $key, 0, 4 ) . "\N{HORIZONTAL ELLIPSIS}" . substr( $key, -4 ) . ')' } @sources;
+    my $last  = pop @named;
+    return ', from the archive' . ( @named ? 's ' . join( q{, }, @named ) . " and $last" : " $last" );
 }
 
 =func button_item
@@ -373,7 +390,7 @@ sub harness_fix ($self) {
 
 Queues a L<App::Clod::Tasks/packages_install> for the C<repo> of the JSON
 body, with the packages that the last L<App::Clod::Tasks/self_check> found
-it missing.  Nothing else of the body is read, so the button installs what a
+it missing, and the archives that they come from.  Nothing else of the body is read, so the button installs what a
 spoke declares on its default branch, and no name that a request names.  A
 spoke that misses no package is a 404.  If one waits or runs for it already,
 it queues no second one, and says which.
@@ -384,9 +401,10 @@ sub packages_install ($self) {
     my $minion  = $self->minion;
     my $repo    = ( $self->req->json // {} )->{repo}                     // q{};
     my $check   = App::Clod::Tasks::last_result( $minion, 'self_check' ) // {};
-    my @missing = @{ ( ( $check->{system_packages} // {} )->{$repo} // {} )->{missing} // [] };
+    my $lacks   = ( $check->{system_packages} // {} )->{$repo}           // {};
+    my @missing = @{ $lacks->{missing} // [] };
     return $self->render( json => { error => "$repo misses no system package" }, status => 404 ) if !@missing;
-    my $id = pending_job( $minion, 'packages_install', $repo ) // $minion->enqueue( packages_install => [ { repo => $repo, packages => \@missing } ], { notes => { repo => $repo } } );
+    my $id = pending_job( $minion, 'packages_install', $repo ) // $minion->enqueue( packages_install => [ { repo => $repo, packages => \@missing, sources => $lacks->{sources} // [] } ], { notes => { repo => $repo } } );
     return $self->render( json => { queued => $id } );
 }
 
