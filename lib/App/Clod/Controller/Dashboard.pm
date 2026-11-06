@@ -53,7 +53,8 @@ sub overview ($self) {
 
 C<($budget, $outages)>, from L<App::Clod::Budget/summary> and
 L<App::Clod::Outage/summary>.  The things that need a person, each a
-C<{level, text}> and sometimes a C<job>.  An outage comes first.  An item that
+C<{level, text}> and sometimes a C<job>.  The page filters them by C<level>
+in the browser, so the server sends all of them.  An outage comes first.  An item that
 a button can settle has C<buttons>, each a C<{label, act}> and sometimes a
 C<body>: the dashboard posts C<body> to F</act/E<lt>actE<gt>>.  A failed job
 has Retry and Ignore, and a spoke that fails harness checks has Fix, unless a
