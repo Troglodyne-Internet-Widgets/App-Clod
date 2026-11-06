@@ -2106,12 +2106,31 @@ forward only, and restarts the units of C<restart_units> when the worker runs
 another commit than the checkout then has, as L</restart_and_finish> does.
 With a C<local_lib>, it first installs there what the new commit needs, as
 L<App::Clod::Deps/install> does, and with an C<agent_lib>, the programs of
-L<App::Clod::Deps/install_programs>.  Its result has C<from> and C<to>, the head
-before and after the pull, and C<restarted>, the units.
+L<App::Clod::Deps/install_programs>.  It queues a L</recheck>.  Its result has
+C<from> and C<to>, the head before and after the pull, and C<restarted>, the
+units.
 
 =cut
 
 our $CGROUP = '/proc/self/cgroup';
+
+=func recheck
+
+C<($job)>.  Queues a L</self_check>, so that the action items of the dashboard
+show what the button of C<$job> changed.  It waits C<$RECHECK_DELAY> seconds,
+so that it does not start in the worker that the job then restarts.  No second
+one, while one waits.
+
+=cut
+
+our $RECHECK_DELAY = 60;
+
+sub recheck ($job) {
+    my $minion = $job->minion;
+    return if $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } )->total;
+    $minion->enqueue( self_check => [] => { delay => $RECHECK_DELAY } );
+    return;
+}
 
 sub self_update ( $job, $config ) {
     my $dir    = App::Clod::checkout() // return $job->fail( { error => 'the bot does not run from a git checkout' } );
@@ -2120,6 +2139,7 @@ sub self_update ( $job, $config ) {
     $git->git_remote( q{-C}, "$dir", qw{fetch --quiet origin} );
     $git->git( q{-C}, "$dir", qw{merge --ff-only --quiet}, '@{upstream}' );
     $result{to} = $git->git( q{-C}, "$dir", qw{rev-parse HEAD} );
+    recheck($job);
     return $job->finish( { %result, restarted => [] } ) if $result{to} eq ( ( $job->app->running // {} )->{sha} // q{} );
 
     App::Clod::Deps::install( $config->{local_lib}, App::Clod::Deps::listdeps($dir) ) if $config->{local_lib};
@@ -2171,8 +2191,8 @@ release, as L<App::Clod::Deps/upgrade> does, and then restarts the units, as
 L</restart_and_finish> does, so the bot loads them.  With an C<agent_lib>, it
 also installs the tools of L</agent_tools> that it lacks, and upgrades those
 there with a newer release.  The next claude run loads them, so they restart
-nothing.  Its result has C<upgraded> and C<agent_upgraded>, what it found
-outdated, and C<agent_installed>.
+nothing.  It queues a L</recheck>.  Its result has C<upgraded> and
+C<agent_upgraded>, what it found outdated, and C<agent_installed>.
 
 =cut
 
@@ -2187,7 +2207,8 @@ sub deps_upgrade ( $job, $config ) {
         @result{qw{agent_installed agent_upgraded}} = ( \@missing, App::Clod::Deps::upgrade($agent) );
     }
     $result{upgraded} = App::Clod::Deps::upgrade($lib) if $lib;
-    return $job->finish( \%result )                    if !@{ $result{upgraded} };
+    recheck($job);
+    return $job->finish( \%result ) if !@{ $result{upgraded} };
     return restart_and_finish( $job, $config, \%result );
 }
 
@@ -2224,13 +2245,15 @@ sub restart_unit ($unit) {
 From the dashboard.  Updates each plugin that L<App::Clod::Claude/is_behind>
 finds behind its marketplace, with C<claude plugin update>, for the account
 that claude runs as.  The next run of claude loads the new version, so
-nothing restarts.  Its result has C<updated>, the ids.
+nothing restarts.  It queues a L</recheck>.  Its result has C<updated>, the
+ids.
 
 =cut
 
 sub plugin_update ( $job, $config ) {
     my $claude  = claude($config);
     my @updated = map { $claude->cli( qw{plugin update}, $_->{id} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
+    recheck($job);
     return $job->finish( { updated => \@updated } );
 }
 
