@@ -109,6 +109,8 @@ sub validate ($raw) {
     return $config;
 }
 
+1;
+
 =head1 SYNOPSIS
 
     use 5.040;

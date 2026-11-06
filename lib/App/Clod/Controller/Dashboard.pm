@@ -3,6 +3,7 @@ package App::Clod::Controller::Dashboard;
 # ABSTRACT: The health page and the JSON behind it
 
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base 'Mojolicious::Controller', -signatures;
@@ -440,6 +441,8 @@ sub harness ($self) {
     my $result = App::Clod::Tasks::last_result( $self->minion, 'harness_scan' );
     return $self->render( json => $result // { repos => {}, checks => [] } );
 }
+
+1;
 
 =head1 DESCRIPTION
 

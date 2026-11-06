@@ -207,6 +207,8 @@ sub intro ($claude_md) {
     return $paragraphs[0];
 }
 
+1;
+
 =head1 SYNOPSIS
 
     use 5.040;

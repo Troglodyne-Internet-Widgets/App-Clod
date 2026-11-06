@@ -9,3 +9,5 @@ runtime:
     Minion::Backend::SQLite: '6.0.0'
     # Mojo::IOLoop picks EV when it is installed.
     EV: '4.0'
+    # "no autovivification" in the modules; Variables::RequireNoAutovivification asks for it.
+    autovivification: '0.18'
