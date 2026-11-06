@@ -34,6 +34,14 @@ get '/repos/Test-Org/one/contents/*file' => sub ($c) {
 get '/repos/Test-Org/one/git/trees/*ref' => sub ($c) {
     return $c->render( json => { tree => [ { path => 'a', sha => 'sha-a' }, { path => 'b/c', sha => 'sha-c' } ] } );
 };
+get '/repos/Test-Org/one/issues' => sub ($c) {
+    $seen{issues} = $c->req->params->to_hash;
+    return $c->render( json => [ { number => 1, created_at => '2026-01-03T00:00:00Z' }, { number => 2, created_at => '2026-01-01T00:00:00Z' }, { number => 3, created_at => '2026-01-03T00:00:00Z', pull_request => {} } ] );
+};
+get '/search/issues' => sub ($c) {
+    $seen{q} = $c->param('q');
+    return $c->render( json => { items => [ { number => 7 } ] } );
+};
 get '/repos/Test-Org/one' => sub ($c) { return $c->render( json => { message => 'Bad credentials' }, status => 401 ) };
 
 # Answers each request with the next status of its queue, and then with 200.
@@ -69,6 +77,20 @@ subtest tree => sub {
     my $tree = $gh->tree( 'Test-Org/one', 'main' );
     is( [ sort keys %$tree ], [ 'a', 'b/c' ], 'the tree is keyed by path' );
     is( $tree->{'b/c'}{sha},  'sha-c',        'and keeps each blob SHA' );
+};
+
+subtest 'issues and pull requests' => sub {
+    my $unassigned = $gh->unassigned_issues('Test-Org/one');
+    is( [ map { $_->{number} } @$unassigned ], [ 1, 2 ],                                                 'an item with a pull_request is no unassigned issue' );
+    is( $seen{issues},                         { assignee => 'none', state => 'open', per_page => 100 }, 'and the list asked for open issues with no assignee' );
+
+    my $opened = $gh->opened_issues( 'Test-Org/one', '2026-01-02T00:00:00Z' );
+    is( [ map { $_->{number} } @$opened ], [1],                    'an issue created before the time is not opened since, though it was updated since' );
+    is( $seen{issues}{since},              '2026-01-02T00:00:00Z', 'the time goes as since' );
+
+    my $merged = $gh->merged_pulls( 'Test-Org/one', '2026-01-02T00:00:00Z' );
+    is( [ map { $_->{number} } @$merged ], [7],                                                               'merged pull requests come from the items of the search' );
+    is( $seen{q},                          'repo:Test-Org/one is:pr is:merged merged:>=2026-01-02T00:00:00Z', 'with the repository and the time in the query' );
 };
 
 subtest request => sub {

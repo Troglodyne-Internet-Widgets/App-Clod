@@ -386,6 +386,44 @@ sub assigned_issues ( $self, $repo, $login ) {
     return $self->paginate( "/repos/$repo/issues", query => { assignee => $login, state => 'open' } );
 }
 
+=method unassigned_issues
+
+C<($repo)>.  The open issues that nobody is assigned to.  GitHub lists pull
+requests among the issues, so this drops each item that has a C<pull_request>.
+
+=cut
+
+sub unassigned_issues ( $self, $repo ) {
+    my $list = $self->paginate( "/repos/$repo/issues", query => { assignee => 'none', state => 'open' } );
+    return [ grep { !$_->{pull_request} } @$list ];
+}
+
+=method opened_issues
+
+C<($repo, $since)>.  The issues, open or closed, that were created at or after
+C<$since>, an ISO 8601 time in UTC.  The C<since> parameter of GitHub selects on
+the time of the last update, so this also checks C<created_at>.  Pull requests
+are not issues here.
+
+=cut
+
+sub opened_issues ( $self, $repo, $since ) {
+    my $list = $self->paginate( "/repos/$repo/issues", query => { state => 'all', since => $since } );
+    return [ grep { !$_->{pull_request} && ( $_->{created_at} // q{} ) ge $since } @$list ];
+}
+
+=method merged_pulls
+
+C<($repo, $since)>.  The pull requests that were merged at or after C<$since>,
+an ISO 8601 time in UTC, found with the search API.  A search returns at most
+1000 items, which is far above what a repository merges in a week.
+
+=cut
+
+sub merged_pulls ( $self, $repo, $since ) {
+    return $self->paginate( '/search/issues', query => { q => "repo:$repo is:pr is:merged merged:>=$since" } );
+}
+
 =method tree
 
 C<($repo, $ref)>.  The recursive tree as a hash of path to entry.

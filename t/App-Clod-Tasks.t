@@ -12,6 +12,7 @@ use Mojo::File       ();
 use Mojo::JSON       ();
 use Mojo::UserAgent  ();
 use Mojolicious      ();
+use POSIX            ();
 use Test::MockModule ();
 use Time::HiRes      qw{time};
 
@@ -117,7 +118,23 @@ $r->get('/orgs/:o/repos')->to(
         );
     }
 );
-$r->get('/repos/:o/:n/issues')->to( cb => sub ($c) { $c->render( json => [ { number => 5, title => 'Assigned', html_url => 'https://test.test/5', updated_at => 'today' } ] ) } );
+$r->get('/repos/:o/:n/issues')->to(
+    cb => sub ($c) {
+        my $repo = $c->param('o') . q{/} . $c->param('n');
+        return $c->render( json => { message => 'Not Found' }, status => 404 ) if $state{issues_fail}{$repo};
+        my $list = $state{issues}{$repo} // [ { number => 5, title => 'Assigned', html_url => 'https://test.test/5', updated_at => 'today' } ];
+        push @{ $state{issue_queries} }, $c->req->params->to_hash;
+        $list = [ grep { !$_->{assignee} } @$list ] if ( $c->param('assignee') // q{} ) eq 'none';
+        $c->render( json => $list );
+    }
+);
+$r->get('/search/issues')->to(
+    cb => sub ($c) {
+        push @{ $state{searches} }, $c->param('q');
+        my ($repo) = $c->param('q') =~ m{repo:(\S+)};
+        $c->render( json => { items => $state{merged}{$repo} // [] } );
+    }
+);
 $r->get('/repos/:o/:n')->to(
     cb => sub ($c) {
         return $c->render( json => { message => 'Not Found' }, status => 404 ) if $state{absent}{ $c->param('o') . q{/} . $c->param('n') };
@@ -1290,6 +1307,38 @@ subtest assigned_sweep => sub {
     my $info = run_job('assigned_sweep');
     is( scalar @{ $info->{result}{issues} }, 2,              'the assigned issues of each spoke are listed' );
     is( $info->{result}{issues}[0]{repo},    'Test-Org/one', 'with their repo' );
+};
+
+subtest activity_sweep => sub {
+    %state = ();
+    my $stamp  = sub ($days) { return POSIX::strftime( '%Y-%m-%dT%H:%M:%SZ', gmtime( time - $days * 86_400 ) ) };
+    my $recent = $stamp->(1);
+    my $old    = $stamp->(30);
+    $state{issues}{'Test-Org/one'} = [
+        { number => 1, created_at => $recent },
+        { number => 2, created_at => $old },
+        { number => 3, created_at => $recent, assignee     => { login => 'someone' } },
+        { number => 4, created_at => $recent, pull_request => {} },
+    ];
+    $state{issues}{'Test-Org/two'} = [ { number => 1, created_at => $old } ];
+    $state{merged}{'Test-Org/one'} = [ { number => 4 }, { number => 9 } ];
+    my $swept = run_job('activity_sweep')->{result};
+    is( $swept->{unassigned}, 3,  'issues that nobody is assigned to are counted, and neither an assigned issue nor a pull request is' );
+    is( $swept->{opened_7d},  2,  'the issues of the last 7 days are counted, and an old one and a pull request are not' );
+    is( $swept->{merged_7d},  2,  'the pull requests that were merged in the last 7 days are counted' );
+    is( $swept->{errors},     {}, 'and nothing failed' );
+    ok( $swept->{checked_at}, 'with the time of the check' );
+    my $date   = qr{\d{4}-\d\d-\d\d};
+    my $clock  = qr{\d\d:\d\d:\d\d};
+    my $window = qr{merged:>=${date}T${clock}Z};
+    like( $state{searches}[0], qr{\Arepo:Test-Org/one\ is:pr\ is:merged\ $window\z}, 'the search names the repository and the 7 day window' );
+    is( [ map { $_->{assignee} } grep { defined $_->{assignee} } @{ $state{issue_queries} } ], [ ('none') x 2 ], 'the unassigned issues of each spoke are asked for with assignee=none' );
+
+    $state{issues_fail}{'Test-Org/two'} = 1;
+    my $failed = run_job('activity_sweep')->{result};
+    like( $failed->{errors}{'Test-Org/two'}, qr/404/, 'a repository that fails is recorded' );
+    is( [ @{$failed}{qw{unassigned opened_7d merged_7d}} ], [ 2, 2, 2 ], 'and the other one is still counted' );
+    ok( App::Clod::Tasks::last_result( $minion, 'activity_sweep' ), 'the last result is there for the dashboard' );
 };
 
 subtest spoke_sweep => sub {

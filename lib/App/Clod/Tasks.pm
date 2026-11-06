@@ -10,6 +10,7 @@ use IPC::Run    ();
 use List::Util  ();
 use Mojo::File  ();
 use Mojo::JSON  ();
+use POSIX       ();
 use Time::HiRes qw{time};
 
 use App::Clod::Budget();
@@ -42,6 +43,7 @@ our %TASKS = (
     kickback           => \&kickback,
     harness_scan       => \&harness_scan,
     assigned_sweep     => \&assigned_sweep,
+    activity_sweep     => \&activity_sweep,
     spoke_sweep        => \&spoke_sweep,
     refresh_references => \&refresh_references,
     create_repo        => \&create_repo,
@@ -58,6 +60,7 @@ our %SCHEDULES = (
     inbox    => [ '* * * * *',    'inbox_poll' ],
     harness  => [ '17 * * * *',   'harness_scan' ],
     assigned => [ '*/15 * * * *', 'assigned_sweep' ],
+    activity => [ '*/15 * * * *', 'activity_sweep' ],
     spokes   => [ '*/15 * * * *', 'spoke_sweep' ],
     self     => [ '7,37 * * * *', 'self_check' ],
 );
@@ -123,7 +126,7 @@ sub hold ($job) {
 =func schedule
 
 C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>,
-C<harness_scan>, C<assigned_sweep> and C<spoke_sweep>.
+C<harness_scan>, C<assigned_sweep>, C<activity_sweep> and C<spoke_sweep>.
 
 =cut
 
@@ -2270,6 +2273,33 @@ sub assigned_sweep ( $job, $config ) {
         push @issues, map { { repo => $repo, number => $_->{number}, title => $_->{title}, url => $_->{html_url}, is_pr => $_->{pull_request} ? 1 : 0, updated_at => $_->{updated_at} } } @$list;
     }
     return $job->finish( { checked_at => time, issues => \@issues, errors => \%errors } );
+}
+
+=func activity_sweep
+
+Every fifteen minutes.  Counts, over the hub and every spoke, the open issues
+that nobody is assigned to, the issues opened in the last seven days, and the
+pull requests merged in the last seven days.  Pull requests are not issues.
+Its result has C<checked_at>, C<unassigned>, C<opened_7d>, C<merged_7d>, and
+C<errors>, a hash of repository to error.  A repository that fails adds
+nothing to any of the three counts.
+
+=cut
+
+sub activity_sweep ( $job, $config ) {
+    prune_history( $job->minion, q{activity_sweep} );
+    my $gh    = github($config);
+    my $since = POSIX::strftime( '%Y-%m-%dT%H:%M:%SZ', gmtime( time - 7 * $DAY ) );
+    my ( %total, %errors );
+    for my $repo ( @{ spokes( $job->minion, $config ) } ) {
+        my %count;
+        if ( !eval { $count{unassigned} = @{ $gh->unassigned_issues($repo) }; $count{opened_7d} = @{ $gh->opened_issues( $repo, $since ) }; $count{merged_7d} = @{ $gh->merged_pulls( $repo, $since ) }; 1 } ) {
+            $errors{$repo} = $@;
+            next;
+        }
+        $total{$_} += $count{$_} for keys %count;
+    }
+    return $job->finish( { checked_at => time, unassigned => $total{unassigned} // 0, opened_7d => $total{opened_7d} // 0, merged_7d => $total{merged_7d} // 0, errors => \%errors } );
 }
 
 =func spoke_sweep

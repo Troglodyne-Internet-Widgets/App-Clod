@@ -1,6 +1,12 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Show two cards at the top of the Overview tab of the health page: the
+      open issues that nobody is assigned to, with the issues opened in the
+      last 7 days under it, and the pull requests merged in the last 7 days.
+      A new task, activity_sweep, counts them every fifteen minutes over the
+      hub and every spoke.  The cards are now four to a row, so that eight
+      of them lay out evenly.
     - Keep the tools of the agent in agent_lib, a local lib of the service
       user that the agent may read and not change, when clod.conf names
       one: Perl::Critic, each policy of the critic profiles of the
