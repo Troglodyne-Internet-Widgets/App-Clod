@@ -31,7 +31,9 @@ sub page ($self) { return $self->render( template => 'dashboard', bot => $self->
 
 Item counts by state, the Minion stats, the budget, the outages, the action
 items, and C<running>, the commit that the page runs, as C<{sha, short}>, or
-undef when it runs from no checkout.
+undef when it runs from no checkout.  C<activity> is the result of the last
+L<App::Clod::Tasks/activity_sweep>, with C<unassigned>, C<opened_7d>,
+C<merged_7d> and C<checked_at>, and it is undef until one has finished.
 
 =cut
 
@@ -43,7 +45,7 @@ sub overview ($self) {
         $counts{$state} = $minion->jobs( { tasks => \@ITEM_TASKS, states => [$state] } )->total;
     }
     my $outages = App::Clod::Outage::summary($minion);
-    return $self->render( json => { stats => $minion->stats, items => \%counts, budget => $budget, outages => $outages, running => $self->running, actions => $self->action_items( $budget, $outages ) } );
+    return $self->render( json => { stats => $minion->stats, items => \%counts, budget => $budget, outages => $outages, running => $self->running, activity => App::Clod::Tasks::last_result( $minion, 'activity_sweep' ), actions => $self->action_items( $budget, $outages ) } );
 }
 
 =method action_items
@@ -433,6 +435,6 @@ sub harness ($self) {
 
 The controller behind F</> and F</api>.  Everything it shows comes from Minion:
 the jobs of the items, and the results of the last C<harness_scan>,
-C<assigned_sweep> and C<inbox_poll>.
+C<assigned_sweep>, C<activity_sweep> and C<inbox_poll>.
 
 =cut
