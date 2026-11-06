@@ -118,16 +118,31 @@ C<PATH> of the worker, and no C<PERL5LIB>, so not the modules of the bot.
 
 has lib => undef;
 
+=attr own_lib
+
+A local lib that the agent may install into, such as C<agent_own_lib> of
+F<clod.conf>.  It comes after L</lib> on C<PERL5LIB>, with its F<bin> after
+that of L</lib> on C<PATH>, so that it adds modules and cannot replace one of
+L</lib>.  C<CLOD_OWN_LIB> names it, for F<clod-cpm>.  Default none.
+
+=cut
+
+has own_lib => undef;
+
 =method run_env
 
-The C<PATH> and C<PERL5LIB> that claude runs with, as a hash, from L</lib>.
+The C<PATH> and C<PERL5LIB> that claude runs with, as a hash, from L</lib>
+and L</own_lib>, and C<CLOD_OWN_LIB> with an L</own_lib>.
 
 =cut
 
 sub run_env ($self) {
-    my $path = $ENV{PATH} // q{};
-    my $lib  = $self->lib // return ( PATH => $path );
-    return ( PATH => "$lib/bin:$path", PERL5LIB => "$lib/lib/perl5" );
+    my @libs = grep { defined } $self->lib, $self->own_lib;
+    my $path = join q{:}, ( map { "$_/bin" } @libs ), $ENV{PATH} // ();
+    return ( PATH => $path ) if !@libs;
+    my %env = ( PATH => $path, PERL5LIB => join q{:}, map { "$_/lib/perl5" } @libs );
+    $env{CLOD_OWN_LIB} = $self->own_lib if defined $self->own_lib;
+    return %env;
 }
 
 =method command

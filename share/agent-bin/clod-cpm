@@ -1,0 +1,8 @@
+#!/bin/sh
+# Installs CPAN modules into the own lib of the agent, which comes after the
+# agent lib on PERL5LIB.  One install at a time, because every worker shares
+# the lib.  App::Clod::Deps puts this in the bin of the agent lib.
+set -eu
+lib="${CLOD_OWN_LIB:?names no own lib of the agent}"
+mkdir -p "$lib"
+exec flock "$lib.lock" cpm install --without-test -L "$lib" "$@"

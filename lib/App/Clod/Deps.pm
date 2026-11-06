@@ -9,6 +9,7 @@ use re '/aasx';
 use Config              ();
 use Config::Tiny        ();
 use IPC::Run            ();
+use Mojo::File          ();
 use Module::Metadata    ();
 use Perl::Critic::Utils ();
 
@@ -49,6 +50,37 @@ sub install ( $lib, @modules ) {
     umask $umask;
     die $@ if !$ok;
     return;
+}
+
+=func install_programs
+
+C<($lib)>.  Puts each program of F<share/agent-bin>, such as F<clod-cpm>, in
+the F<bin> of the agent lib C<$lib>, for its group to read and run, and replaces what is
+there.
+
+=cut
+
+sub install_programs ($lib) {
+    my $bin = Mojo::File->new( "$lib", 'bin' )->make_path;
+    for my $program ( App::Clod::share_dir()->child('agent-bin')->list->each ) {
+        $program->copy_to( $bin->child( $program->basename ) )->chmod( oct '0750' );
+    }
+    return;
+}
+
+=func stale_programs
+
+C<($lib)>.  The names of the programs of F<share/agent-bin> that the bin of
+the agent lib C<$lib> lacks, or has another version of.
+
+=cut
+
+sub stale_programs ($lib) {
+    my $bin = Mojo::File->new( "$lib", 'bin' );
+    return map { $_->basename } grep {
+        my $there = $bin->child( $_->basename );
+        !-e $there || $there->slurp ne $_->slurp
+    } App::Clod::share_dir()->child('agent-bin')->list->each;
 }
 
 =func policies

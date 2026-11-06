@@ -174,6 +174,7 @@ sub claude ($config) {
         model         => $c->{model},
         run_as        => $c->{run_as},
         lib           => $config->{agent_lib},
+        own_lib       => $config->{agent_own_lib},
         timeout       => $c->{timeout},
         allowed_tools => [ @{ $c->{allowed_tools} }, @{ $c->{extra_tools} } ],
         env           => \%env,
@@ -241,14 +242,16 @@ sub log_note ( $job, $message ) {
 =func system_text
 
 C<($config, $task)>.  The text that the claude runs of the task append to
-their system prompt: C<spoke_prompt> for a spoke task, then the
-C<system_prompts> text of the task, a blank line between them.  Undef when
-there is neither.
+their system prompt: C<spoke_prompt> for a spoke task, and with an
+C<agent_own_lib> F<share/prompts/install.md>, which says how to install a
+module, then the C<system_prompts> text of the task, a blank line between
+them.  Undef when there is none.
 
 =cut
 
 sub system_text ( $config, $task ) {
-    my @parts = grep { ( $_ // q{} ) ne q{} } ( $SPOKE_TASKS{$task} ? $config->{spoke_prompt} : undef ), $config->{system_prompts}{$task};
+    my @spoke = $SPOKE_TASKS{$task} ? ( $config->{spoke_prompt}, $config->{agent_own_lib} ? prompt('install') : undef ) : ();
+    my @parts = grep { ( $_ // q{} ) ne q{} } @spoke, $config->{system_prompts}{$task};
     return @parts ? join( "\n\n", @parts ) : undef;
 }
 
@@ -2059,7 +2062,8 @@ C<checkout>, the L<App::Clod/checkout> after a fetch, with C<head>,
 C<upstream>, its upstream branch, and C<behind> and C<ahead>, the commits
 between the two.  And C<plugins>, from L<App::Clod::Claude/plugins>, for the
 account that claude runs as.  With an C<agent_lib>, C<agent_deps>: the tools
-of L</agent_tools> that it lacks, as C<missing>, and those with a newer
+of L</agent_tools> that it lacks, and the programs of
+L<App::Clod::Deps/stale_programs>, as C<missing>, and those with a newer
 release, as C<outdated>.  With a C<local_lib>, C<deps>, the modules there
 that have a newer release, from L<App::Clod::Deps/outdated>.  A part that
 fails has its error in place of its result, as C<checkout> with C<error>,
@@ -2086,7 +2090,7 @@ sub self_check ( $job, $config ) {
     if ( my $lib = $config->{agent_lib} ) {
         $result{agent_deps} = eval {
             my @tools = agent_tools($config);
-            +{ missing => [ App::Clod::Deps::missing( $lib, @tools ) ], outdated => App::Clod::Deps::outdated($lib) };
+            +{ missing => [ App::Clod::Deps::missing( $lib, @tools ), App::Clod::Deps::stale_programs($lib) ], outdated => App::Clod::Deps::outdated($lib) };
         } // do { $result{agent_deps_error} = ( split m{\n}, $@ )[0]; { missing => [], outdated => [] } };
     }
     return $job->finish( \%result );
@@ -2098,7 +2102,8 @@ From the dashboard.  Pulls the L<App::Clod/checkout> from its upstream, fast
 forward only, and restarts the units of C<restart_units> when the worker runs
 another commit than the checkout then has, as L</restart_and_finish> does.
 With a C<local_lib>, it first installs there what the new commit needs, as
-L<App::Clod::Deps/install> does.  Its result has C<from> and C<to>, the head
+L<App::Clod::Deps/install> does, and with an C<agent_lib>, the programs of
+L<App::Clod::Deps/install_programs>.  Its result has C<from> and C<to>, the head
 before and after the pull, and C<restarted>, the units.
 
 =cut
@@ -2115,6 +2120,7 @@ sub self_update ( $job, $config ) {
     return $job->finish( { %result, restarted => [] } ) if $result{to} eq ( ( $job->app->running // {} )->{sha} // q{} );
 
     App::Clod::Deps::install( $config->{local_lib}, App::Clod::Deps::listdeps($dir) ) if $config->{local_lib};
+    App::Clod::Deps::install_programs( $config->{agent_lib} )                         if $config->{agent_lib};
     return restart_and_finish( $job, $config, \%result );
 }
 
@@ -2174,6 +2180,7 @@ sub deps_upgrade ( $job, $config ) {
     if ($agent) {
         my @missing = App::Clod::Deps::missing( $agent, agent_tools($config) );
         App::Clod::Deps::install( $agent, @missing );
+        App::Clod::Deps::install_programs($agent);
         @result{qw{agent_installed agent_upgraded}} = ( \@missing, App::Clod::Deps::upgrade($agent) );
     }
     $result{upgraded} = App::Clod::Deps::upgrade($lib) if $lib;
