@@ -377,7 +377,7 @@ Default none, and then the bot neither reads what the spokes declare nor
 shows it.  With it, L<App::Clod::Tasks/harness_scan> reads the
 C<x_system_packages> of each spoke, from its default branch, and
 L<App::Clod::Tasks/self_check> finds the packages of C<packager> that the
-host lacks, and the declared programs that do not run.  The dashboard shows
+host lacks, and the tests of the dependencies that fail.  The dashboard shows
 each spoke that needs packages, with a button that installs them.  See
 L<App::Clod::Packages>.
 

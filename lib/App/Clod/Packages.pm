@@ -104,8 +104,8 @@ sub deb_has_source ($source) { return -e "$APT_SOURCES/$source->{name}.sources" 
 
 =func program_error
 
-C<($claude, $line)>: an L<App::Clod::Claude>, and a command line of
-C<programs>, such as C<ffmpeg -version>.  Undef when it exits 0, and else why
+C<($claude, $line)>: an L<App::Clod::Claude>, and a command line, the
+C<test> of a dependency, such as C<ffmpeg -version>.  Undef when it exits 0, and else why
 it failed: what it printed, or why it did not run.  The line is split into
 words as a shell does, and runs with no shell, no input, and at most
 C<$PROGRAM_SECONDS> seconds.
@@ -154,16 +154,17 @@ sub install ( $installer, $sources_file, @names ) {
 
 =head1 DESCRIPTION
 
-A spoke declares the packages of the operating system that it needs under
-C<x_system_packages> in its F<metamerge.yml>, as
-L<Dist::Conformance::Check::SystemPackages> reads it.  The C<system_packages>
+A spoke declares the dependencies on the operating system that it has under
+C<x_system_packages> in its F<metamerge.yml>, and the archives that their
+packages come from under C<x_system_sources>, as
+L<Dist::Conformance::Check::SystemPackages> reads them.  The C<system_packages>
 of F<clod.conf> names the packager of the host, such as C<deb>, and the
 program that installs packages, which the service user may run with sudo and
 no password.  The installer installs from the archives that the host trusts,
 and from the archives in the file of sources that it is given, and refuses a
-name that is not a plain package name.  A spoke can name another package for
-a distribution or a release of one, and an archive for some of them, so what
-the host needs comes from L</os_release>.
+name that is not a plain package name.  A dependency can have another package
+on a distribution or a release of one, or none, so what the host needs
+comes from L</os_release>.
 
 L<App::Clod::Tasks/self_check> asks this module what the host lacks, and
 L<App::Clod::Tasks/packages_install> installs it, from a button of the

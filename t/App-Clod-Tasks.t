@@ -1319,22 +1319,23 @@ subtest harness_scan => sub {
 subtest 'system packages' => sub {
     %state = ();
     my $config = $app->clod_config;
+    my $simple = "x_system_packages:\n  ffmpeg:\n    deb: ffmpeg\n    test: ffmpeg -version\n";
     $state{files} = {
         'CLAUDE.md'                       => 'perl-slop:reading-perl',
         '.claude-plugin/plugin.json'      => '{"version":"0.11.0"}',
         '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.11.0"}]}',
-        'metamerge.yml'                   => "x_system_packages:\n  deb:\n    - ffmpeg\n    - libmagic-dev\n  programs:\n    - ffmpeg -version\n",
+        'metamerge.yml'                   => $simple,
     };
     ok( !exists run_job('harness_scan')->{result}{system_packages}, 'without system_packages in the configuration, the scan reads no declaration' );
 
     $config->{system_packages} = { packager => 'deb', installer => '/bogus/clod-install-packages' };
     delete $state{refs};
     my $scan     = run_job('harness_scan')->{result};
-    my %declared = ( deb => [qw{ffmpeg libmagic-dev}], programs => ['ffmpeg -version'] );
+    my %declared = ( packages => { ffmpeg => { deb => 'ffmpeg', test => 'ffmpeg -version' } }, sources => {} );
     is( $scan->{system_packages},      { map { $_ => \%declared } @SPOKES }, 'with it, the scan reads what each spoke declares' );
     is( $state{refs}{'metamerge.yml'}, [ 'main', 'main' ],                   'from its default branch, and no branch that the bot pushed' );
 
-    $state{files}{'metamerge.yml'} = "x_system_packages:\n  deb:\n    - foo=1.2\n";
+    $state{files}{'metamerge.yml'} = "x_system_packages:\n  ffmpeg:\n    deb: foo=1.2\n";
     my $invalid = run_job('harness_scan');
     is( $invalid->{state}, 'finished', 'a declaration that is not valid does not stop the scan' );
     like( $invalid->{result}{system_package_errors}{'Test-Org/one'}, qr/\Ametamerge\.yml\ is\ not\ valid:\n\s+\S/, 'it is a finding of the spoke, with each error' );
@@ -1343,21 +1344,28 @@ subtest 'system packages' => sub {
 
     $state{files}{'metamerge.yml'} = <<~'YAML';
         x_system_packages:
-          deb:
-            - ffmpeg
-            - name: libmagic-dev
-              ubuntu/24.04: libmagic-t64
-          sources:
+          libmagic:
             deb:
-              - name: jellyfin
-                uri: https://repo.test.test/ubuntu
-                suites: ['{codename}']
-                components: [main]
-                key: https://repo.test.test/key.gpg
-                fingerprint: 0123456789ABCDEF0123456789ABCDEF01234567
-                distros: [ubuntu/24.04]
-          programs:
-            - ffmpeg -version
+              name: libmagic-dev
+              ubuntu/24.04: libmagic-t64
+          ffmpeg:
+            deb:
+              name: ffmpeg
+              source: jellyfin
+            test: ffmpeg -version
+          FooLib:
+            deb:
+              ubuntu/24.04: libfoo-dev
+              debian/12: ~
+        x_system_sources:
+          deb:
+            - name: jellyfin
+              uri: https://repo.test.test/ubuntu
+              suites: ['{codename}']
+              components: [main]
+              key: https://repo.test.test/key.gpg
+              fingerprint: 0123456789ABCDEF0123456789ABCDEF01234567
+              distros: [ubuntu/24.04]
         YAML
     run_job('harness_scan');
 
@@ -1375,28 +1383,41 @@ subtest 'system packages' => sub {
     my $packages = Test::MockModule->new('App::Clod::Packages');
     $packages->redefine( installed     => sub ( $packager, $name ) { push @asked, "$packager $name";          return $have{$name} } );
     $packages->redefine( program_error => sub ( $claude,   $line ) { push @ran,   [ $claude->run_as, $line ]; return $error{$line} } );
-    %have = ( ffmpeg => 1 );
+    %have = ( 'libfoo-dev' => 1 );
     $os_release->spew(qq{ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n});
     my $check = run_job('self_check')->{result};
-    is( $check->{system_packages}, { map { $_ => { missing => ['libmagic-t64'], sources => [ \%jellyfin ], failing => [] } } @SPOKES }, 'the check finds the package that the host lacks, by its name on this release, and the archive that it adds, for this codename' );
-    is( [ \@asked, \@ran ],        [ [ 'deb ffmpeg', 'deb libmagic-t64' ], [] ],                                                        'it asks dpkg once about each package, and runs no program while a package is missing' );
+    my %noble = (
+        needs      => [ { name => 'ffmpeg', package => 'ffmpeg', archive => \%jellyfin }, { name => 'libmagic', package => 'libmagic-t64', archive => undef } ],
+        missing    => [qw{ffmpeg libmagic-t64}],
+        sources    => [ \%jellyfin ],
+        unresolved => [],
+        failing    => [],
+    );
+    is( $check->{system_packages}, { map { $_ => \%noble } @SPOKES },                               'the check finds each dependency whose package the host lacks, by its name on this release, and the archive that it adds, for this codename' );
+    is( $check->{system_host},     { distro => 'ubuntu', release => '24.04', codename => 'noble' }, 'for the distribution of the host' );
+    is( [ \@asked, \@ran ],        [ [ 'deb libfoo-dev', 'deb ffmpeg', 'deb libmagic-t64' ], [] ],  'it asks dpkg once about each package, and runs no test while a package is missing' );
 
     $os_release->spew(qq{ID=debian\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\n});
-    is( run_job('self_check')->{result}{system_packages}{'Test-Org/one'}, { missing => ['libmagic-dev'], sources => [], failing => [] }, 'on another distribution, the package has its other name, and an archive for another one is not added' );
+    is(
+        run_job('self_check')->{result}{system_packages}{'Test-Org/one'},
+        { needs => [ { name => 'libmagic', package => 'libmagic-dev', archive => undef } ], missing => ['libmagic-dev'], sources => [], unresolved => ['ffmpeg'], failing => [] },
+        'on another distribution, a package has its other name, a dependency that needs no package there needs nothing, and one whose archive is not for it is unresolved'
+    );
     $os_release->spew(qq{ID=ubuntu\nVERSION_ID="24.04"\n});
     like( run_job('self_check')->{result}{system_packages}{'Test-Org/one'}, { missing => [], error => qr/needs\ the\ codename/ }, 'a declaration that does not resolve on this host is an error of its spoke' );
     $os_release->spew(qq{ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n});
     $apt->child('jellyfin.sources')->spew("Types: deb\n");
-    is( run_job('self_check')->{result}{system_packages}{'Test-Org/one'}{sources}, [], 'and an archive that apt has already is not added again' );
+    my $known = run_job('self_check')->{result}{system_packages}{'Test-Org/one'};
+    is( [ $known->{sources}, $known->{needs}[0]{archive} ], [ [], undef ], 'and an archive that apt has already is not added again' );
     $apt->child('jellyfin.sources')->remove;
 
-    %have                     = ( ffmpeg            => 1, 'libmagic-t64' => 1 );
+    %have                     = ( ffmpeg            => 1, 'libmagic-t64' => 1, 'libfoo-dev' => 1 );
     %error                    = ( 'ffmpeg -version' => 'ffmpeg: error while loading shared libraries' );
     @ran                      = ();
     $config->{claude}{run_as} = 'test-agent';
     $check                    = run_job('self_check')->{result};
-    is( $check->{system_packages}{'Test-Org/one'}, { missing => [], sources => [], failing => [ { program => 'ffmpeg -version', error => 'ffmpeg: error while loading shared libraries' } ] }, 'with every package there, a program that fails is a finding' );
-    is( \@ran,                                     [ ( [ 'test-agent', 'ffmpeg -version' ] ) x 2 ],                                                                                            'which it runs for each spoke, as the account that claude runs as' );
+    is( $check->{system_packages}{'Test-Org/one'}{failing}, [ { program => 'ffmpeg -version', dependency => 'ffmpeg', error => 'ffmpeg: error while loading shared libraries' } ], 'with every package there, a test that fails is a finding of its dependency' );
+    is( \@ran,                                              [ ( [ 'test-agent', 'ffmpeg -version' ] ) x 2 ],                                                                       'which it runs for each spoke, as the account that claude runs as' );
     $config->{claude}{run_as} = undef;
 
     $packages->redefine( program_error => sub ( $claude, $line ) { return } );

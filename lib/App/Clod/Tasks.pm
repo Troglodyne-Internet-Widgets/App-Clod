@@ -2091,8 +2091,9 @@ release, as C<outdated>.  With a C<local_lib>, C<deps>, the modules there
 that have a newer release, from L<App::Clod::Deps/outdated>.  A part that
 fails has its error in place of its result, as C<checkout> with C<error>,
 C<plugin_error>, C<deps_error> or C<agent_deps_error>.  With no checkout, there is no C<checkout>.
-With C<system_packages>, C<system_packages> from L</host_packages>, or
-C<system_packages_error>.
+With C<system_packages>, C<system_packages> from L</host_packages>, and
+C<system_host>, the distribution of the host that it resolved for, from
+L<App::Clod::Packages/os_release>, or C<system_packages_error>.
 
 =cut
 
@@ -2119,27 +2120,57 @@ sub self_check ( $job, $config ) {
         } // do { $result{agent_deps_error} = ( split m{\n}, $@ )[0]; { missing => [], outdated => [] } };
     }
     if ( $config->{system_packages} ) {
-        $result{system_packages} = eval { host_packages( $config, last_result( $job->minion, 'harness_scan' ) ) } // do { $result{system_packages_error} = ( split m{\n}, $@ )[0]; {} };
+        $result{system_packages} = eval {
+            my %host = App::Clod::Packages::os_release();
+            $result{system_host} = \%host;
+            host_packages( $config, last_result( $job->minion, 'harness_scan' ), %host );
+        } // do { $result{system_packages_error} = ( split m{\n}, $@ )[0]; {} };
     }
     return $job->finish( \%result );
 }
 
 =func host_packages
 
-C<($config, $scan)>, with C<$scan> the result of the last L</harness_scan>.
+C<($config, $scan, %host)>, with C<$scan> the result of the last L</harness_scan>.
 What the host lacks of what each spoke declares there, resolved for the
-C<packager> of C<system_packages> and the distribution of the host, as
-L<Dist::Conformance::Check::SystemPackages/resolve> resolves it from
-L<App::Clod::Packages/os_release>: a hash of each spoke that lacks something
-to C<missing>, the names of the packages that are not installed, C<sources>,
-the archives that they come from that the host does not have yet, as
-L<App::Clod::Packages/has_source> asks, and C<failing>, each a
-C<{program, error}> of a declared program that fails, as
-L<App::Clod::Packages/program_error> runs it, as the account of L</claude>.  The programs run only when no
-package is missing, because a program of a package that is not installed
-fails anyway.  It asks once about a package that two spokes declare.  A
-spoke whose declaration does not resolve for this host has only C<error>, why,
-and does not stop the others.
+C<packager> of C<system_packages> and C<%host>, the distribution of the host
+from L<App::Clod::Packages/os_release>, as
+L<Dist::Conformance::Check::SystemPackages/resolve> resolves it.  A hash of
+each spoke that lacks something to:
+
+=over
+
+=item needs
+
+Each dependency whose package is not installed, a C<{name, package}>, and
+C<archive>, the source that the package comes from, when the host does not
+have it yet, as L<App::Clod::Packages/has_source> asks.
+
+=item missing
+
+The packages of C<needs>, which an install installs.
+
+=item sources
+
+The archives of C<needs>, once each, which an install adds.
+
+=item unresolved
+
+The names of the dependencies that the spoke declares no package for on this
+host.
+
+=item failing
+
+Each a C<{program, dependency, error}>: the test of a dependency that fails,
+as L<App::Clod::Packages/program_error> runs it, as the account of
+L</claude>.  The tests run only when no package of the spoke is missing,
+because a test of a package that is not installed fails anyway.
+
+=back
+
+It asks once about a package that two spokes declare.  A spoke whose
+declaration does not resolve for this host has only C<error>, why, and does not
+stop the others.
 
 The scan reads the declarations, because it fetches each spoke anyway, and
 this check finds what the host has, because it is cheap, and runs again after
@@ -2148,25 +2179,40 @@ without a new scan of every spoke.
 
 =cut
 
-sub host_packages ( $config, $scan ) {
+sub host_packages ( $config, $scan, %host ) {
     my $packager = $config->{system_packages}{packager};
     my $claude   = claude($config);
-    my %host     = App::Clod::Packages::os_release();
     my ( %lacks, %has );
     my $declared = ( $scan // {} )->{system_packages} // {};
     for my $repo ( sort keys %$declared ) {
         my $resolved = eval { Dist::Conformance::Check::SystemPackages->resolve( $declared->{$repo}, packager => $packager, %host ) };
         if ( !$resolved ) {
-            $lacks{$repo} = { missing => [], sources => [], failing => [], error => $@ =~ s{\s+\z}{}r };
+            $lacks{$repo} = { needs => [], missing => [], sources => [], unresolved => [], failing => [], error => $@ =~ s{\s+\z}{}r };
             next;
         }
-        my @missing = grep { !( $has{$_} //= App::Clod::Packages::installed( $packager, $_ ) ? 1 : 0 ) } @{ $resolved->{packages} // [] };
-        my @sources = @missing ? grep { !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} // [] } : ();
-        my @failing = @missing ? () : map {
-            my $error = App::Clod::Packages::program_error( $claude, $_ );
-            defined $error ? { program => $_, error => $error } : ();
-        } @{ $resolved->{programs} // [] };
-        $lacks{$repo} = { missing => \@missing, sources => \@sources, failing => \@failing } if @missing || @failing;
+        my %source = map { $_->{name} => $_ } grep { !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} };
+        my @needs  = map {
+            my $archive = defined $_->{source} ? $source{ $_->{source} } : undef;
+            +{ name => $_->{name}, package => $_->{package}, archive => $archive };
+        } grep { defined $_->{package} && !( $has{ $_->{package} } //= App::Clod::Packages::installed( $packager, $_->{package} ) ? 1 : 0 ) } @{ $resolved->{needs} };
+        my @failing = @needs ? () : map {
+            my $error = App::Clod::Packages::program_error( $claude, $_->{test} );
+            defined $error ? { program => $_->{test}, dependency => $_->{name}, error => $error } : ();
+        } grep { defined $_->{test} } @{ $resolved->{needs} };
+        my @unresolved = @{ $resolved->{unresolved} };
+        next if !@needs && !@failing && !@unresolved;
+        $lacks{$repo} = {
+            needs   => \@needs,
+            missing => [ List::Util::uniq( map { $_->{package} } @needs ) ],
+            sources => [
+                do {
+                    my %seen;
+                    grep { defined && !$seen{ $_->{name} }++ } map { $_->{archive} } @needs;
+                }
+            ],
+            unresolved => \@unresolved,
+            failing    => \@failing,
+        };
     }
     return \%lacks;
 }

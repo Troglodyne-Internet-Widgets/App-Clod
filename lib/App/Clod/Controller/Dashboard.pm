@@ -162,9 +162,10 @@ Update button, and plugins behind their marketplace, with an Update plugins
 button, and Perl modules in C<local_lib> with a newer release, with an Upgrade
 modules button, and tools that the agent lacks, or that have a newer release,
 in C<agent_lib>, with an Install tools button, and each spoke that declares
-system packages that the host lacks, with an Install packages button, and each
-program of a spoke that fails, with all of its packages there, with no
-button.  While a job for a button waits or runs, the item names it, and has
+system packages that the host lacks, with an Install packages button, and,
+with no button, each spoke that declares no package of this host for a
+dependency, and each test of a dependency that fails, with all of the
+packages of its spoke there.  While a job for a button waits or runs, the item names it, and has
 no button.
 
 =cut
@@ -196,31 +197,53 @@ sub self_items ( $self, $minion, $check ) {
     );
     push @items, button_item( $minion, 'deps_upgrade', join( q{ }, @why ), { label => 'Install tools', act => 'deps/upgrade' } ) if @why;
     push @items, { level => 'warning', text => "The bot cannot tell whether the tools of the agent are up to date: $check->{agent_deps_error}" } if $check->{agent_deps_error};
-    my $packages = $check->{system_packages} // {};
+    my $packages = $check->{system_packages}                                   // {};
+    my $packager = ( $self->clod_config->{system_packages} // {} )->{packager} // 'system';
+    my $host     = join( q{ }, grep { defined } @{ $check->{system_host} // {} }{qw{distro release}} ) || 'this host';
     for my $repo ( sort keys %$packages ) {
-        my @missing = @{ $packages->{$repo}{missing} // [] };
-        push @items, button_item( $minion, 'packages_install', "$repo needs the packages: " . join( q{, }, @missing ) . archives( @{ $packages->{$repo}{sources} // [] } ) . q{.}, { label => 'Install packages', act => 'packages/install', body => { repo => $repo } }, $repo ) if @missing;
-        push @items, { level => 'warning', text => "The bot cannot tell what $repo needs on this host: $packages->{$repo}{error}" } if $packages->{$repo}{error};
-        push @items, map { { level => 'warning', text => "$_->{program} fails, and $repo needs it: " . substr( $_->{error}, 0, 300 ) } } @{ $packages->{$repo}{failing} // [] };
+        my $lacks      = $packages->{$repo};
+        my @needs      = @{ $lacks->{needs}      // [] };
+        my @unresolved = @{ $lacks->{unresolved} // [] };
+        push @items, button_item( $minion, 'packages_install', "$repo needs " . needed(@needs) . q{.}, { label => 'Install packages', act => 'packages/install', body => { repo => $repo } }, $repo ) if @needs;
+        push @items, { level => 'danger',  text => "$repo needs " . listed(@unresolved) . ", and declares no $packager package for " . ( @unresolved > 1 ? 'them' : 'it' ) . " on $host." } if @unresolved;
+        push @items, { level => 'warning', text => "The bot cannot tell what $repo needs on this host: $lacks->{error}" }                                                                   if $lacks->{error};
+        push @items, map { { level => 'warning', text => "$_->{program} fails, and $repo needs it for $_->{dependency}: " . substr( $_->{error}, 0, 300 ) } } @{ $lacks->{failing} // [] };
     }
     push @items, { level => 'warning', text => "The bot cannot tell whether it has the system packages of the spokes: $check->{system_packages_error}" } if $check->{system_packages_error};
     return @items;
 }
 
-=func archives
+=func listed
 
-C<(@sources)>, the sources that an install adds.  The words that name them,
-each with the fingerprint of its key, shortened, such as
-C<, from the archive jellyfin (key 0123...4567)>, so that the person who presses
-the button sees whom it gives the trust of root.  Empty with none.
+C<(@words)>.  The words as a list in a sentence: C<a>, C<a and b>, or
+C<a, b and c>.
 
 =cut
 
-sub archives (@sources) {
-    return q{} if !@sources;
-    my @named = map { my $key = $_->{fingerprint} // q{}; "$_->{name} (key " . substr( $key, 0, 4 ) . "\N{HORIZONTAL ELLIPSIS}" . substr( $key, -4 ) . ')' } @sources;
-    my $last  = pop @named;
-    return ', from the archive' . ( @named ? 's ' . join( q{, }, @named ) . " and $last" : " $last" );
+sub listed (@words) {
+    my $last = pop @words;
+    return @words ? join( q{, }, @words ) . " and $last" : $last;
+}
+
+=func needed
+
+C<(@needs)>, the C<needs> of a spoke from L<App::Clod::Tasks/host_packages>.
+Each dependency with its package, and the archive that an install adds for
+it, with the fingerprint of its key, shortened, as in
+C<libxml2 (libxml2-dev) and ffmpeg (ffmpeg, from the archive jellyfin, key 0123...4567)>,
+so that the person who presses the button sees whom it gives the trust of
+root.
+
+=cut
+
+sub needed (@needs) {
+    return listed(
+        map {
+            my $archive = $_->{archive};
+            my $key     = $archive ? $archive->{fingerprint} // q{} : q{};
+            "$_->{name} ($_->{package}" . ( $archive ? ", from the archive $archive->{name}, key " . substr( $key, 0, 4 ) . "\N{HORIZONTAL ELLIPSIS}" . substr( $key, -4 ) : q{} ) . ')';
+        } @needs
+    );
 }
 
 =func button_item
