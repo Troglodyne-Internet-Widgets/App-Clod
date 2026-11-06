@@ -101,7 +101,7 @@ subtest install_programs => sub {
     my $fake = $tmp->child('fake-cpm')->make_path;
     $fake->child('cpm')->spew(qq{#!/bin/sh\nprintf '%s ' "\$@"\n})->chmod( oct '0755' );
     my $own = $tmp->child('own-lib');
-    my @env = ( '/usr/bin/env', "PATH=$fake:$ENV{PATH}" );
+    my @env = ( qw{/usr/bin/env -u CLOD_OWN_LIB}, "PATH=$fake:$ENV{PATH}" );
     IPC::Run::run( [ @env, "CLOD_OWN_LIB=$own", "$cpm", 'Test::Module' ], \undef, \my $out, \my $err );
     is( [ $out, -d $own ], [ "install --without-test -L $own Test::Module ", 1 ], 'which makes the own lib, and installs into it' ) or diag $err;
     ok( !IPC::Run::run( [ @env, "$cpm", 'Test::Module' ], \undef, \my $none, \my $why ), 'and refuses with no own lib to install into' );
