@@ -57,8 +57,11 @@ Before you commit, apply these skills in this order:
    finds a call out to the shell, and a comment that belongs in the commit
    message.
 
-Then run `podchecker` on each changed file.  Run `perl -Ilib -c` on each
-changed script that no test loads, because the tests do not compile it.
+Then run `dzil podchecker` on the changed files, for example `dzil podchecker
+lib/App/Clod/Tasks.pm`.  It checks the POD as Pod::Weaver writes it into the
+build.  `podchecker` on a source file reports each `=func`, `=method` and
+`=attr` as an error, so its verdict says nothing here.  Run `perl -Ilib -c` on
+each changed script that no test loads, because the tests do not compile it.
 
 The pre-commit hook does the rest.  It tidies the Perl that you staged, runs
 perlcritic on it, and runs the tests that the commit can break, which

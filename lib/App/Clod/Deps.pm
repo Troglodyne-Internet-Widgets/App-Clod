@@ -20,7 +20,7 @@ our @OUTDATED = ('cpan-outdated');
 
 # The tools of the agent that every spoke needs, beside the policies of the
 # critic profiles of the standards.  App::Clod::Config lets a run use them.
-our @TOOLS = qw{Perl::Critic Perl::Tidy Devel::NYTProf};
+our @TOOLS = qw{Perl::Critic Perl::Tidy Devel::NYTProf Dist::Zilla::App::Command::podchecker};
 
 =func listdeps
 
