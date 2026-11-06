@@ -10,6 +10,7 @@ use JSON::Validator::Schema::Troglodyne();
 
 use App::Clod::Budget();
 use App::Clod::Harness();
+use App::Clod::Packages();
 
 my $REPO  = { type => 'string', pattern => '\A[\w.-]+/[\w.-]+\z' };
 my $LOGIN = { type => 'string', pattern => '\A[\w.-]+\z' };
@@ -68,15 +69,26 @@ our %SCHEMA = (
                 standards          => { type => 'object', nullable  => 1, default => undef },
             }
         ),
-        otel           => { type => 'object', additionalProperties => $TEXT, default => {} },
-        system_prompts => section( { map { $_ => $TEXT } @App::Clod::Budget::CLAUDE_TASKS } ),
-        spoke_prompt   => { type => 'string',  nullable => 1, default => undef },
-        follow_up_max  => { type => 'integer', minimum  => 0, default => 3 },
-        create_repos   => { type => 'boolean', default  => 0 },
-        restart_units  => list_of( { type => 'string', pattern => '\A[\w@.:-]+[.]service\z' } ),
-        local_lib      => { type => 'string', nullable => 1, default => undef },
-        agent_lib      => { type => 'string', nullable => 1, default => undef },
-        agent_own_lib  => { type => 'string', nullable => 1, default => undef },
+        otel            => { type => 'object', additionalProperties => $TEXT, default => {} },
+        system_prompts  => section( { map { $_ => $TEXT } @App::Clod::Budget::CLAUDE_TASKS } ),
+        spoke_prompt    => { type => 'string',  nullable => 1, default => undef },
+        follow_up_max   => { type => 'integer', minimum  => 0, default => 3 },
+        create_repos    => { type => 'boolean', default  => 0 },
+        restart_units   => list_of( { type => 'string', pattern => '\A[\w@.:-]+[.]service\z' } ),
+        local_lib       => { type => 'string', nullable => 1, default => undef },
+        agent_lib       => { type => 'string', nullable => 1, default => undef },
+        agent_own_lib   => { type => 'string', nullable => 1, default => undef },
+        system_packages => {
+            type                 => 'object',
+            nullable             => 1,
+            default              => undef,
+            additionalProperties => 0,
+            required             => [qw{packager installer}],
+            properties           => {
+                packager  => { type => 'string', enum    => [ sort keys %App::Clod::Packages::INSTALLED ] },
+                installer => { type => 'string', pattern => '\A/' },
+            },
+        },
     },
 );
 
@@ -357,6 +369,26 @@ after C<agent_lib> on C<PERL5LIB> and C<PATH>, so a module there cannot
 replace a tool or a policy.  Default F<agent-own-lib> in the workspace when
 there is an C<agent_lib>, because the account of C<run_as> can write there,
 and none otherwise.
+
+=item system_packages
+
+C<< { packager => 'deb', installer => '/usr/local/sbin/clod-install-packages' } >>.
+Default none, and then the bot neither reads what the spokes declare nor
+shows it.  With it, L<App::Clod::Tasks/harness_scan> reads the
+C<x_system_packages> of each spoke, from its default branch, and
+L<App::Clod::Tasks/self_check> finds the packages of C<packager> that the
+host lacks, and the declared programs that do not run.  The dashboard shows
+each spoke that needs packages, with a button that installs them.  See
+L<App::Clod::Packages>.
+
+C<packager> is the packager of the host, a key of
+C<%App::Clod::Packages::INSTALLED>: C<deb> for now.  C<installer> is the
+absolute path of a program that the service user may run with C<sudo -n> and
+no password, with the names of the packages as its arguments.  It must
+install them from the archives that the host trusts, exit 0 when it did,
+print what the packager printed, and refuse a name that is not a plain
+package name.  The clod recipe of trog-provisioner makes it, and fills this
+in.
 
 =item otel
 

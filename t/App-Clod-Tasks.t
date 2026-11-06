@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Test2::V0;
@@ -98,7 +99,13 @@ $r->post('/repos/:o/:n/pulls')->to(
         $c->render( json => { number => $n, html_url => "https://test.test/" . $c->param('o') . q{/} . $c->param('n') . "/pull/$n" }, status => 201 );
     }
 );
-$r->get('/repos/:o/:n/contents/*file')->to( cb => sub ($c) { my $f = $state{files}{ $c->param('file') }; defined $f ? $c->render( text => $f ) : $c->render( json => {}, status => 404 ) } );
+$r->get('/repos/:o/:n/contents/*file')->to(
+    cb => sub ($c) {
+        push @{ $state{refs}{ $c->param('file') } }, $c->param('ref');
+        my $f = $state{files}{ $c->param('file') };
+        defined $f ? $c->render( text => $f ) : $c->render( json => {}, status => 404 );
+    }
+);
 $r->get('/repos/:o/:n/git/trees/*ref')->to(
     cb => sub ($c) {
         $c->render( json => { tree => [ map { { path => $_, sha => "sha-$_" } } sort keys %{ $state{files} // {} } ] } );
@@ -858,7 +865,7 @@ subtest 'tool spokes and the spoke prompt' => sub {
     answer( { title => 't', summary => 's' }, commit => 1 );
     $state{refuse_pull} = 1;
     my $died = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
-    like( [ $died->{state}, $died->{result} ], [ 'failed', qr/500/ ], 'a job that dies after the run fails' );
+    like( [ $died->@{qw{state result}} ], [ 'failed', qr/500/ ], 'a job that dies after the run fails' );
     ok( !-e $tmp->child( 'workspace', 'work', $died->{id} ), 'and its tool worktree is gone too' );
     delete $state{refuse_pull};
 
@@ -1307,6 +1314,80 @@ subtest harness_scan => sub {
 
     $state{files}{'.conformance.yml'} = "flavor: test-gone\nsource:\n  directory: " . $here->child( 'data', 'standards' ) . "\n";
     like( run_job('harness_scan')->{result}{errors}{'Test-Org/one'}, qr/test-gone/, 'and one whose flavor cannot be read is an error of the scan' );
+};
+
+subtest 'system packages' => sub {
+    %state = ();
+    my $config = $app->clod_config;
+    $state{files} = {
+        'CLAUDE.md'                       => 'perl-slop:reading-perl',
+        '.claude-plugin/plugin.json'      => '{"version":"0.11.0"}',
+        '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.11.0"}]}',
+        'metamerge.yml'                   => "x_system_packages:\n  deb:\n    - ffmpeg\n    - libmagic-dev\n  programs:\n    - ffmpeg -version\n",
+    };
+    ok( !exists run_job('harness_scan')->{result}{system_packages}, 'without system_packages in the configuration, the scan reads no declaration' );
+
+    $config->{system_packages} = { packager => 'deb', installer => '/bogus/clod-install-packages' };
+    delete $state{refs};
+    my $scan     = run_job('harness_scan')->{result};
+    my %declared = ( deb => [qw{ffmpeg libmagic-dev}], programs => ['ffmpeg -version'] );
+    is( $scan->{system_packages},      { map { $_ => \%declared } @SPOKES }, 'with it, the scan reads what each spoke declares' );
+    is( $state{refs}{'metamerge.yml'}, [ 'main', 'main' ],                   'from its default branch, and no branch that the bot pushed' );
+
+    $state{files}{'metamerge.yml'} = "x_system_packages:\n  deb:\n    - foo=1.2\n";
+    my $invalid = run_job('harness_scan');
+    is( $invalid->{state}, 'finished', 'a declaration that is not valid does not stop the scan' );
+    like( $invalid->{result}{system_package_errors}{'Test-Org/one'}, qr/\Ametamerge\.yml\ is\ not\ valid:\n\s+\S/, 'it is a finding of the spoke, with each error' );
+    is( [ sort keys %{ $invalid->{result}{repos} } ], \@SPOKES, 'and the spoke is still checked' );
+    ok( !exists $invalid->{result}{system_packages}{'Test-Org/one'}, 'with no declaration' );
+
+    $state{files}{'metamerge.yml'} = "x_system_packages:\n  deb:\n    - ffmpeg\n    - libmagic-dev\n  programs:\n    - ffmpeg -version\n";
+    run_job('harness_scan');
+
+    my $self = Test::MockModule->new('App::Clod');
+    $self->redefine( checkout => sub { return } );
+    my $claude = Test::MockModule->new('App::Clod::Claude');
+    $claude->redefine( plugins => sub ($) { [] } );
+    my ( %have, %error, @asked, @ran, @installed );
+    my $packages = Test::MockModule->new('App::Clod::Packages');
+    $packages->redefine( installed     => sub ( $packager, $name ) { push @asked, "$packager $name"; return $have{$name} } );
+    $packages->redefine( program_error => sub ($line) { push @ran, $line;                            return $error{$line} } );
+    %have = ( ffmpeg => 1 );
+    my $check = run_job('self_check')->{result};
+    is( $check->{system_packages}, { map { $_ => { missing => ['libmagic-dev'], failing => [] } } @SPOKES }, 'the check finds the package that the host lacks, for each spoke that declares it' );
+    is( [ \@asked, \@ran ],        [ [ 'deb ffmpeg', 'deb libmagic-dev' ], [] ],                             'it asks dpkg once about each package, and runs no program while a package is missing' );
+
+    %have  = ( ffmpeg            => 1, 'libmagic-dev' => 1 );
+    %error = ( 'ffmpeg -version' => 'ffmpeg: error while loading shared libraries' );
+    @ran   = ();
+    $check = run_job('self_check')->{result};
+    is( $check->{system_packages}{'Test-Org/one'}, { missing => [], failing => [ { program => 'ffmpeg -version', error => 'ffmpeg: error while loading shared libraries' } ] }, 'with every package there, a program that fails is a finding' );
+    is( \@ran,                                     [ 'ffmpeg -version', 'ffmpeg -version' ],                                                                                    'which it runs for each spoke' );
+
+    $packages->redefine( program_error => sub ($line) { return } );
+    is( run_job('self_check')->{result}{system_packages}, {}, 'and a host with everything finds nothing' );
+    $packages->redefine( installed => sub (@) { die "dpkg-query: not found\n" } );
+    like( run_job('self_check')->{result}, { system_packages => {}, system_packages_error => 'dpkg-query: not found' }, 'a check that cannot ask says why' );
+
+    $minion->reset( { all => 1 } );
+    my $output = "Setting up libmagic-dev\n";
+    $packages->redefine( install => sub ( $installer, @names ) { push @installed, [ $installer, @names ]; return $output } );
+    my $install = run_job( packages_install => { repo => 'Test-Org/one', packages => ['libmagic-dev'] } );
+    is( \@installed,                                                                 [ [ '/bogus/clod-install-packages', 'libmagic-dev' ] ],                                      'an install runs the installer with the names of the job, and no other' );
+    is( [ $install->@{qw{state result}} ],                                           [ 'finished', { repo => 'Test-Org/one', packages => ['libmagic-dev'], output => $output } ], 'and records what it printed' );
+    is( $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } )->total, 1,                                                                                           'and queues a check, so that the item clears' );
+
+    $minion->reset( { all => 1 } );
+    $packages->redefine( install => sub ( $installer, @names ) { die "sudo -n /bogus/clod-install-packages libmagic-dev: E: Unable to locate package\n" } );
+    my $failed = run_job( packages_install => { repo => 'Test-Org/one', packages => ['libmagic-dev'] } );
+    is( $failed->{state}, 'failed', 'an installer that fails fails the job' );
+    like( $failed->{result}{error}, qr/Unable\ to\ locate\ package/, 'with what it printed' );
+    is( $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } )->total,        1,        'and still queues a check, for what it installed before it failed' );
+    is( run_job( packages_install => { repo => 'Test-Org/one', packages => [] } )->{state}, 'failed', 'and a job with no package runs no installer' );
+
+    delete $config->{system_packages};
+    is( run_job( packages_install => { repo => 'Test-Org/one', packages => ['libmagic-dev'] } )->{result}{error}, 'clod.conf has no system_packages', 'without the configuration, an install fails, and says why' );
+    $minion->reset( { all => 1 } );
 };
 
 subtest assigned_sweep => sub {

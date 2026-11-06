@@ -106,6 +106,7 @@ sub startup ($self) {
     $act->post('/self/update')->to('dashboard#self_update');
     $act->post('/plugins/update')->to('dashboard#plugin_update');
     $act->post('/deps/upgrade')->to('dashboard#deps_upgrade');
+    $act->post('/packages/install')->to('dashboard#packages_install');
     return;
 }
 
@@ -353,6 +354,10 @@ behind its marketplace, queues L<App::Clod::Tasks/plugin_update>.
 =item * Upgrade modules, when a Perl module in C<local_lib> has a newer
 release on CPAN, queues L<App::Clod::Tasks/deps_upgrade>, which upgrades them
 there and restarts the bot.
+
+=item * Install packages, when a spoke declares system packages that the host
+lacks, queues L<App::Clod::Tasks/packages_install>, which installs them with
+the C<installer> of C<system_packages>.  See L<App::Clod::Packages>.
 
 =back
 

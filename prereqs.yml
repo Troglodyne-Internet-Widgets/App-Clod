@@ -11,3 +11,5 @@ runtime:
     EV: '4.0'
     # "no autovivification" in the modules; Variables::RequireNoAutovivification asks for it.
     autovivification: '0.18'
+    # Dist::Conformance::Check::SystemPackages arrived in 0.003.
+    Dist::Conformance: '0.003'

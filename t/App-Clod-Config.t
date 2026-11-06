@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Test2::V0;
@@ -49,7 +50,7 @@ subtest validate => sub {
     refused( { %minimal, system_prompts => { inbox_poll => 'x' } },   '/system_prompts: Properties not allowed: inbox_poll.', 'a system prompt for a task that runs no claude dies' );
     refused( { %minimal, system_prompts => { triage     => ['x'] } }, '/system_prompts/triage: Expected string',              'a system prompt that is not text dies' );
     refused( { %minimal, system_prompts => 'x' }, '/system_prompts: Expected object', 'system prompts that are not a hash die' );
-    is( [ $config->{spoke_prompt}, $config->{tool_spokes}, $config->{claude}{extra_tools} ], [ undef, [], [] ], 'no spoke prompt, tool spokes or extra tools by default' );
+    is( [ $config->@{qw{spoke_prompt tool_spokes}}, $config->{claude}{extra_tools} ], [ undef, [], [] ], 'no spoke prompt, tool spokes or extra tools by default' );
     ok( lives { App::Clod::Config::validate( { %minimal, spoke_prompt => 'Test on a guest.' } ) }, 'a spoke prompt that is text lives' );
     refused( { %minimal, spoke_prompt => ['x'] }, '/spoke_prompt: Expected string', 'a spoke prompt that is not text dies' );
     is( App::Clod::Config::validate( { %minimal, tool_spokes => ['Test-Org/tools'] } )->{tool_spokes}, ['Test-Org/tools'], 'a tool spoke that is Owner/Name lives' );
@@ -62,6 +63,13 @@ subtest validate => sub {
     refused( { %minimal, claude => { extra_tools => 'Bash' } }, '/claude/extra_tools: Expected array',    'extra tools that are not a list die' );
     refused( { %minimal, claude => { extra_tools => [ [] ] } }, '/claude/extra_tools/0: Expected string', 'and so do extra tools that are not text' );
     like( dies { App::Clod::Config::validate( [] ) }, qr/must\ be\ a\ hash/, 'a configuration that is not a hash dies' );
+
+    is( $config->{system_packages}, undef, 'no system packages by default, so the feature is off' );
+    my %packages = ( packager => 'deb', installer => '/usr/local/sbin/clod-install-packages' );
+    is( App::Clod::Config::validate( { %minimal, system_packages => \%packages } )->{system_packages}, \%packages, 'a packager and an installer live' );
+    refused( { %minimal, system_packages => { %packages, packager  => 'rpm' } },        '/system_packages/packager: Not in enum list',       'a packager that the bot cannot ask about dies' );
+    refused( { %minimal, system_packages => { %packages, installer => 'install-it' } }, '/system_packages/installer: String does not match', 'and so does an installer that is not an absolute path, which sudo finds on no PATH' );
+    refused( { %minimal, system_packages => { packager => 'deb' } }, '/system_packages/installer: Missing property.', 'and a packager without an installer' );
 
     for my $key (qw{bot workspace auth}) {
         my %without = %minimal;

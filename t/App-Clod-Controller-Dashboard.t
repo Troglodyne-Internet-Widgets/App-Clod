@@ -1,5 +1,6 @@
 #!/usr/bin/env perl
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 use Test2::V0;
@@ -24,7 +25,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -189,6 +190,45 @@ subtest 'an update of the bot' => sub {
     like( $rechecked, { job => $check, text => qr/A\ new\ check\ is\ queued\.\z/ }, 'after the action, the item names the check that it queued' );
     ok( !$rechecked->{buttons}, 'and has no button, because the check will say whether the action worked' );
     $minion->job($check)->remove;
+};
+
+subtest 'system packages' => sub {
+    my %act = ( 'X-Clod-Action' => 'yes' );
+    job( harness_scan => { checked_at => time, repos => {}, checks => [ 'CLAUDE.md', 'git hooks' ], system_packages => {}, system_package_errors => { 'Test-Org/two' => "metamerge.yml is not valid:\n  /x_system_packages/deb/0: String does not match" } } );
+    my %lacks = (
+        'Test-Org/one' => { missing => [qw{ffmpeg libmagic-dev}], failing => [] },
+        'Test-Org/two' => { missing => [],                        failing => [ { program => 'ffmpeg -version', error => 'ffmpeg: not found' } ] },
+    );
+    job( self_check => { checked_at => time, plugins => [], system_packages => \%lacks } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    my $unreadable = qr/\AHarness\ scan\ of\ Test-Org\/two\ cannot\ read\ .+:\ /;
+    like( action_about(qr/system\ packages\ that\ it\ needs/), { level => 'danger', text => qr/${unreadable}metamerge\.yml\ is\ not\ valid:/ }, 'a declaration that is not valid is a finding of its spoke, as a scan that failed is' );
+    my $needs = action_about(qr/needs\ the\ packages/);
+    is( $needs, { level => 'warning', text => 'Test-Org/one needs the packages: ffmpeg, libmagic-dev.', buttons => [ { label => 'Install packages', act => 'packages/install', body => { repo => 'Test-Org/one' } } ] }, 'packages that the host lacks are an item of their spoke, with a button that installs them' );
+    is( action_about(qr/fails,\ and/), { level => 'warning', text => 'ffmpeg -version fails, and Test-Org/two needs it: ffmpeg: not found' }, 'and a program that fails with every package there is an item with no button' );
+
+    $t->post_ok( '/act/packages/install' => json => { repo => 'Test-Org/one' } )->status_is( 403, 'an install without the header is refused' );
+    $t->post_ok( '/act/packages/install' => \%act => json => { repo => 'Test-Org/one', packages => ['bogus-package'] } )->status_is(200);
+    my $res  = $t->tx->res;
+    my $id   = $res->json->{queued};
+    my $info = $minion->job($id)->info;
+    is( [ $info->@{qw{task args}} ], [ 'packages_install', [ { repo => 'Test-Org/one', packages => [qw{ffmpeg libmagic-dev}] } ] ], 'Install packages queues an install of the names that the check found, and none that the request names' );
+    $t->post_ok( '/act/packages/install' => \%act => json => { repo => 'Test-Org/one' } )->status_is(200)->json_is( '/queued' => $id, 'and a second press queues no second one' );
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/needs\ the\ packages/), { job => $id, text => qr/It\ is\ queued\.\z/ }, 'while it waits, the item names it' );
+    ok( !action_about(qr/needs\ the\ packages/)->{buttons}, 'and has no button' );
+    $t->post_ok( '/act/packages/install' => \%act => json => { repo => 'Test-Org/two' } )->status_is( 404, 'a spoke that misses no package has nothing to install' );
+    $minion->perform_jobs;
+
+    my $check = $minion->enqueue( self_check => [] => { delay => 60 } );
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/needs\ the\ packages/), { job => $check, text => qr/A\ new\ check\ is\ queued\.\z/ }, 'after the install, the item names the check that it queued' );
+    $minion->job($check)->remove;
+    job( self_check => { checked_at => time, plugins => [], system_packages => {} } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/needs\ the\ packages|fails,\ and/), 'and once the check finds everything, there is no item' );
 };
 
 subtest work => sub {

@@ -60,7 +60,8 @@ C<body>: the dashboard posts C<body> to F</act/E<lt>actE<gt>>.  A failed job
 has Retry and Ignore, and a spoke that fails harness checks has Fix, unless a
 L<App::Clod::Tasks/harness_fix> of it waits or runs, or its pull request
 waits for review.  Then the item has C<link>, a C<{url, label}>, to the pull
-request, and no button.  A failed job that
+request, and no button.  A spoke whose declaration of system packages is not
+valid is an item, as a scan that failed is.  A failed job that
 somebody ignored is not an item.
 
 =cut
@@ -90,14 +91,15 @@ sub action_items ( $self, $budget, $outages = [] ) {
             my @failing = grep { $_->{status} eq 'fail' } @{ $harness->{repos}{$repo}{checks} };
             next if !@failing;
             my $text  = "$repo fails " . scalar(@failing) . ' harness check(s): ' . join( q{, }, map { $_->{check} } @failing ) . q{.};
-            my $fixer = pending_harness_fix( $minion, $repo );
+            my $fixer = pending_job( $minion, 'harness_fix', $repo );
             my $pull  = !$fixer && harness_pull( $minion, $repo, $harness );
             push @actions,
                 $fixer ? { level => 'warning', job => $fixer, text => "$text A harness fix of it is queued." }
               : $pull  ? { level => 'warning', text => "$text A fix waits for review:", link => { url => $pull, label => pull_label($pull) } }
               :          { level => 'warning', text => $text, buttons => [ { label => 'Fix', act => 'harness/fix', body => { repo => $repo } } ] };
         }
-        push @actions, { level => 'danger', text => "Harness scan of $_ failed: $harness->{errors}{$_}" } for sort keys %{ $harness->{errors} // {} };
+        push @actions, { level => 'danger', text => "Harness scan of $_ failed: $harness->{errors}{$_}" }                                                       for sort keys %{ $harness->{errors}                // {} };
+        push @actions, { level => 'danger', text => "Harness scan of $_ cannot read the system packages that it needs: $harness->{system_package_errors}{$_}" } for sort keys %{ $harness->{system_package_errors} // {} };
     }
 
     my $inbox = App::Clod::Tasks::last_result( $minion, 'inbox_poll' );
@@ -159,7 +161,10 @@ behind its upstream, or a checkout that the bot does not run yet, with an
 Update button, and plugins behind their marketplace, with an Update plugins
 button, and Perl modules in C<local_lib> with a newer release, with an Upgrade
 modules button, and tools that the agent lacks, or that have a newer release,
-in C<agent_lib>, with an Install tools button.  While a job for a button waits or runs, the item names it, and has
+in C<agent_lib>, with an Install tools button, and each spoke that declares
+system packages that the host lacks, with an Install packages button, and each
+program of a spoke that fails, with all of its packages there, with no
+button.  While a job for a button waits or runs, the item names it, and has
 no button.
 
 =cut
@@ -191,21 +196,29 @@ sub self_items ( $self, $minion, $check ) {
     );
     push @items, button_item( $minion, 'deps_upgrade', join( q{ }, @why ), { label => 'Install tools', act => 'deps/upgrade' } ) if @why;
     push @items, { level => 'warning', text => "The bot cannot tell whether the tools of the agent are up to date: $check->{agent_deps_error}" } if $check->{agent_deps_error};
+    my $packages = $check->{system_packages} // {};
+    for my $repo ( sort keys %$packages ) {
+        my @missing = @{ $packages->{$repo}{missing} // [] };
+        push @items, button_item( $minion, 'packages_install', "$repo needs the packages: " . join( q{, }, @missing ) . q{.}, { label => 'Install packages', act => 'packages/install', body => { repo => $repo } }, $repo ) if @missing;
+        push @items, map { { level => 'warning', text => "$_->{program} fails, and $repo needs it: " . substr( $_->{error}, 0, 300 ) } } @{ $packages->{$repo}{failing} // [] };
+    }
+    push @items, { level => 'warning', text => "The bot cannot tell whether it has the system packages of the spokes: $check->{system_packages_error}" } if $check->{system_packages_error};
     return @items;
 }
 
 =func button_item
 
-C<($minion, $task, $text, \%button)>.  A warning with C<$text>, and the button,
-a C<{label, act}>, unless a job of C<$task> waits or runs.  Then it names that
-job, and has no button.  The same goes for a L<App::Clod::Tasks/self_check>,
+C<($minion, $task, $text, \%button, $repo)>.  A warning with C<$text>, and the
+button, a C<{label, act}>, unless a job of C<$task> waits or runs, of C<$repo>
+when it is given, as L</pending_job> finds it.  Then it names that job, and has
+no button.  The same goes for a L<App::Clod::Tasks/self_check>,
 which the job queues when it finishes, because C<$text> comes from the check
 before it.
 
 =cut
 
-sub button_item ( $minion, $task, $text, $button ) {
-    if ( my $pending = pending_job( $minion, $task ) ) {
+sub button_item ( $minion, $task, $text, $button, $repo = undef ) {
+    if ( my $pending = pending_job( $minion, $task, $repo ) ) {
         return { level => 'warning', job => $pending, text => "$text It is queued." };
     }
     if ( my $check = pending_job( $minion, 'self_check' ) ) {
@@ -216,14 +229,17 @@ sub button_item ( $minion, $task, $text, $button ) {
 
 =func pending_job
 
-C<($minion, $task)>.  The id of a job of C<$task> that waits or runs, or
-undef.
+C<($minion, $task, $repo)>.  The id of a job of C<$task> that waits or runs,
+or undef.  With C<$repo>, only a job with that C<repo> in its notes counts.
 
 =cut
 
-sub pending_job ( $minion, $task ) {
-    my $job = $minion->jobs( { tasks => [$task], states => [qw{inactive active}] } )->next // return;
-    return $job->{id};
+sub pending_job ( $minion, $task, $repo = undef ) {
+    my $jobs = $minion->jobs( { tasks => [$task], states => [qw{inactive active}] } );
+    while ( my $info = $jobs->next ) {
+        return $info->{id} if !defined $repo || ( $info->{notes}{repo} // q{} ) eq $repo;
+    }
+    return;
 }
 
 =method self_update
@@ -260,21 +276,6 @@ which.
 sub deps_upgrade ($self) {
     my $minion = $self->minion;
     return $self->render( json => { queued => pending_job( $minion, 'deps_upgrade' ) // $minion->enqueue('deps_upgrade') } );
-}
-
-=func pending_harness_fix
-
-C<($minion, $repo)>.  The id of a L<App::Clod::Tasks/harness_fix> of C<$repo>
-that waits or runs, or undef.
-
-=cut
-
-sub pending_harness_fix ( $minion, $repo ) {
-    my $jobs = $minion->jobs( { tasks => ['harness_fix'], states => [qw{inactive active}] } );
-    while ( my $info = $jobs->next ) {
-        return $info->{id} if ( $info->{notes}{repo} // q{} ) eq $repo;
-    }
-    return;
 }
 
 =func harness_pull
@@ -364,7 +365,28 @@ sub harness_fix ($self) {
     my $scan    = App::Clod::Tasks::last_result( $minion, 'harness_scan' ) // {};
     my @failing = map { { check => $_->{check}, detail => $_->{detail} } } grep { $_->{status} eq 'fail' } @{ ( $scan->{repos}{$repo} // {} )->{checks} // [] };
     return $self->render( json => { error => "$repo fails no harness check" }, status => 404 ) if !@failing;
-    my $id = pending_harness_fix( $minion, $repo ) // $minion->enqueue( harness_fix => [ { repo => $repo, checks => \@failing, by => $self->viewer } ], { notes => { repo => $repo } } );
+    my $id = pending_job( $minion, 'harness_fix', $repo ) // $minion->enqueue( harness_fix => [ { repo => $repo, checks => \@failing, by => $self->viewer } ], { notes => { repo => $repo } } );
+    return $self->render( json => { queued => $id } );
+}
+
+=method packages_install
+
+Queues a L<App::Clod::Tasks/packages_install> for the C<repo> of the JSON
+body, with the packages that the last L<App::Clod::Tasks/self_check> found
+it missing.  Nothing else of the body is read, so the button installs what a
+spoke declares on its default branch, and no name that a request names.  A
+spoke that misses no package is a 404.  If one waits or runs for it already,
+it queues no second one, and says which.
+
+=cut
+
+sub packages_install ($self) {
+    my $minion  = $self->minion;
+    my $repo    = ( $self->req->json // {} )->{repo}                     // q{};
+    my $check   = App::Clod::Tasks::last_result( $minion, 'self_check' ) // {};
+    my @missing = @{ ( ( $check->{system_packages} // {} )->{$repo} // {} )->{missing} // [] };
+    return $self->render( json => { error => "$repo misses no system package" }, status => 404 ) if !@missing;
+    my $id = pending_job( $minion, 'packages_install', $repo ) // $minion->enqueue( packages_install => [ { repo => $repo, packages => \@missing } ], { notes => { repo => $repo } } );
     return $self->render( json => { queued => $id } );
 }
 
@@ -448,7 +470,7 @@ sub harness ($self) {
 =head1 DESCRIPTION
 
 The controller behind F</> and F</api>.  Everything it shows comes from Minion:
-the jobs of the items, and the results of the last C<harness_scan>,
+the jobs of the items, and the results of the last C<harness_scan>, C<self_check>,
 C<assigned_sweep>, C<activity_sweep> and C<inbox_poll>.
 
 =cut

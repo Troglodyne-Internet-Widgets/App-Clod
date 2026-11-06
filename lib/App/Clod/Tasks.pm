@@ -21,8 +21,11 @@ use App::Clod::Deps();
 use App::Clod::GitHub();
 use App::Clod::Harness();
 use App::Clod::Outage();
+use App::Clod::Packages();
 use App::Clod::Spoke();
 use App::Clod::Triage();
+
+use Dist::Conformance::Check::SystemPackages();
 
 # What each kind of notification asks the bot to do.
 our %KIND = (
@@ -54,6 +57,7 @@ our %TASKS = (
     self_update        => \&self_update,
     plugin_update      => \&plugin_update,
     deps_upgrade       => \&deps_upgrade,
+    packages_install   => \&packages_install,
 );
 
 # Each Minion schedule: its cron line and its task.
@@ -1944,6 +1948,15 @@ URL of the pull request of an earlier L</harness_fix> that is still open.
 C<checks> names every check of any spoke, sorted, for the columns of the page.  The clones of the standards are in
 F<conformance> of the workspace.
 
+With C<system_packages> in the configuration, C<system_packages> of the result
+has the declaration of each spoke, as
+L<Dist::Conformance::Check::SystemPackages/declared> reads it, and
+C<system_package_errors> the error of each spoke whose declaration is not
+valid.  The declaration comes from the default branch, as the checks do, and
+never from a branch that the bot pushed, so that what the bot installs is what
+a person merged.  It is read before the checks, so a spoke whose checks fail
+to run still has it.
+
 =cut
 
 sub harness_scan ( $job, $config ) {
@@ -1954,12 +1967,17 @@ sub harness_scan ( $job, $config ) {
     my %options = ( cache => "$config->{workspace}/conformance" );
     $options{source} = App::Clod::Harness::standards( $settings, %options );
 
-    my ( %repos, %errors, %checks );
+    my ( %repos, %errors, %checks, %packages, %package_errors );
     for my $repo ( @{ spokes( $job->minion, $config ) } ) {
         my $ok = eval {
             my $branch   = default_branch( $gh, $repo );
             my $snapshot = App::Clod::Harness::snapshot( $gh->tree( $repo, $branch ), sub ($path) { $gh->file( $repo, $path, $branch ) } );
-            my $result   = App::Clod::Harness::check( $snapshot, $settings, %options );
+            if ( $config->{system_packages} ) {
+                my $declared = eval { Dist::Conformance::Check::SystemPackages->declared($snapshot) };
+                if   ($declared) { $packages{$repo}       = $declared }
+                else             { $package_errors{$repo} = $@ =~ s{\s+\z}{}r }
+            }
+            my $result = App::Clod::Harness::check( $snapshot, $settings, %options );
             $checks{ $_->{check} } = 1 for @{ $result->{checks} };
             $repos{$repo} = { branch => $branch, %$result };
             if ( List::Util::any { $_->{status} eq 'fail' } @{ $result->{checks} } ) {
@@ -1975,7 +1993,8 @@ sub harness_scan ( $job, $config ) {
         $gh->file( $settings->{marketplace_repo}, '.claude-plugin/marketplace.json' ),
         $settings->{plugin},
     );
-    return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, marketplace => $marketplace, checks => [ sort keys %checks ] } );
+    my %declared = $config->{system_packages} ? ( system_packages => \%packages, system_package_errors => \%package_errors ) : ();
+    return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, marketplace => $marketplace, checks => [ sort keys %checks ], %declared } );
 }
 
 =func harness_fix
@@ -2072,6 +2091,8 @@ release, as C<outdated>.  With a C<local_lib>, C<deps>, the modules there
 that have a newer release, from L<App::Clod::Deps/outdated>.  A part that
 fails has its error in place of its result, as C<checkout> with C<error>,
 C<plugin_error>, C<deps_error> or C<agent_deps_error>.  With no checkout, there is no C<checkout>.
+With C<system_packages>, C<system_packages> from L</host_packages>, or
+C<system_packages_error>.
 
 =cut
 
@@ -2097,7 +2118,43 @@ sub self_check ( $job, $config ) {
             +{ missing => [ App::Clod::Deps::missing( $lib, @tools ), App::Clod::Deps::stale_programs($lib) ], outdated => App::Clod::Deps::outdated($lib) };
         } // do { $result{agent_deps_error} = ( split m{\n}, $@ )[0]; { missing => [], outdated => [] } };
     }
+    if ( $config->{system_packages} ) {
+        $result{system_packages} = eval { host_packages( $config, last_result( $job->minion, 'harness_scan' ) ) } // do { $result{system_packages_error} = ( split m{\n}, $@ )[0]; {} };
+    }
     return $job->finish( \%result );
+}
+
+=func host_packages
+
+C<($config, $scan)>, with C<$scan> the result of the last L</harness_scan>.
+What the host lacks of what each spoke declares there, for the C<packager> of
+C<system_packages>: a hash of each spoke that lacks something to C<missing>,
+the names of the packages that are not installed, and C<failing>, each a
+C<{program, error}> of a declared program that fails, as
+L<App::Clod::Packages/program_error> runs it.  The programs run only when no
+package is missing, because a program of a package that is not installed
+fails anyway.  It asks once about a package that two spokes declare.
+
+The scan reads the declarations, because it fetches each spoke anyway, and
+this check finds what the host has, because it is cheap, and runs again after
+L</packages_install>, as L</recheck> queues it.  So an install clears its item
+without a new scan of every spoke.
+
+=cut
+
+sub host_packages ( $config, $scan ) {
+    my $packager = $config->{system_packages}{packager};
+    my ( %lacks, %has );
+    my $declared = ( $scan // {} )->{system_packages} // {};
+    for my $repo ( sort keys %$declared ) {
+        my @missing = grep { !( $has{$_} //= App::Clod::Packages::installed( $packager, $_ ) ? 1 : 0 ) } @{ $declared->{$repo}{$packager} // [] };
+        my @failing = @missing ? () : map {
+            my $error = App::Clod::Packages::program_error($_);
+            defined $error ? { program => $_, error => $error } : ();
+        } @{ $declared->{$repo}{programs} // [] };
+        $lacks{$repo} = { missing => \@missing, failing => \@failing } if @missing || @failing;
+    }
+    return \%lacks;
 }
 
 =func self_update
@@ -2256,6 +2313,30 @@ sub plugin_update ( $job, $config ) {
     my @updated = map { $claude->cli( qw{plugin update}, $_->{id} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
     recheck($job);
     return $job->finish( { updated => \@updated } );
+}
+
+=func packages_install
+
+C<($job, $config, $args)>, where C<$args> has C<repo> and C<packages>, the
+names that the last L</self_check> found missing for that spoke, from the
+dashboard.  Runs the C<installer> of C<system_packages> with sudo, as
+L<App::Clod::Packages/install> does, and queues a L</recheck>, so that the
+item clears, or shows what still fails.  Its result has C<repo>,
+C<packages> and C<output>, what the installer printed.  When the installer
+fails, the job fails with that as C<error>.
+
+=cut
+
+sub packages_install ( $job, $config, $args ) {
+    my $how      = $config->{system_packages} // return $job->fail( { error => 'clod.conf has no system_packages' } );
+    my @packages = @{ $args->{packages} // [] };
+    return $job->fail( { error => 'there is no package to install' } ) if !@packages;
+    my %result = ( repo => $args->{repo}, packages => \@packages );
+    my $output = eval { App::Clod::Packages::install( $how->{installer}, @packages ) };
+    my $error  = $@;
+    recheck($job);
+    return $job->fail( { %result, error => $error } ) if !defined $output;
+    return $job->finish( { %result, output => $output } );
 }
 
 =func refresh_references

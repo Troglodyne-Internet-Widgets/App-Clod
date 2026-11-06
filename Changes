@@ -1,6 +1,16 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Install the system packages that the spokes declare.  A spoke names
+      them under x_system_packages in its metamerge.yml, with programs that
+      must run once they are installed.  With system_packages in clod.conf,
+      the harness scan reads the declaration from the default branch of each
+      spoke, the self check asks the packager of the host which of them it
+      lacks and runs the programs, and the dashboard shows each spoke that
+      needs packages, with an Install packages button.  The button queues
+      packages_install, which runs the installer of the configuration with
+      sudo and checks again when it is done.  A declaration that is not
+      valid is a finding of its spoke.  Needs Dist::Conformance 0.003.
     - Filter the action items of the dashboard by type.  Three buttons in
       the header, Failures, Warnings and Info, each switch one level on or
       off, and all are on by default.  A person could not hide the harness
