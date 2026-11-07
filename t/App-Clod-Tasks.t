@@ -99,7 +99,13 @@ $r->post('/repos/:o/:n/pulls')->to(
         $c->render( json => { number => $n, html_url => "https://test.test/" . $c->param('o') . q{/} . $c->param('n') . "/pull/$n" }, status => 201 );
     }
 );
-$r->get('/repos/:o/:n/contents/*file')->to( cb => sub ($c) { my $f = $state{files}{ $c->param('file') }; defined $f ? $c->render( text => $f ) : $c->render( json => {}, status => 404 ) } );
+$r->get('/repos/:o/:n/contents/*file')->to(
+    cb => sub ($c) {
+        push @{ $state{refs}{ $c->param('file') } }, $c->param('ref');
+        my $f = $state{files}{ $c->param('file') };
+        defined $f ? $c->render( text => $f ) : $c->render( json => {}, status => 404 );
+    }
+);
 $r->get('/repos/:o/:n/git/trees/*ref')->to(
     cb => sub ($c) {
         $c->render( json => { tree => [ map { { path => $_, sha => "sha-$_" } } sort keys %{ $state{files} // {} } ] } );
@@ -1308,6 +1314,151 @@ subtest harness_scan => sub {
 
     $state{files}{'.conformance.yml'} = "flavor: test-gone\nsource:\n  directory: " . $here->child( 'data', 'standards' ) . "\n";
     like( run_job('harness_scan')->{result}{errors}{'Test-Org/one'}, qr/test-gone/, 'and one whose flavor cannot be read is an error of the scan' );
+};
+
+subtest 'system packages' => sub {
+    %state = ();
+    my $config = $app->clod_config;
+    my $simple = "x_system_packages:\n  ffmpeg:\n    deb: ffmpeg\n    test: ffmpeg -version\n";
+    $state{files} = {
+        'CLAUDE.md'                       => 'perl-slop:reading-perl',
+        '.claude-plugin/plugin.json'      => '{"version":"0.11.0"}',
+        '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.11.0"}]}',
+        'metamerge.yml'                   => $simple,
+    };
+    ok( !exists run_job('harness_scan')->{result}{system_packages}, 'without system_packages in the configuration, the scan reads no declaration' );
+
+    $config->{system_packages} = { packager => 'deb', installer => '/bogus/clod-install-packages' };
+    delete $state{refs};
+    my $scan     = run_job('harness_scan')->{result};
+    my %declared = ( packages => { ffmpeg => { deb => 'ffmpeg', test => 'ffmpeg -version' } }, sources => {} );
+    is( $scan->{system_packages},      { map { $_ => \%declared } @SPOKES }, 'with it, the scan reads what each spoke declares' );
+    is( $state{refs}{'metamerge.yml'}, [ 'main', 'main' ],                   'from its default branch, and no branch that the bot pushed' );
+
+    $state{files}{'metamerge.yml'} = "x_system_packages:\n  ffmpeg:\n    deb: foo=1.2\n";
+    my $invalid = run_job('harness_scan');
+    is( $invalid->{state}, 'finished', 'a declaration that is not valid does not stop the scan' );
+    like( $invalid->{result}{system_package_errors}{'Test-Org/one'}, qr/\Ametamerge\.yml\ is\ not\ valid:\n\s+\S/, 'it is a finding of the spoke, with each error' );
+    is( [ sort keys %{ $invalid->{result}{repos} } ], \@SPOKES, 'and the spoke is still checked' );
+    ok( !exists $invalid->{result}{system_packages}{'Test-Org/one'}, 'with no declaration' );
+
+    $state{files}{'metamerge.yml'} = <<~'YAML';
+        x_system_packages:
+          libmagic:
+            deb:
+              name: libmagic-dev
+              ubuntu/24.04: libmagic-t64
+          ffmpeg:
+            deb:
+              name: ffmpeg
+              source: jellyfin
+            test: ffmpeg -version
+          FooLib:
+            deb:
+              ubuntu/24.04: libfoo-dev
+              debian/12: ~
+        x_system_sources:
+          deb:
+            - name: jellyfin
+              uri: https://repo.test.test/ubuntu
+              suites: ['{codename}']
+              components: [main]
+              key: https://repo.test.test/key.gpg
+              fingerprint: 0123456789ABCDEF0123456789ABCDEF01234567
+              distros: [ubuntu/24.04]
+        YAML
+    run_job('harness_scan');
+
+    my $os_release = $tmp->child('os-release');
+    my $apt        = $tmp->child('sources.list.d')->make_path;
+    local $App::Clod::Packages::OS_RELEASE  = "$os_release";
+    local $App::Clod::Packages::APT_SOURCES = "$apt";
+    my %jellyfin = ( name => 'jellyfin', uri => 'https://repo.test.test/ubuntu', suites => ['noble'], components => ['main'], key => 'https://repo.test.test/key.gpg', fingerprint => '0123456789ABCDEF0123456789ABCDEF01234567' );
+
+    my $self = Test::MockModule->new('App::Clod');
+    $self->redefine( checkout => sub { return } );
+    my $claude = Test::MockModule->new('App::Clod::Claude');
+    $claude->redefine( plugins => sub ($) { [] } );
+    my ( %have, %error, @asked, @ran, @installed );
+    my $packages = Test::MockModule->new('App::Clod::Packages');
+    $packages->redefine( installed     => sub ( $packager, $name ) { push @asked, "$packager $name";          return $have{$name} } );
+    $packages->redefine( program_error => sub ( $claude,   $line ) { push @ran,   [ $claude->run_as, $line ]; return $error{$line} } );
+    %have = ( 'libfoo-dev' => 1 );
+    $os_release->spew(qq{ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n});
+    my $check = run_job('self_check')->{result};
+    my %noble = (
+        needs      => [ { name => 'ffmpeg', package => 'ffmpeg', archive => \%jellyfin }, { name => 'libmagic', package => 'libmagic-t64', archive => undef } ],
+        missing    => [qw{ffmpeg libmagic-t64}],
+        sources    => [ \%jellyfin ],
+        unresolved => [],
+        failing    => [],
+    );
+    is( $check->{system_packages}, { map { $_ => \%noble } @SPOKES },                               'the check finds each dependency whose package the host lacks, by its name on this release, and the archive that it adds, for this codename' );
+    is( $check->{system_host},     { distro => 'ubuntu', release => '24.04', codename => 'noble' }, 'for the distribution of the host' );
+    is( [ \@asked, \@ran ],        [ [ 'deb libfoo-dev', 'deb ffmpeg', 'deb libmagic-t64' ], [] ],  'it asks dpkg once about each package, and runs no test while a package is missing' );
+
+    $os_release->spew(qq{ID=debian\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\n});
+    is(
+        run_job('self_check')->{result}{system_packages}{'Test-Org/one'},
+        { needs => [ { name => 'libmagic', package => 'libmagic-dev', archive => undef } ], missing => ['libmagic-dev'], sources => [], unresolved => ['ffmpeg'], failing => [] },
+        'on another distribution, a package has its other name, a dependency that needs no package there needs nothing, and one whose archive is not for it is unresolved'
+    );
+    $os_release->spew(qq{ID=ubuntu\nVERSION_ID="24.04"\n});
+    like( run_job('self_check')->{result}{system_packages}{'Test-Org/one'}, { missing => [], error => qr/needs\ the\ codename/ }, 'a declaration that does not resolve on this host is an error of its spoke' );
+    $os_release->spew(qq{ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n});
+    $apt->child('jellyfin.sources')->spew("Types: deb\n");
+    my $known = run_job('self_check')->{result}{system_packages}{'Test-Org/one'};
+    is( [ $known->{sources}, $known->{needs}[0]{archive} ], [ [], undef ], 'and an archive that apt has already is not added again' );
+    $apt->child('jellyfin.sources')->remove;
+
+    %have                     = ( ffmpeg            => 1, 'libmagic-t64' => 1, 'libfoo-dev' => 1 );
+    %error                    = ( 'ffmpeg -version' => 'ffmpeg: error while loading shared libraries' );
+    @ran                      = ();
+    $config->{claude}{run_as} = 'test-agent';
+    $check                    = run_job('self_check')->{result};
+    is( $check->{system_packages}{'Test-Org/one'}{failing}, [ { program => 'ffmpeg -version', dependency => 'ffmpeg', error => 'ffmpeg: error while loading shared libraries' } ], 'with every package there, a test that fails is a finding of its dependency' );
+    is( \@ran,                                              [ ( [ 'test-agent', 'ffmpeg -version' ] ) x 2 ],                                                                       'which it runs for each spoke, as the account that claude runs as' );
+    $config->{claude}{run_as} = undef;
+
+    $packages->redefine( program_error => sub ( $claude, $line ) { return } );
+    is( run_job('self_check')->{result}{system_packages}, {}, 'and a host with everything finds nothing' );
+    $packages->redefine( installed => sub (@) { die "dpkg-query: not found\n" } );
+    like( run_job('self_check')->{result}, { system_packages => {}, system_packages_error => 'dpkg-query: not found' }, 'a check that cannot ask says why' );
+
+    $minion->reset( { all => 1 } );
+    my $output = "Setting up libmagic-dev\n";
+    my @lines;
+    $packages->redefine(
+        install => sub ( $installer, $file, @names ) {
+            push @installed, [ $installer, $file, @names ];
+            @lines = defined $file ? map { Mojo::JSON::decode_json($_) } split m{\n}, Mojo::File->new($file)->slurp : ();
+            return $output;
+        }
+    );
+    my $install = run_job( packages_install => { repo => 'Test-Org/one', packages => ['libmagic-dev'] } );
+    is( \@installed,                                                                 [ [ '/bogus/clod-install-packages', undef, 'libmagic-dev' ] ],                                              'an install runs the installer with the names of the job, and no other, and no file of sources when it adds none' );
+    is( [ $install->@{qw{state result}} ],                                           [ 'finished', { repo => 'Test-Org/one', packages => ['libmagic-dev'], sources => [], output => $output } ], 'and records what it printed' );
+    is( $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } )->total, 1,                                                                                                          'and queues a check, so that the item clears' );
+
+    @installed = ();
+    my $with = run_job( packages_install => { repo => 'Test-Org/one', packages => ['jellyfin-ffmpeg'], sources => [ \%jellyfin ] } );
+    my $file = $tmp->child( 'workspace', 'work', $with->{id}, 'sources.jsonl' );
+    is( \@installed,              [ [ '/bogus/clod-install-packages', "$file", 'jellyfin-ffmpeg' ] ], 'with sources, the installer gets a file of them in the directory of the job' );
+    is( \@lines,                  [ \%jellyfin ],                                                     'one JSON object on each line' );
+    is( $with->{result}{sources}, ['jellyfin'],                                                       'the job names the archives that it added' );
+    ok( !-e $file->dirname, 'and the directory is gone afterwards' );
+
+    $minion->reset( { all => 1 } );
+    $packages->redefine( install => sub ( $installer, $file, @names ) { die "sudo -n /bogus/clod-install-packages libmagic-dev: E: Unable to locate package\n" } );
+    my $failed = run_job( packages_install => { repo => 'Test-Org/one', packages => ['libmagic-dev'] } );
+    is( $failed->{state}, 'failed', 'an installer that fails fails the job' );
+    like( $failed->{result}{error}, qr/Unable\ to\ locate\ package/, 'with what it printed' );
+    is( $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } )->total,        1,        'and still queues a check, for what it installed before it failed' );
+    is( run_job( packages_install => { repo => 'Test-Org/one', packages => [] } )->{state}, 'failed', 'and a job with no package runs no installer' );
+
+    delete $config->{system_packages};
+    is( run_job( packages_install => { repo => 'Test-Org/one', packages => ['libmagic-dev'] } )->{result}{error}, 'clod.conf has no system_packages', 'without the configuration, an install fails, and says why' );
+    $minion->reset( { all => 1 } );
 };
 
 subtest assigned_sweep => sub {

@@ -146,17 +146,50 @@ sub upgrade ($lib) {
 
 =func run
 
-C<(\%how, @cmd)>.  Runs C<@cmd>, in the directory C<dir> of C<%how> if it has
-one, and returns what it printed.  Dies with what it printed on its standard
-error if it fails.
+C<(\%how, @cmd)>.  Runs C<@cmd>, and returns what it printed.  Dies with what
+it printed on its standard error if it fails.  C<%how> can have:
+
+=over
+
+=item dir
+
+The directory to run it in.
+
+=item env
+
+The whole environment of the command, a hash reference, in place of the one
+of this process.
+
+=item timeout
+
+Seconds.  A command that runs longer is killed, and fails.
+
+=item merge
+
+True to take its standard error into what it printed, so the result, and the
+error it dies with, have both, in the order that it printed them.
+
+=back
 
 =cut
 
 sub run ( $how, @cmd ) {
     my ( $out, $err ) = ( q{}, q{} );
-    my @init = $how->{dir} ? ( init => sub { chdir $how->{dir} or die "chdir $how->{dir}: $!\n" } ) : ();
-    my $ok   = eval { IPC::Run::run( \@cmd, @init, '<', \undef, '>', \$out, '2>', \$err ) };
-    die "@cmd: " . ( $err ne q{} ? $err : $@ || 'failed' ) . "\n" if !$ok;
+    my @init = ( $how->{dir} || $how->{env} )
+      ? (
+        init => sub {
+            if ( $how->{dir} ) { chdir $how->{dir} or die "chdir $how->{dir}: $!\n" }
+
+            # init runs in the child before the exec, where a local would be undone first.
+            %ENV = %{ $how->{env} } if $how->{env};    ## no critic (Variables::RequireLocalizedPunctuationVars)
+        }
+      )
+      : ();
+    my @out  = $how->{merge}   ? ( '>&', \$out )                          : ( '>', \$out, '2>', \$err );
+    my @time = $how->{timeout} ? ( IPC::Run::timeout( $how->{timeout} ) ) : ();
+    my $ok   = eval { IPC::Run::run( \@cmd, @init, '<', \undef, @out, @time ) };
+    my $said = $how->{merge} ? $out : $err;
+    die "@cmd: " . ( $said ne q{} ? $said : $@ || 'failed' ) . "\n" if !$ok;
     return $out;
 }
 

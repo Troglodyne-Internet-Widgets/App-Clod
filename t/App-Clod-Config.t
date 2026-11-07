@@ -64,6 +64,13 @@ subtest validate => sub {
     refused( { %minimal, claude => { extra_tools => [ [] ] } }, '/claude/extra_tools/0: Expected string', 'and so do extra tools that are not text' );
     like( dies { App::Clod::Config::validate( [] ) }, qr/must\ be\ a\ hash/, 'a configuration that is not a hash dies' );
 
+    is( $config->{system_packages}, undef, 'no system packages by default, so the feature is off' );
+    my %packages = ( packager => 'deb', installer => '/usr/local/sbin/clod-install-packages' );
+    is( App::Clod::Config::validate( { %minimal, system_packages => \%packages } )->{system_packages}, \%packages, 'a packager and an installer live' );
+    refused( { %minimal, system_packages => { %packages, packager  => 'rpm' } },        '/system_packages/packager: Not in enum list',       'a packager that the bot cannot ask about dies' );
+    refused( { %minimal, system_packages => { %packages, installer => 'install-it' } }, '/system_packages/installer: String does not match', 'and so does an installer that is not an absolute path, which sudo finds on no PATH' );
+    refused( { %minimal, system_packages => { packager => 'deb' } }, '/system_packages/installer: Missing property.', 'and a packager without an installer' );
+
     for my $key (qw{bot workspace auth}) {
         my %without = %minimal;
         delete $without{$key};

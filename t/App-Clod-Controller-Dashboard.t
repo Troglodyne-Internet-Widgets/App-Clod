@@ -25,7 +25,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -190,6 +190,67 @@ subtest 'an update of the bot' => sub {
     like( $rechecked, { job => $check, text => qr/A\ new\ check\ is\ queued\.\z/ }, 'after the action, the item names the check that it queued' );
     ok( !$rechecked->{buttons}, 'and has no button, because the check will say whether the action worked' );
     $minion->job($check)->remove;
+};
+
+subtest 'system packages' => sub {
+    my %act = ( 'X-Clod-Action' => 'yes' );
+    job( harness_scan => { checked_at => time, repos => {}, checks => [ 'CLAUDE.md', 'git hooks' ], system_packages => {}, system_package_errors => { 'Test-Org/two' => "metamerge.yml is not valid:\n  /x_system_packages/deb/0: String does not match" } } );
+    my %jellyfin = ( name => 'jellyfin', uri => 'https://repo.test.test/ubuntu', suites => ['noble'], components => ['main'], key => 'https://repo.test.test/key.gpg', fingerprint => '0123456789ABCDEF0123456789ABCDEF01234567' );
+    my %lacks    = (
+        'Test-Org/one' => {
+            needs      => [ { name => 'libxml2', package => 'libxml2-dev', archive => undef }, { name => 'ffmpeg', package => 'ffmpeg', archive => \%jellyfin } ],
+            missing    => [qw{libxml2-dev ffmpeg}],
+            sources    => [ \%jellyfin ],
+            unresolved => ['FooLib'],
+            failing    => [],
+        },
+        'Test-Org/three' => { needs => [], missing => [], sources => [], unresolved => [], failing => [], error => 'The source jellyfin needs the codename of the host, for the suite {codename}' },
+        'Test-Org/two'   => { needs => [], missing => [], sources => [], unresolved => [], failing => [ { program => 'ffmpeg -version', dependency => 'ffmpeg', error => 'ffmpeg: not found' } ] },
+    );
+    $t->app->clod_config->{system_packages} = { packager => 'deb', installer => '/bogus/clod-install-packages' };
+    job( self_check => { checked_at => time, plugins => [], system_host => { distro => 'ubuntu', release => '24.04', codename => 'noble' }, system_packages => \%lacks } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    my $unreadable = qr/\AHarness\ scan\ of\ Test-Org\/two\ cannot\ read\ .+:\ /;
+    like( action_about(qr/system\ packages\ that\ it\ needs/), { level => 'danger', text => qr/${unreadable}metamerge\.yml\ is\ not\ valid:/ }, 'a declaration that is not valid is a finding of its spoke, as a scan that failed is' );
+    my $needs = action_about(qr/libxml2\ \(/);
+    is(
+        $needs,
+        { level => 'warning', text => "Test-Org/one needs libxml2 (libxml2-dev) and ffmpeg (ffmpeg, from the archive jellyfin, key 0123\N{HORIZONTAL ELLIPSIS}4567).", buttons => [ { label => 'Install packages', act => 'packages/install', body => { repo => 'Test-Org/one' } } ] },
+        'packages that the host lacks are an item of their spoke, which names each dependency with its package, and the archive that an install adds, with its key, and a button that installs them'
+    );
+    is( action_about(qr/declares\ no/),    { level => 'danger',  text => 'Test-Org/one needs FooLib, and declares no deb package for it on ubuntu 24.04.' },                                                           'a dependency with no package for this host is an item of its own, with no button, beside the button for the rest' );
+    is( action_about(qr/Test-Org\/three/), { level => 'warning', text => 'The bot cannot tell what Test-Org/three needs on this host: The source jellyfin needs the codename of the host, for the suite {codename}' }, 'and a declaration that does not resolve on this host says why, with no button' );
+    is( action_about(qr/fails,\ and/),     { level => 'warning', text => 'ffmpeg -version fails, and Test-Org/two needs it for ffmpeg: ffmpeg: not found' },                                                           'and a program that fails with every package there is an item with no button' );
+
+    $t->post_ok( '/act/packages/install' => json => { repo => 'Test-Org/one' } )->status_is( 403, 'an install without the header is refused' );
+    $t->post_ok( '/act/packages/install' => \%act => json => { repo => 'Test-Org/one', packages => ['bogus-package'], sources => [ { name => 'bogus' } ] } )->status_is(200);
+    my $res  = $t->tx->res;
+    my $id   = $res->json->{queued};
+    my $info = $minion->job($id)->info;
+    is( [ $info->@{qw{task args}} ], [ 'packages_install', [ { repo => 'Test-Org/one', packages => [qw{libxml2-dev ffmpeg}], sources => [ \%jellyfin ] } ] ], 'Install packages queues an install of the names and the archives that the check found, and none that the request names' );
+    $t->post_ok( '/act/packages/install' => \%act => json => { repo => 'Test-Org/one' } )->status_is(200)->json_is( '/queued' => $id, 'and a second press queues no second one' );
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/libxml2\ \(/), { job => $id, text => qr/It\ is\ queued\.\z/ }, 'while it waits, the item names it' );
+    ok( !action_about(qr/libxml2\ \(/)->{buttons}, 'and has no button' );
+    $t->post_ok( '/act/packages/install' => \%act => json => { repo => 'Test-Org/two' } )->status_is( 404, 'a spoke that misses no package has nothing to install' );
+    $minion->perform_jobs;
+
+    my $check = $minion->enqueue( self_check => [] => { delay => 60 } );
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/libxml2\ \(/), { job => $check, text => qr/A\ new\ check\ is\ queued\.\z/ }, 'after the install, the item names the check that it queued' );
+    $minion->job($check)->remove;
+    job( self_check => { checked_at => time, plugins => [], system_packages => {} } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/libxml2\ \(|fails,\ and/), 'and once the check finds everything, there is no item' );
+
+    job( self_check => { checked_at => time, plugins => [], system_packages => {}, system_packages_error => 'dpkg-query: Command not found' } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    is( action_about(qr/system\ packages\ of\ the\ spokes/), { level => 'warning', text => 'The bot cannot tell whether it has the system packages of the spokes: dpkg-query: Command not found' }, 'a check that cannot ask dpkg says so, with no button' );
+    ok( !action_about(qr/libxml2\ \(/), 'and lists no package as missing' );
+    delete $t->app->clod_config->{system_packages};
 };
 
 subtest work => sub {

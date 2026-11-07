@@ -21,8 +21,11 @@ use App::Clod::Deps();
 use App::Clod::GitHub();
 use App::Clod::Harness();
 use App::Clod::Outage();
+use App::Clod::Packages();
 use App::Clod::Spoke();
 use App::Clod::Triage();
+
+use Dist::Conformance::Check::SystemPackages();
 
 # What each kind of notification asks the bot to do.
 our %KIND = (
@@ -54,6 +57,7 @@ our %TASKS = (
     self_update        => \&self_update,
     plugin_update      => \&plugin_update,
     deps_upgrade       => \&deps_upgrade,
+    packages_install   => \&packages_install,
 );
 
 # Each Minion schedule: its cron line and its task.
@@ -1944,6 +1948,15 @@ URL of the pull request of an earlier L</harness_fix> that is still open.
 C<checks> names every check of any spoke, sorted, for the columns of the page.  The clones of the standards are in
 F<conformance> of the workspace.
 
+With C<system_packages> in the configuration, C<system_packages> of the result
+has the declaration of each spoke, as
+L<Dist::Conformance::Check::SystemPackages/declared> reads it, and
+C<system_package_errors> the error of each spoke whose declaration is not
+valid.  The declaration comes from the default branch, as the checks do, and
+never from a branch that the bot pushed, so that what the bot installs is what
+a person merged.  It is read before the checks, so a spoke whose checks fail
+to run still has it.
+
 =cut
 
 sub harness_scan ( $job, $config ) {
@@ -1954,12 +1967,17 @@ sub harness_scan ( $job, $config ) {
     my %options = ( cache => "$config->{workspace}/conformance" );
     $options{source} = App::Clod::Harness::standards( $settings, %options );
 
-    my ( %repos, %errors, %checks );
+    my ( %repos, %errors, %checks, %packages, %package_errors );
     for my $repo ( @{ spokes( $job->minion, $config ) } ) {
         my $ok = eval {
             my $branch   = default_branch( $gh, $repo );
             my $snapshot = App::Clod::Harness::snapshot( $gh->tree( $repo, $branch ), sub ($path) { $gh->file( $repo, $path, $branch ) } );
-            my $result   = App::Clod::Harness::check( $snapshot, $settings, %options );
+            if ( $config->{system_packages} ) {
+                my $declared = eval { Dist::Conformance::Check::SystemPackages->declared($snapshot) };
+                if   ($declared) { $packages{$repo}       = $declared }
+                else             { $package_errors{$repo} = $@ =~ s{\s+\z}{}r }
+            }
+            my $result = App::Clod::Harness::check( $snapshot, $settings, %options );
             $checks{ $_->{check} } = 1 for @{ $result->{checks} };
             $repos{$repo} = { branch => $branch, %$result };
             if ( List::Util::any { $_->{status} eq 'fail' } @{ $result->{checks} } ) {
@@ -1975,7 +1993,8 @@ sub harness_scan ( $job, $config ) {
         $gh->file( $settings->{marketplace_repo}, '.claude-plugin/marketplace.json' ),
         $settings->{plugin},
     );
-    return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, marketplace => $marketplace, checks => [ sort keys %checks ] } );
+    my %declared = $config->{system_packages} ? ( system_packages => \%packages, system_package_errors => \%package_errors ) : ();
+    return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, marketplace => $marketplace, checks => [ sort keys %checks ], %declared } );
 }
 
 =func harness_fix
@@ -2072,6 +2091,9 @@ release, as C<outdated>.  With a C<local_lib>, C<deps>, the modules there
 that have a newer release, from L<App::Clod::Deps/outdated>.  A part that
 fails has its error in place of its result, as C<checkout> with C<error>,
 C<plugin_error>, C<deps_error> or C<agent_deps_error>.  With no checkout, there is no C<checkout>.
+With C<system_packages>, C<system_packages> from L</host_packages>, and
+C<system_host>, the distribution of the host that it resolved for, from
+L<App::Clod::Packages/os_release>, or C<system_packages_error>.
 
 =cut
 
@@ -2097,7 +2119,102 @@ sub self_check ( $job, $config ) {
             +{ missing => [ App::Clod::Deps::missing( $lib, @tools ), App::Clod::Deps::stale_programs($lib) ], outdated => App::Clod::Deps::outdated($lib) };
         } // do { $result{agent_deps_error} = ( split m{\n}, $@ )[0]; { missing => [], outdated => [] } };
     }
+    if ( $config->{system_packages} ) {
+        $result{system_packages} = eval {
+            my %host = App::Clod::Packages::os_release();
+            $result{system_host} = \%host;
+            host_packages( $config, last_result( $job->minion, 'harness_scan' ), %host );
+        } // do { $result{system_packages_error} = ( split m{\n}, $@ )[0]; {} };
+    }
     return $job->finish( \%result );
+}
+
+=func host_packages
+
+C<($config, $scan, %host)>, with C<$scan> the result of the last L</harness_scan>.
+What the host lacks of what each spoke declares there, resolved for the
+C<packager> of C<system_packages> and C<%host>, the distribution of the host
+from L<App::Clod::Packages/os_release>, as
+L<Dist::Conformance::Check::SystemPackages/resolve> resolves it.  A hash of
+each spoke that lacks something to:
+
+=over
+
+=item needs
+
+Each dependency whose package is not installed, a C<{name, package}>, and
+C<archive>, the source that the package comes from, when the host does not
+have it yet, as L<App::Clod::Packages/has_source> asks.
+
+=item missing
+
+The packages of C<needs>, which an install installs.
+
+=item sources
+
+The archives of C<needs>, once each, which an install adds.
+
+=item unresolved
+
+The names of the dependencies that the spoke declares no package for on this
+host.
+
+=item failing
+
+Each a C<{program, dependency, error}>: the test of a dependency that fails,
+as L<App::Clod::Packages/program_error> runs it, as the account of
+L</claude>.  The tests run only when no package of the spoke is missing,
+because a test of a package that is not installed fails anyway.
+
+=back
+
+It asks once about a package that two spokes declare.  A spoke whose
+declaration does not resolve for this host has only C<error>, why, and does not
+stop the others.
+
+The scan reads the declarations, because it fetches each spoke anyway, and
+this check finds what the host has, because it is cheap, and runs again after
+L</packages_install>, as L</recheck> queues it.  So an install clears its item
+without a new scan of every spoke.
+
+=cut
+
+sub host_packages ( $config, $scan, %host ) {
+    my $packager = $config->{system_packages}{packager};
+    my $claude   = claude($config);
+    my ( %lacks, %has );
+    my $declared = ( $scan // {} )->{system_packages} // {};
+    for my $repo ( sort keys %$declared ) {
+        my $resolved = eval { Dist::Conformance::Check::SystemPackages->resolve( $declared->{$repo}, packager => $packager, %host ) };
+        if ( !$resolved ) {
+            $lacks{$repo} = { needs => [], missing => [], sources => [], unresolved => [], failing => [], error => $@ =~ s{\s+\z}{}r };
+            next;
+        }
+        my %source = map { $_->{name} => $_ } grep { !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} };
+        my @needs  = map {
+            my $archive = defined $_->{source} ? $source{ $_->{source} } : undef;
+            +{ name => $_->{name}, package => $_->{package}, archive => $archive };
+        } grep { defined $_->{package} && !( $has{ $_->{package} } //= App::Clod::Packages::installed( $packager, $_->{package} ) ? 1 : 0 ) } @{ $resolved->{needs} };
+        my @failing = @needs ? () : map {
+            my $error = App::Clod::Packages::program_error( $claude, $_->{test} );
+            defined $error ? { program => $_->{test}, dependency => $_->{name}, error => $error } : ();
+        } grep { defined $_->{test} } @{ $resolved->{needs} };
+        my @unresolved = @{ $resolved->{unresolved} };
+        next if !@needs && !@failing && !@unresolved;
+        $lacks{$repo} = {
+            needs   => \@needs,
+            missing => [ List::Util::uniq( map { $_->{package} } @needs ) ],
+            sources => [
+                do {
+                    my %seen;
+                    grep { defined && !$seen{ $_->{name} }++ } map { $_->{archive} } @needs;
+                }
+            ],
+            unresolved => \@unresolved,
+            failing    => \@failing,
+        };
+    }
+    return \%lacks;
 }
 
 =func self_update
@@ -2256,6 +2373,40 @@ sub plugin_update ( $job, $config ) {
     my @updated = map { $claude->cli( qw{plugin update}, $_->{id} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
     recheck($job);
     return $job->finish( { updated => \@updated } );
+}
+
+=func packages_install
+
+C<($job, $config, $args)>, where C<$args> has C<repo>, C<packages>, the
+names that the last L</self_check> found missing for that spoke, and
+C<sources>, the archives that it found missing for them, from the dashboard.
+Runs the C<installer> of C<system_packages> with sudo, as
+L<App::Clod::Packages/install> does.  With sources, it writes them, one JSON
+object on each line, to F<sources.jsonl> in the directory of the job under
+F<work> of the workspace, passes that file, and removes the directory
+afterwards.  It queues a L</recheck>, so that the
+item clears, or shows what still fails.  Its result has C<repo>,
+C<packages>, C<sources>, the names of the archives, and C<output>, what the installer printed.  When the installer
+fails, the job fails with that as C<error>.
+
+=cut
+
+sub packages_install ( $job, $config, $args ) {
+    my $how      = $config->{system_packages} // return $job->fail( { error => 'clod.conf has no system_packages' } );
+    my @packages = @{ $args->{packages} // [] };
+    return $job->fail( { error => 'there is no package to install' } ) if !@packages;
+    my @sources = @{ $args->{sources} // [] };
+    my %result  = ( repo => $args->{repo}, packages => \@packages, sources => [ map { $_->{name} } @sources ] );
+    my $dir     = Mojo::File->new( $config->{workspace}, 'work', $job->id );
+    my $output  = eval {
+        my $file = @sources ? $dir->make_path->child('sources.jsonl')->spew( join q{}, map { Mojo::JSON::encode_json($_) . "\n" } @sources ) : undef;
+        App::Clod::Packages::install( $how->{installer}, $file ? "$file" : undef, @packages );
+    };
+    my $error = $@;
+    $dir->remove_tree;
+    recheck($job);
+    return $job->fail( { %result, error => $error } ) if !defined $output;
+    return $job->finish( { %result, output => $output } );
 }
 
 =func refresh_references
