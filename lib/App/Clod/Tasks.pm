@@ -1681,7 +1681,11 @@ the spoke again.
 If the branch declares system packages that the host lacks, as
 L</branch_packages> finds them, the job makes the pull request a draft, says
 in its comment what is missing, and its result has what
-L</waits_for_packages> gives, as L</spoke_fix> does.
+L</waits_for_packages> gives, as L</spoke_fix> does.  It does so also when
+the run made no commit because claude refused some of its calls, as
+L</address_run> says.  Then the job posts no reply and no comment of the run,
+because they can say that a change was made.  Its comment says only what the
+host lacks, and its result has C<denied>, the refused calls.
 
 With C<resume> in its arguments, L</packages_install> queued the job after it
 installed those packages.  Then the job runs even when nothing waits for an
@@ -1722,16 +1726,17 @@ sub spoke_address ( $job, $config, $args ) {
             my $answer = $work->{answer};
             my %open   = map { $_->{id} => 1 } @$pending;
             my @replied;
-            for my $reply ( grep { $open{ $_->{id} } } @{ $answer->{replies} } ) {
+            my $refused = $work->{denied};
+            for my $reply ( $refused ? () : grep { $open{ $_->{id} } } @{ $answer->{replies} } ) {
                 $gh->reply_review_comment( $repo, $item->{number}, $reply->@{qw(id body)} );
                 push @replied, $reply->{id};
             }
-            my $lacks = branch_packages( $job, $config, $tree );
+            my $lacks = $work->{lacks} // branch_packages( $job, $config, $tree );
             draft_state( $job, $gh, $pull, $lacks ? 1 : 0 ) if $lacks || $args->{resume};
-            my $said     = @$comments ? $answer->{comment} : $args->{resume} ? $answer->{summary} : undef;
+            my $said     = $refused ? undef : @$comments ? $answer->{comment} : $args->{resume} ? $answer->{summary} : undef;
             my @said     = grep { ( $_ // q{} ) ne q{} } $said, $lacks ? packages_note($lacks) : undef;
             my $answered = @said ? $gh->comment( $repo, $item->{number}, join "\n\n", @said )->{html_url} : undef;
-            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $work->{commits}, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{usage} } } );
+            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $work->{commits}, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, ( $lacks ? waits_for_packages($lacks) : () ), ( $refused ? ( denied => $refused ) : () ), %{ $work->{usage} } } );
         }
     );
 }
@@ -1760,10 +1765,16 @@ sub draft_state ( $job, $gh, $pull, $draft ) {
 
 C<($job, $config, $gh, $args, $spoke, $tree, $tools, %address)>.  The claude
 run of L</spoke_address>, in C<$tree>, where C<%address> has C<pull>,
-C<pending> and C<comments>.  If the run failed, or committed nothing because
-claude refused some of its calls, it fails the job and returns undef.
-Otherwise it returns the work for L</push_or_keep>, with C<onto>, the head of
-the pull request that the run started from.
+C<pending> and C<comments>.  If the run failed, it fails the job and returns
+undef.  Otherwise it returns the work for L</push_or_keep>, with C<onto>, the
+head of the pull request that the run started from.
+
+A run can commit nothing because claude refused some of its calls.  Then it
+asks L</branch_packages> what the host lacks.  A missing package can be the
+cause, because a program that the host does not have gets no rule.  If the
+host lacks a package, the work also has C<lacks>, as L</branch_packages>
+gives it, and C<denied>, the refused calls, and the job notes both.  If the
+host lacks nothing, it fails the job, as L</refused> says, and returns undef.
 
 =cut
 
@@ -1806,12 +1817,19 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
     }
     my $commits = $spoke->commits_since( $tree, "origin/$branch" );
 
+    my %work = ( answer => $answer, commits => $commits, usage => \%usage, onto => $pull->{head}{sha} );
+
     # Before the replies, which can say that a change was made.
     if ( !$commits && @{ $outcome->{denied} // [] } ) {
-        $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } );
-        return;
+        my $lacks = branch_packages( $job, $config, $tree );
+        if ( !$lacks ) {
+            $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } );
+            return;
+        }
+        log_note( $job, 'waits for ' . join( q{ }, @{ $lacks->{missing} } ) . ", which the branch declares and the host lacks.\n" . refused($outcome) );
+        return { %work, lacks => $lacks, denied => $outcome->{denied} };
     }
-    return { answer => $answer, commits => $commits, usage => \%usage, onto => $pull->{head}{sha} };
+    return \%work;
 }
 
 =func refused

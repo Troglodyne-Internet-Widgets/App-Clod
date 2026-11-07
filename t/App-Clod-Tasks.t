@@ -1565,6 +1565,31 @@ subtest 'a branch that needs system packages' => sub {
     like( $address->{notes}{log},            bag { item { message => qr/$undrafted\ is\ a\ draft:\ $refusal/ }; etc }, 'and a GraphQL error is a note, which does not fail the job' );
     like( calls_of('comment')->[0][2]{body}, qr/is\ a\ draft,\ because .* ffmpeg/s,                                    'and its comment says what the host lacks' );
 
+    # The branch declares ffmpeg now.  A run that needs it cannot run it, and so commits nothing.
+    @calls = ();
+    delete $state{refuse_graphql};
+    $state{pull}            = { %{ $state{pull} }, draft => Mojo::JSON::false, head => { %{ $state{pull}{head} }, sha => git( '--git-dir', $bare, 'rev-parse', $fix->{result}{branch} ) } };
+    $state{review_comments} = [ { id => 52, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'test it with ffmpeg' } ];
+    my @refused = ( denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'ffmpeg -version' } } ] );
+    answer( { summary => 'Tested it.', replies => [ { id => 52, body => 'Done.' } ], comment => 'Tested it.' }, @refused );
+    my $blocked = run_job( spoke_address => { item => { %item, kind => 'address_review', is_pr => 1, number => 101 }, repo => 'Test-Org/one' } );
+    is( $blocked->{state}, 'finished', 'a run that commits nothing, because claude refused a program of a package that the host lacks, does not fail' ) or diag Mojo::Util::dumper $blocked->{result};
+    like( $blocked->{result},                 { needs_packages => 1, packages => ['ffmpeg'], pr => 101, pr_url => qr{/pull/101\z}, denied => ['Bash(ffmpeg -version)'] }, 'it says what the host lacks, so that a person can install it and resume, and which calls claude refused' );
+    like( calls_of('graphql')->[0][2]{query}, qr/convertPullRequestToDraft/,                                                                                              'and makes the pull request a draft' );
+    is( calls_of('reply'),                                  [],                                                                     'and replies to nobody, because a reply can say that a change was made' );
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], [ match qr/\AThis\ pull\ request\ is\ a\ draft,\ because .* ffmpeg/s ], 'and its comment says what the host lacks, and nothing that the run said' );
+    my $waits = qr/\Awaits\ for\ ffmpeg .* made\ no\ commit/s;
+    like( $blocked->{notes}{log}, bag { item { message => qr/$waits .* Bash\(ffmpeg\ -version\)/s }; etc }, 'and the job notes the refused calls' );
+
+    $have{ffmpeg} = 1;
+    @calls = ();
+    answer( { summary => 'Tested it.', replies => [ { id => 52, body => 'Done.' } ] }, @refused );
+    my $lacks_nothing = run_job( spoke_address => { item => { %item, kind => 'address_review', is_pr => 1, number => 101 }, repo => 'Test-Org/one' } );
+    is( $lacks_nothing->{state}, 'failed', 'with nothing missing, a run that commits nothing because claude refused a call still fails' );
+    like( $lacks_nothing->{result}{error}, qr/made\ no\ commit .* Bash\(ffmpeg\ -version\)/s, 'and names the refused call' );
+    is( [ calls_of('reply'), calls_of('comment') ], [ [], [] ], 'and says nothing on the pull request' );
+    delete $have{ffmpeg};
+
     my $tree = $tmp->child('declares-tests')->make_path;
     $tree->child('metamerge.yml')->spew(<<~'YAML');
         x_system_packages:

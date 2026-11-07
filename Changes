@@ -1,6 +1,15 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Let an answer to a review wait for the system packages of its branch
+      when the run made no commit because claude refused its calls.  The job
+      failed before it asked what the host lacks.  So a run that could not
+      run a missing program got no draft and no comment, and the dashboard
+      had no button to install the package and resume.  Now the job makes
+      the pull request a draft, says in its comment what the host lacks, and
+      keeps the refused calls in its result.  It does not post the replies of
+      the run, because they can say that a change was made.  With nothing
+      missing, the job still fails.
     - Let the fix and review runs run the program of each system package
       that their branch declares, such as ffmpeg, with any arguments.  A run
       that resumed after a person installed the package was refused
