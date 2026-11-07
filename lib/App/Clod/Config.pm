@@ -380,7 +380,12 @@ C<x_system_packages> of each spoke, from its default branch, and
 L<App::Clod::Tasks/self_check> finds the packages of C<packager> that the
 host lacks, and the tests of the dependencies that fail.  The dashboard shows
 each spoke that needs packages, with a button that installs them.  See
-L<App::Clod::Packages>.
+L<App::Clod::Packages>.  The runs that change a repository can also run the
+program of the C<test> of each dependency that their branch declares, with
+any arguments, when the program is a file of the package of that dependency.
+L<App::Clod::Tasks/declared_programs> gives every condition.  So this
+configuration gives the runs permission that no person confirms, as
+C<extra_tools> does, for each such program of a package that the host has.
 
 C<packager> is the packager of the host, a key of
 C<%App::Clod::Packages::INSTALLED>: C<deb> for now.  C<installer> is the

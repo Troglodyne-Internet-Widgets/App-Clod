@@ -7,6 +7,7 @@ no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 
+use List::Util       ();
 use Mojo::File       ();
 use Text::ParseWords ();
 
@@ -24,6 +25,7 @@ our $PROGRAM_SECONDS = 60;
 # For each packager, whether the host has a package of it, and an archive of it.
 our %INSTALLED  = ( deb => \&deb_installed );
 our %HAS_SOURCE = ( deb => \&deb_has_source );
+our %OWNERS     = ( deb => \&deb_owners );
 
 # Where the host says what it is, and where apt keeps its archives.  A test points them at fixtures.
 our $OS_RELEASE  = '/etc/os-release';
@@ -101,6 +103,60 @@ installer writes it.
 =cut
 
 sub deb_has_source ($source) { return -e "$APT_SOURCES/$source->{name}.sources" ? 1 : 0 }
+
+=func owners
+
+C<($packager, $file)>.  The packages of C<$packager> that have the file
+C<$file>, an absolute path, as the packager says.  None when no package has
+it.  Dies for a packager that is not a key of C<%OWNERS>.
+
+=cut
+
+sub owners ( $packager, $file ) {
+    my $asks = $OWNERS{$packager} // die "There is no way to ask which $packager package has a file\n";
+    return $asks->($file);
+}
+
+=func deb_owners
+
+C<($file)>.  The packages that have C<$file>, as C<dpkg-query -S> says,
+without their architecture.  A line of a diversion names no package that has
+the file, so it is left out.  None when dpkg says C<no path found matching>.
+Dies when C<dpkg-query> fails for any other reason.
+
+=cut
+
+sub deb_owners ($file) {
+    my $said = eval { App::Clod::Deps::run( { timeout => $PROGRAM_SECONDS }, @DPKG_QUERY, '-S', $file ) };
+    if ( !defined $said ) {
+        return if $@ =~ m{no\ path\ found\ matching};
+        die $@;
+    }
+    my @lists = map { m{\A (.+?) :[ ] \Q$file\E \z} ? $1 : () } grep { !m{\Adiversion[ ]} } split m{\n}, $said;
+    return List::Util::uniq( map { s{:[^:]*\z}{}r } split m{,[ ]}, join q{, }, @lists );
+}
+
+=func program_file
+
+C<($claude, $name)>.  The file that the command C<$name> runs, as the shell of
+a claude run finds it: the first executable file of that name in an absolute
+directory of the C<PATH> of L<App::Clod::Claude/run_env>, with each symbolic
+link resolved.  Undef when there is none.  A directory of the C<PATH> that is
+not absolute is passed over, because the run resolves it in the worktree.
+Whether the file is executable is what the worker can tell.
+
+=cut
+
+sub program_file ( $claude, $name ) {
+    my %env = $claude->run_env;
+    for my $dir ( grep { m{\A/} } split m{:}, $env{PATH} // q{} ) {
+        my $file = Mojo::File->new( $dir, $name );
+
+        # The shell passes over a file without the execute bit, and -x asks for that bit.
+        return $file->realpath->to_string if -e $file && !-d _ && -x _;    ## no critic (ValuesAndExpressions::ProhibitFiletest_rwxRWX)
+    }
+    return;
+}
 
 =func program_error
 

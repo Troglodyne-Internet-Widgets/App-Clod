@@ -28,6 +28,16 @@ sub script ( $name, $body ) {
 # error and exit 1 for one that it does not.
 local @App::Clod::Packages::DPKG_QUERY = script( 'dpkg-query', <<~'SH' );
     echo "$*" >> "$0.log"
+    if [ "$1" = -S ]; then
+      case "$2" in
+        */ffmpeg)  echo "ffmpeg: $2" ;;
+        */shared)  echo "libfoo:amd64, libbar: $2"; echo "libbaz: $2.d/other" ;;
+        */diverts) echo "diversion by other from: $2"; echo "diversion by other to: $2.real"; echo "real: $2" ;;
+        */broken)  echo "dpkg-query: error: parsing file '/var/lib/dpkg/status'" >&2; exit 2 ;;
+        *)         echo "dpkg-query: no path found matching pattern $2" >&2; exit 1 ;;
+      esac
+      exit 0
+    fi
     case "$4" in
       ffmpeg) printf 'install ok installed' ;;
       broken) echo "dpkg-query: error: parsing file '/var/lib/dpkg/status'" >&2; exit 2 ;;
@@ -47,7 +57,43 @@ subtest installed => sub {
     like( dies { App::Clod::Packages::installed( rpm => 'ffmpeg' ) }, qr/no\ way\ to\ ask\ whether\ a\ rpm\ package/, 'a packager that it cannot ask about dies' );
 };
 
+subtest owners => sub {
+    is( [ App::Clod::Packages::owners( deb => '/bogus/bin/ffmpeg' ) ],  ['ffmpeg'],          'the package that has the file' );
+    is( [ App::Clod::Packages::owners( deb => '/bogus/bin/shared' ) ],  [qw{libfoo libbar}], 'each package that has it, without its architecture, and none that has another file' );
+    is( [ App::Clod::Packages::owners( deb => '/bogus/bin/diverts' ) ], ['real'],            'and not the lines of a diversion' );
+    is( [ App::Clod::Packages::owners( deb => '/bogus/bin/nobody' ) ],  [],                  'a file of no package has none' );
+    like( $tmp->child('dpkg-query.log')->slurp, qr{^-S\ /bogus/bin/ffmpeg\n}m, 'dpkg is asked about the one file' );
+    like( dies { App::Clod::Packages::owners( deb => '/bogus/bin/broken' ) }, qr/parsing\ file/,                         'a dpkg that fails in another way dies, and says why' );
+    like( dies { App::Clod::Packages::owners( rpm => '/bogus/bin/ffmpeg' ) }, qr/no\ way\ to\ ask\ which\ rpm\ package/, 'and so does a packager that it cannot ask' );
+};
+
 my $worker = App::Clod::Claude->new;
+
+subtest program_file => sub {
+    my $first  = $tmp->child('path-one')->make_path;
+    my $second = $tmp->child('path-two')->make_path;
+    my $lib    = $tmp->child('agent-lib')->make_path;
+    $lib->child('bin')->make_path;
+    for my $bin ( $second->child('tool'), $second->child('later'), $lib->child( 'bin', 'tool' ) ) {
+        $bin->spew("#!/bin/sh\n");
+        $bin->chmod( oct '0755' );
+    }
+    $first->child('later')->spew("#!/bin/sh\n");
+    symlink $second->child('tool')->to_string, $first->child('link')->to_string or die "symlink: $!";
+    local $ENV{PATH} = "relative:$first:$second";
+    is( App::Clod::Packages::program_file( $worker, 'tool' ),    $second->child('tool')->realpath->to_string,  'the executable file of the name on the PATH' );
+    is( App::Clod::Packages::program_file( $worker, 'later' ),   $second->child('later')->realpath->to_string, 'a file that is not executable is passed over' );
+    is( App::Clod::Packages::program_file( $worker, 'link' ),    $second->child('tool')->realpath->to_string,  'and a symbolic link is the file that it points to' );
+    is( App::Clod::Packages::program_file( $worker, 'missing' ), undef,                                        'a name that is on no directory of the PATH has none' );
+    my $relative = $tmp->child('relative')->make_path;
+    $relative->child('here')->spew("#!/bin/sh\n");
+    $relative->child('here')->chmod( oct '0755' );
+    my $cwd = Mojo::File->new->to_abs;
+    chdir "$tmp" or die "chdir: $!";
+    is( App::Clod::Packages::program_file( $worker, 'here' ), undef, 'and a directory of the PATH that is not absolute is passed over' );
+    chdir "$cwd" or die "chdir: $!";
+    is( App::Clod::Packages::program_file( App::Clod::Claude->new( lib => "$lib" ), 'tool' ), $lib->child( 'bin', 'tool' )->realpath->to_string, 'on the PATH that claude runs with' );
+};
 
 subtest program_error => sub {
     is( App::Clod::Packages::program_error( $worker, 'true' ), undef, 'a program that exits 0 runs' );
