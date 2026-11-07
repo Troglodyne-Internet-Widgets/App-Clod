@@ -359,6 +359,24 @@ there and restarts the bot.
 lacks, queues L<App::Clod::Tasks/packages_install>, which installs them with
 the C<installer> of C<system_packages>.  See L<App::Clod::Packages>.
 
+=item * Install and resume, when a pull request of the bot needs system
+packages that the host lacks, installs them, as Install packages does, and
+then queues the work on that pull request again.  The bot reads such a
+declaration from its own branch, so a change that adds a dependency can be
+tested before it merges.  A run that needs a package that the host lacks
+declares it, runs the tests, and commits.  The bot then opens the pull
+request as a draft, or makes it one, and does not fail the job.  After the
+install, the run finishes the work and runs the tests again, and the bot
+makes the pull request ready for review.  Ignore takes the item off the
+list.
+
+Before it installs anything, the button shows the packages and the archives,
+and a link to the change of F<metamerge.yml> in the pull request.  Read that
+change before you confirm.  Nobody reviewed that branch, and the bot wrote
+it from the text of an issue.  The install runs as root, and an archive that
+it adds is trusted for every package of the host from then on.  See
+L<App::Clod::Tasks/branch_packages>.
+
 =back
 
 The header of the page shows the short sha of the commit that the page runs.

@@ -6,6 +6,7 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
+use Digest::SHA ();
 use File::Temp  ();
 use Mojo::File  ();
 use Mojo::Util  ();
@@ -25,7 +26,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep spoke_fix triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep spoke_fix spoke_address triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -251,6 +252,80 @@ subtest 'system packages' => sub {
     is( action_about(qr/system\ packages\ of\ the\ spokes/), { level => 'warning', text => 'The bot cannot tell whether it has the system packages of the spokes: dpkg-query: Command not found' }, 'a check that cannot ask dpkg says so, with no button' );
     ok( !action_about(qr/libxml2\ \(/), 'and lists no package as missing' );
     delete $t->app->clod_config->{system_packages};
+};
+
+subtest 'a pull request that needs system packages' => sub {
+    my %act      = ( 'X-Clod-Action' => 'yes' );
+    my %jellyfin = ( name            => 'jellyfin', uri => 'https://repo.test.test/ubuntu', suites => ['noble'], components => ['main'], key => 'https://repo.test.test/key.gpg', fingerprint => '0123456789ABCDEF0123456789ABCDEF01234567' );
+    my $url      = 'https://github.test/Test-Org/one/pull/7';
+    my %waits    = ( repo => 'Test-Org/one', pr => 7, pr_url => $url, branch => 'clod/1-video', needs_packages => 1, packages => ['ffmpeg'], sources => [ \%jellyfin ], needs => [ { name => 'ffmpeg', package => 'ffmpeg', archive => \%jellyfin } ] );
+    my $fix      = job( spoke_fix => \%waits, notes => { repo => 'Test-Org/one' } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    my $item = action_about(qr/\#7\ needs/);
+    my $diff = "$url/files#diff-" . Digest::SHA::sha256_hex('metamerge.yml');
+    is(
+        $item,
+        {
+            level   => 'warning',
+            job     => $fix,
+            text    => "Test-Org/one#7 needs ffmpeg (ffmpeg, from the archive jellyfin, key 0123\N{HORIZONTAL ELLIPSIS}4567) to test its change.",
+            link    => { url => $url, label => '#7' },
+            buttons => [
+                { label => 'Install and resume', act => 'packages/install', body => { job => $fix }, confirm => { pr_url => $url, diff_url => $diff, packages => ['ffmpeg'], sources => [ { name => 'jellyfin', uri => 'https://repo.test.test/ubuntu', key => 'https://repo.test.test/key.gpg', fingerprint => '0123456789ABCDEF0123456789ABCDEF01234567' } ] } },
+                { label => 'Ignore', act => "jobs/$fix/ignore" },
+            ],
+        },
+        'a pull request whose branch needs packages that the host lacks is an item, with a button that installs them and resumes, which first shows what it installs and links to the diff of the declaration'
+    );
+
+    $t->post_ok( '/act/packages/install' => json => { job => $fix } )->status_is( 403, 'an install and resume without the header is refused' );
+    $t->post_ok( '/act/packages/install' => \%act => json => { job => $fix, packages => ['bogus-package'] } )->status_is(200);
+    my $res     = $t->tx->res;
+    my $install = $res->json->{queued};
+    my $info    = $minion->job($install)->info;
+    is( [ $info->@{qw{task args}} ], [ 'packages_install', [ { repo => 'Test-Org/one', packages => ['ffmpeg'], sources => [ \%jellyfin ], resume => $fix } ] ], 'Install and resume queues an install of what the job found, and no name that the request names, which resumes that job' );
+    $t->post_ok( '/act/packages/install' => \%act => json => { job => $fix } )->status_is(200)->json_is( '/queued' => $install, 'and a second press queues no second one' );
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/\#7\ needs/), { job => $install, text => qr/It\ is\ queued\.\z/ }, 'while it waits, the item names it' );
+    ok( !action_about(qr/\#7\ needs/)->{buttons}, 'and has no button' );
+    $t->post_ok( '/act/packages/install' => \%act => json => { job => 'x' } )->status_is( 404, 'a job that is not a number waits for no package' );
+    my $plain = job( spoke_fix => { repo => 'Test-Org/one', pr => 8, pr_url => 'https://github.test/Test-Org/one/pull/8' } );
+    $minion->perform_jobs;
+    $t->post_ok( '/act/packages/install' => \%act => json => { job => $plain } )->status_is( 404, 'and nor does a job whose branch needs none' );
+
+    my $resume = $minion->enqueue('spoke_address');
+    $minion->job($fix)->note( resumed => $resume );
+    $t->post_ok( '/act/packages/install' => \%act => json => { job => $fix } )->status_is( 404, 'a job whose work resumed cannot resume again' );
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/\#7\ needs/), { job => $resume, text => qr/the\ work\ resumes\.\z/ }, 'after the install, the item names the job that resumes the work' );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/\#7\ needs/), 'and once that job ran, there is no item' );
+
+    my $other = job( spoke_fix => { %waits, pr => 9, pr_url => 'https://github.test/Test-Org/one/pull/9' } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    is( action_about(qr/\#9\ needs/)->{job}, $other, 'another pull request that needs packages is an item' );
+    job( spoke_address => { repo => 'Test-Org/one', pr => 9, pr_url => 'https://github.test/Test-Org/one/pull/9' } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/\#9\ needs/), 'until a later job of the same pull request needs none' );
+
+    my $ignored = job( spoke_fix => { %waits, pr => 10, pr_url => 'https://github.test/Test-Org/one/pull/10' } );
+    $minion->perform_jobs;
+    $t->post_ok( "/act/jobs/$ignored/ignore" => \%act )->status_is(200)->json_is( '/ignored' => $ignored );
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/\#10\ needs/), 'and Ignore takes the item off the list' );
+    $t->post_ok( "/act/jobs/$plain/ignore" => \%act )->status_is( 404, 'a finished job that needs no package cannot be ignored' );
+
+    $t->get_ok('/')->status_is(200);
+    my $dom   = $t->tx->res->dom;
+    my $where = qr/Nobody\ has\ reviewed .* from\ the\ text\ of\ an\ issue/s;
+    my $trust = qr/trusts\ the\ archive/;
+    my $root  = qr/as\ root .* signing\ key .* $trust\ for\ every\ package/s;
+    my $read  = qr/Read\ the\ change\ to\ the\ declaration/;
+    like( $dom->at('#confirm-install .modal-body')->all_text, qr/$where .* $root .* $read/s, 'the dialog says where the declaration comes from, what the install does as root, and to read the diff first' );
 };
 
 subtest work => sub {

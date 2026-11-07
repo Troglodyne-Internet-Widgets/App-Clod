@@ -1,6 +1,21 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Let a change that needs a new system package get it before it merges.
+      The fix and review prompts tell the run to declare the dependency in
+      the metamerge.yml of the branch, to run the tests, to mark as TODO the
+      tests that fail because the program is missing, and to commit.  After
+      the run, the hub reads the declaration from the worktree and resolves
+      it for the host.  If the host lacks a package, the job does not fail:
+      the pull request is a draft, and the result names the packages and
+      archives.  The dashboard shows such a pull request with an Install and
+      resume button, which opens a dialog first.  The dialog lists the
+      packages and archives, links to the diff of metamerge.yml, and says
+      that nobody reviewed the branch and that the install runs as root.
+      The install queues an answer to the review on the pull request, which
+      finishes the work and runs the tests, and the pull request is then
+      made ready for review.  A Minion lock lets the work of a job resume
+      once.
     - Install the system packages that the spokes declare.  A spoke names
       each dependency under x_system_packages in its metamerge.yml, with
       its package for each packager, distribution and release, and a test

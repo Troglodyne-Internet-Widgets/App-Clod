@@ -171,6 +171,13 @@ $r->post('/repos/:o/:n/issues')->to(
     }
 );
 
+$r->post('/graphql')->to(
+    cb => sub ($c) {
+        push @calls, [ 'graphql', path_of($c), $c->req->json ];
+        return $c->render( json => { errors => [ { message => 'Pull request is in clean status' } ] } ) if $state{refuse_graphql};
+        $c->render( json => { data => {} } );
+    }
+);
 $r->get('/comment')->to( cb => sub ($c) { $c->render( json => { user => { login => $state{commenter} } } ) } );
 
 my $fake_ua = Mojo::UserAgent->new;
@@ -213,6 +220,7 @@ sub answer ( $structured, %env ) {
     my %denied = $env{denied} ? ( permission_denials => $env{denied} ) : ();
     $stream->spew( Mojo::JSON::encode_json( { type => 'result', is_error => Mojo::JSON::false, structured_output => $structured, total_cost_usd => 0.5, usage => {}, %denied } ) . "\n" );
     %fake = ( FAKE_CLAUDE_STREAM => "$stream", FAKE_CLAUDE_COMMIT => $env{commit} ? 1 : 0 );
+    @fake{qw{FAKE_CLAUDE_FILE FAKE_CLAUDE_TEXT}} = @{ $env{file} } if $env{file};
     return;
 }
 
@@ -1458,6 +1466,96 @@ subtest 'system packages' => sub {
 
     delete $config->{system_packages};
     is( run_job( packages_install => { repo => 'Test-Org/one', packages => ['libmagic-dev'] } )->{result}{error}, 'clod.conf has no system_packages', 'without the configuration, an install fails, and says why' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest 'a branch that needs system packages' => sub {
+    %state = ();
+    @calls = ();
+    my $config = $app->clod_config;
+    my $bare   = $remote->child('Test-Org/one.git')->to_string;
+    my $os     = $tmp->child('branch-os-release');
+    $os->spew(qq{ID=ubuntu\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n});
+    local $App::Clod::Packages::OS_RELEASE = "$os";
+    my ( %have, @installed );
+    my $packages = Test::MockModule->new('App::Clod::Packages');
+    $packages->redefine( installed     => sub ( $packager,  $name ) { return $have{$name} } );
+    $packages->redefine( program_error => sub ( $claude,    $line ) { return } );
+    $packages->redefine( install       => sub ( $installer, $file, @names ) { push @installed, \@names; return "Setting up @names\n" } );
+    my $ffmpeg = "x_system_packages:\n  ffmpeg:\n    deb: ffmpeg\n    test: ffmpeg -version\n";
+
+    answer( { title => 'Use ffmpeg', summary => 'Calls ffmpeg. t/video.t fails, because ffmpeg is missing.' }, commit => 1, file => [ 'metamerge.yml', $ffmpeg ] );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/branch-record";
+    is( run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } )->{result}{needs_packages}, undef, 'without system_packages in the configuration, the hub reads no declaration of a branch' );
+    unlike( record_of("$tmp/branch-record")->{prompt}, qr/x_system_packages/, 'and the run is not told to declare one' );
+
+    $config->{system_packages} = { packager => 'deb', installer => '/bogus/clod-install-packages' };
+    @calls = ();
+    answer( { title => 'Use ffmpeg', summary => 'Calls ffmpeg. t/video.t fails, because ffmpeg is missing.' }, commit => 1, file => [ 'metamerge.yml', $ffmpeg ] );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/branch-record";
+    my $fix = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    is( $fix->{state}, 'finished', 'a fix whose branch needs a package that the host lacks does not fail' ) or diag Mojo::Util::dumper $fix->{result};
+    like( $fix->{result},                            { repo => 'Test-Org/one', pr => 101, pr_url => qr{/pull/101\z}, branch => qr{\Aclod/}, needs_packages => 1, packages => ['ffmpeg'], sources => [], needs => [ { name => 'ffmpeg', package => 'ffmpeg', archive => undef } ] }, 'it names the pull request and what the host lacks, as an install takes it' );
+    like( record_of("$tmp/branch-record")->{prompt}, qr/x_system_packages .* Mark\s+only\s+those\s+tests\s+as\s+TODO/s,                                                                                                                                                             'the run is told to declare a dependency, and how to commit tests that fail for it' );
+    ok( dies { git( '--git-dir', $bare, qw{cat-file -e main:metamerge.yml} ) }, 'the declaration is on the branch alone, not on the default branch' );
+    my $pull = calls_of('pull')->[0][2];
+    ok( $pull->{draft}, 'the pull request is a draft' );
+    my $why  = qr/is\ a\ draft,\ because .* ffmpeg\./s;
+    my $next = qr/install\ the\ packages\ from\ the\ dashboard/;
+    like( $pull->{body}, qr/Calls\ ffmpeg\. .* $why .* $next/s, 'which says what the host lacks and what a person does next' );
+
+    $have{ffmpeg} = 1;
+    @calls = ();
+    answer( { title => 'Use ffmpeg', summary => 'Calls ffmpeg.' }, commit => 1, file => [ 'metamerge.yml', $ffmpeg ] );
+    my $has = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    is( [ $has->{result}{needs_packages}, calls_of('pull')->[0][2]{draft} ], [ undef, undef ], 'a branch whose packages the host has opens a pull request that is no draft' );
+    delete $have{ffmpeg};
+
+    @calls = ();
+    answer( { title => 't', summary => 's' }, commit => 1, file => [ 'metamerge.yml', "x_system_packages:\n  ffmpeg:\n    deb: foo=1.2\n" ] );
+    my $invalid = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    is( [ $invalid->{result}{needs_packages}, calls_of('pull')->[0][2]{draft} ], [ undef, undef ], 'a declaration that is not valid needs no package' );
+    my $cannot = qr/cannot\ tell\ whether\ the\ host\ has\ the\ system\ packages/;
+    like( $invalid->{notes}{log}[0]{message}, qr/$cannot\ of\ the\ branch:\ metamerge\.yml\ is\ not\ valid/, 'and the job notes why' );
+
+    my $install = run_job( packages_install => { repo => 'Test-Org/one', packages => ['ffmpeg'], sources => [], resume => $fix->{id} } );
+    my $resumed = $install->{result}{resumed};
+    ok( $resumed, 'an install with resume resumes the work' ) or diag Mojo::Util::dumper $install->{result};
+    my $queued = $minion->job($resumed)->info;
+    like( $queued, { task => 'spoke_address', notes => { origin => 'Test-Org/one#101', repo => 'Test-Org/one', resumes => $fix->{id} } }, 'on the pull request of the job, as an answer to a review is' );
+    like( $queued->{args}[0], { repo => 'Test-Org/one', resume => 1, item => { number => 101, is_pr => 1, kind => 'address_review', requester => 'trusted' }, instructions => qr/installed .* ffmpeg .* run\ the\ tests/s }, 'and says that the packages are installed, and to finish and test the work' );
+    is( $minion->job( $fix->{id} )->info->{notes}{resumed}, $resumed, 'the job notes that its work resumed' );
+    my $again = run_job( packages_install => { repo => 'Test-Org/one', packages => ['ffmpeg'], sources => [], resume => $fix->{id} } );
+    is( [ $again->{state}, $again->{result}{resumed} ],                                                                             [ 'finished', undef ], 'a second install for the same job installs, and resumes nothing' );
+    is( $minion->jobs( { tasks => ['spoke_address'] } )->total,                                                                     1,                     'so there is one job that resumes' );
+    is( run_job( packages_install => { repo => 'Test-Org/one', packages => ['ffmpeg'], resume => $has->{id} } )->{result}{resumed}, undef,                 'and a job that needs no package resumes nothing' );
+
+    # The resumed run, on the branch that the fix pushed, with the package there now.
+    @calls                 = ();
+    $have{ffmpeg}          = 1;
+    $state{pull}           = { user => { login => $BOT }, number => 101, draft => Mojo::JSON::true, node_id => 'PR_test', head => { ref => $fix->{result}{branch}, sha => git( '--git-dir', $bare, 'rev-parse', $fix->{result}{branch} ), repo => { full_name => 'Test-Org/one' } }, base => { ref => 'main' }, html_url => $fix->{result}{pr_url} };
+    $state{issue_comments} = [];
+    answer( { summary => 'Ran prove -l t/video.t: All tests successful.', replies => [] }, commit => 1 );
+    my $done = run_id($resumed);
+    is( $done->{state},                                     'finished',                                        'the resumed run finishes, with nothing that waits for an answer' ) or diag Mojo::Util::dumper $done->{result};
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Ran prove -l t/video.t: All tests successful.'], 'and posts its summary on the pull request' );
+    like( calls_of('graphql'), [ [ 'graphql', '/graphql', { query => qr/markPullRequestReadyForReview/, variables => { id => 'PR_test' } } ] ], 'and makes the draft ready for review, as the host lacks nothing now' );
+    is( $done->{result}{needs_packages}, undef, 'and needs no package' );
+
+    # An answer to a review that adds a dependency to a pull request that is no draft.
+    @calls = ();
+    delete $have{ffmpeg};
+    $state{pull}            = { %{ $state{pull} }, draft => Mojo::JSON::false, head => { %{ $state{pull}{head} }, sha => git( '--git-dir', $bare, 'rev-parse', $fix->{result}{branch} ) } };
+    $state{review_comments} = [ { id => 51, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'use ffmpeg here' } ];
+    $state{refuse_graphql}  = 1;
+    answer( { summary => 'Uses ffmpeg.', replies => [ { id => 51, body => 'Done.' } ] }, commit => 1, file => [ 'metamerge.yml', $ffmpeg ] );
+    my $address = run_job( spoke_address => { item => { %item, kind => 'address_review', is_pr => 1, number => 101 }, repo => 'Test-Org/one' } );
+    like( $address->{result},                 { needs_packages => 1, packages => ['ffmpeg'], pr => 101 }, 'an answer to a review whose branch needs a package that the host lacks says so' ) or diag Mojo::Util::dumper $address->{result};
+    like( calls_of('graphql')->[0][2]{query}, qr/convertPullRequestToDraft/,                              'and makes the pull request a draft' );
+    my $undrafted = qr/could\ not\ change\ whether\ the\ pull\ request/;
+    my $refusal   = qr/GitHub\ GraphQL:\ Pull\ request\ is\ in\ clean\ status/;
+    like( $address->{notes}{log},            bag { item { message => qr/$undrafted\ is\ a\ draft:\ $refusal/ }; etc }, 'and a GraphQL error is a note, which does not fail the job' );
+    like( calls_of('comment')->[0][2]{body}, qr/is\ a\ draft,\ because .* ffmpeg/s,                                    'and its comment says what the host lacks' );
     $minion->reset( { all => 1 } );
 };
 

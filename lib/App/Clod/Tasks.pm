@@ -263,6 +263,16 @@ sub system_text ( $config, $task ) {
     return @parts ? join( "\n\n", @parts ) : undef;
 }
 
+=func packages_prompt
+
+C<($config)>.  What a run that changes a spoke is told about a system
+package that the host lacks: F<share/prompts/system-packages.md>.  Empty
+without C<system_packages>, because then the hub installs nothing.
+
+=cut
+
+sub packages_prompt ($config) { return $config->{system_packages} ? prompt('system-packages') : q{} }
+
 =func retry_after
 
 C<($job, $delay)>.  Retries the job in C<$delay> seconds, and returns nothing,
@@ -1128,6 +1138,61 @@ sub push_or_keep ( $job, $spoke, $tree, $branch, $work ) {
     die $error;
 }
 
+=func branch_packages
+
+C<($job, $config, $tree)>.  What the host lacks of the system packages that the
+branch in C<$tree> declares, as L</lacks_of> finds it.  The declaration comes
+from the worktree, so a change that adds a dependency gets it before the
+branch merges.  Undef when C<system_packages> is not configured, and when
+the host has every package and archive that the branch declares.  A
+declaration that cannot be read or resolved is not a missing package: the job
+notes why, and this returns undef.  Otherwise its C<missing> is not empty.
+
+=cut
+
+sub branch_packages ( $job, $config, $tree ) {
+    return if !$config->{system_packages};
+    my $lacks;
+    my $read = eval {
+        my $declared = Dist::Conformance::Check::SystemPackages->declared("$tree");
+        $lacks = lacks_of( $config, $declared, { App::Clod::Packages::os_release() } );
+        1;
+    };
+    my $why = $read ? ( $lacks // {} )->{error} : $@;
+    if ( defined $why ) {
+        log_note( $job, 'cannot tell whether the host has the system packages of the branch: ' . ( split m{\n}, $why )[0] );
+        return;
+    }
+    return $lacks && @{ $lacks->{missing} } ? $lacks : undef;
+}
+
+=func waits_for_packages
+
+C<($lacks)>, from L</branch_packages>.  The part of the result of a job whose
+branch needs packages that the host lacks: C<needs_packages>, and
+C<packages>, C<sources> and C<needs>, as L</packages_install> and the
+dashboard take them.
+
+=cut
+
+sub waits_for_packages ($lacks) {
+    return ( needs_packages => 1, packages => $lacks->{missing}, sources => $lacks->{sources}, needs => $lacks->{needs} );
+}
+
+=func packages_note
+
+C<($lacks)>, from L</branch_packages>.  The paragraph for the pull request
+that says what the host lacks, and what a person does next.
+
+=cut
+
+sub packages_note ($lacks) {
+    my @archives = map { $_->{name} } @{ $lacks->{sources} };
+    return join q{ }, 'This pull request is a draft, because the change needs system packages that the host of the bot does not have:', join( q{, }, @{ $lacks->{missing} } ) . q{.},
+      ( @archives ? 'An install also adds the apt archives ' . join( q{, }, @archives ) . q{.} : () ),
+      'So the tests that call them failed here. A person must read the change to `metamerge.yml`, and then install the packages from the dashboard of the bot. Then the bot finishes the work here, and runs the tests again.';
+}
+
 =func spoke_fix
 
 Works on a new branch in a worktree of one spoke.  The spoke commits, and the
@@ -1139,6 +1204,13 @@ When C<created> is in its arguments, the hub made the repository for this
 change, and the prompt says so.  If an earlier try kept its work because the
 push failed, see L</push_or_keep>, the job pushes that work and opens the pull
 request without running the spoke again.
+
+If the branch declares system packages that the host lacks, as
+L</branch_packages> finds them, the job does not fail.  It opens the pull
+request as a draft, which says what is missing, and its result has what
+L</waits_for_packages> gives.  The dashboard then offers to install the
+packages and to resume the work, as L</packages_install> does with
+C<resume>.
 
 =cut
 
@@ -1164,11 +1236,12 @@ sub spoke_fix ( $job, $config, $args ) {
             push_or_keep( $job, $spoke, $tree, $branch, $work );
 
             my $answer = $work->{answer};
-            my $body   = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior );
-            my $pull   = $gh->create_pull( $repo, { title => $answer->{title} || $item->{title}, head => $branch, base => $base, body => $body } );
-            log_note( $job, "opened $pull->{html_url}" );
+            my $lacks  = branch_packages( $job, $config, $tree );
+            my $body   = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior ), ( $lacks ? packages_note($lacks) : () );
+            my $pull   = $gh->create_pull( $repo, { title => $answer->{title} || $item->{title}, head => $branch, base => $base, body => $body, ( $lacks ? ( draft => Mojo::JSON::true ) : () ) } );
+            log_note( $job, "opened $pull->{html_url}" . ( $lacks ? ' as a draft, because the host lacks ' . join( q{ }, @{ $lacks->{missing} } ) : q{} ) );
             assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $item->{requester} ) );
-            return $job->finish( { repo => $repo, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, summary => $answer->{summary}, commits => $work->{commits}, %{ $work->{usage} } } );
+            return $job->finish( { repo => $repo, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, summary => $answer->{summary}, commits => $work->{commits}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{usage} } } );
         }
     );
 }
@@ -1188,7 +1261,7 @@ sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
     my $outcome = run_claude(
         $job, $config,
         dir      => $tree,
-        prompt   => prompt( fix => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, tools => $tools->{note}, context => context( $config, $gh, $item ) ),
+        prompt   => prompt( fix => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, packages => packages_prompt($config), tools => $tools->{note}, context => context( $config, $gh, $item ) ),
         add_dirs => $tools->{add_dirs},
         schema   => {
             type       => 'object',
@@ -1482,6 +1555,17 @@ that the work started from.  If someone pushed to the branch since, a forced
 push of the kept work would undo their commits, so the job drops it and runs
 the spoke again.
 
+If the branch declares system packages that the host lacks, as
+L</branch_packages> finds them, the job makes the pull request a draft, says
+in its comment what is missing, and its result has what
+L</waits_for_packages> gives, as L</spoke_fix> does.
+
+With C<resume> in its arguments, L</packages_install> queued the job after it
+installed those packages.  Then the job runs even when nothing waits for an
+answer, posts the C<summary> of the run as its comment when there is no
+comment to answer, and makes the pull request ready for review when the host
+lacks nothing more.
+
 =cut
 
 sub spoke_address ( $job, $config, $args ) {
@@ -1493,7 +1577,7 @@ sub spoke_address ( $job, $config, $args ) {
       if !own_pull( $config, $pull, $repo );
 
     my ( $pending, $comments ) = pending( $config, $gh, $item );
-    return $job->finish( { repo => $repo, nothing => 1 } ) if !@$pending && !@$comments;
+    return $job->finish( { repo => $repo, nothing => 1 } ) if !@$pending && !@$comments && !$args->{resume};
 
     my $branch = $pull->{head}{ref};
     my $spoke  = spoke( $config, $repo );
@@ -1519,10 +1603,34 @@ sub spoke_address ( $job, $config, $args ) {
                 $gh->reply_review_comment( $repo, $item->{number}, $reply->@{qw(id body)} );
                 push @replied, $reply->{id};
             }
-            my $answered = @$comments && ( $answer->{comment} // q{} ) ne q{} ? $gh->comment( $repo, $item->{number}, $answer->{comment} )->{html_url} : undef;
-            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $work->{commits}, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, %{ $work->{usage} } } );
+            my $lacks = branch_packages( $job, $config, $tree );
+            draft_state( $job, $gh, $pull, $lacks ? 1 : 0 ) if $lacks || $args->{resume};
+            my $said     = @$comments ? $answer->{comment} : $args->{resume} ? $answer->{summary} : undef;
+            my @said     = grep { ( $_ // q{} ) ne q{} } $said, $lacks ? packages_note($lacks) : undef;
+            my $answered = @said ? $gh->comment( $repo, $item->{number}, join "\n\n", @said )->{html_url} : undef;
+            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $work->{commits}, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{usage} } } );
         }
     );
+}
+
+=func draft_state
+
+C<($job, $gh, $pull, $draft)>.  Makes the pull request C<$pull> a draft when
+C<$draft> is true, and ready for review when it is false, if it is not that
+already.  A failure goes to the log of the job and does not fail it, because
+the work is pushed by then, and the comment of the job says what is missing.
+
+=cut
+
+sub draft_state ( $job, $gh, $pull, $draft ) {
+    return if ( $pull->{draft} ? 1 : 0 ) == ( $draft ? 1 : 0 );
+    my $done = eval {
+        if   ($draft) { $gh->mark_draft( $pull->{node_id} ) }
+        else          { $gh->mark_ready( $pull->{node_id} ) }
+        1;
+    };
+    return log_note( $job, $draft ? 'made the pull request a draft' : 'made the pull request ready for review' ) if $done;
+    return log_note( $job, 'could not change whether the pull request is a draft: ' . ( split m{\n}, $@ )[0] );
 }
 
 =func address_run
@@ -1549,6 +1657,7 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
             base         => $pull->{base}{ref},
             origin       => origin_url( $config, $item ),
             instructions => $args->{instructions},
+            packages     => packages_prompt($config),
             tools        => $tools->{note},
             history      => context( $config, $gh, $item ),
             context      => Mojo::JSON::encode_json( { threads => $address{pending}, comments => $address{comments} } ),
@@ -1953,9 +2062,11 @@ has the declaration of each spoke, as
 L<Dist::Conformance::Check::SystemPackages/declared> reads it, and
 C<system_package_errors> the error of each spoke whose declaration is not
 valid.  The declaration comes from the default branch, as the checks do, and
-never from a branch that the bot pushed, so that what the bot installs is what
-a person merged.  It is read before the checks, so a spoke whose checks fail
-to run still has it.
+never from a branch that the bot pushed, so that what the Install packages
+button installs is what a person merged.  It is read before the checks, so a
+spoke whose checks fail to run still has it.  A branch of the bot can declare
+packages too: see L</branch_packages>.  What it declares is installed only
+when a person confirms it for that pull request.
 
 =cut
 
@@ -2132,11 +2243,38 @@ sub self_check ( $job, $config ) {
 =func host_packages
 
 C<($config, $scan, %host)>, with C<$scan> the result of the last L</harness_scan>.
-What the host lacks of what each spoke declares there, resolved for the
-C<packager> of C<system_packages> and C<%host>, the distribution of the host
-from L<App::Clod::Packages/os_release>, as
-L<Dist::Conformance::Check::SystemPackages/resolve> resolves it.  A hash of
-each spoke that lacks something to:
+What the host lacks of what each spoke declares there, as L</lacks_of> finds
+it, for C<%host>, the distribution of the host from
+L<App::Clod::Packages/os_release>.  A hash of each spoke that lacks something
+to what L</lacks_of> returns for it.  It asks once about a package that two
+spokes declare.
+
+The scan reads the declarations, because it fetches each spoke anyway, and
+this check finds what the host has, because it is cheap, and runs again after
+L</packages_install>, as L</recheck> queues it.  So an install clears its item
+without a new scan of every spoke.
+
+=cut
+
+sub host_packages ( $config, $scan, %host ) {
+    my %has;
+    my $declared = ( $scan // {} )->{system_packages} // {};
+    my %lacks    = map {
+        my $lacks = lacks_of( $config, $declared->{$_}, \%host, \%has );
+        $lacks ? ( $_ => $lacks ) : ();
+    } sort keys %$declared;
+    return \%lacks;
+}
+
+=func lacks_of
+
+C<($config, $declared, \%host, \%has)>.  What the host lacks of one
+declaration, C<$declared> as L<Dist::Conformance::Check::SystemPackages/declared>
+reads it, resolved for the C<packager> of C<system_packages> and C<%host>, as
+L<Dist::Conformance::Check::SystemPackages/resolve> resolves it.  C<%has>
+keeps whether the host has each package that it asked about, so a caller that
+passes the same hash for several declarations asks once about each package.
+Undef when the host lacks nothing, and else a hash of:
 
 =over
 
@@ -2168,53 +2306,39 @@ because a test of a package that is not installed fails anyway.
 
 =back
 
-It asks once about a package that two spokes declare.  A spoke whose
-declaration does not resolve for this host has only C<error>, why, and does not
-stop the others.
-
-The scan reads the declarations, because it fetches each spoke anyway, and
-this check finds what the host has, because it is cheap, and runs again after
-L</packages_install>, as L</recheck> queues it.  So an install clears its item
-without a new scan of every spoke.
+A declaration that does not resolve for this host has only C<error>, why, and
+empty lists.
 
 =cut
 
-sub host_packages ( $config, $scan, %host ) {
+sub lacks_of ( $config, $declared, $host, $has = {} ) {
     my $packager = $config->{system_packages}{packager};
-    my $claude   = claude($config);
-    my ( %lacks, %has );
-    my $declared = ( $scan // {} )->{system_packages} // {};
-    for my $repo ( sort keys %$declared ) {
-        my $resolved = eval { Dist::Conformance::Check::SystemPackages->resolve( $declared->{$repo}, packager => $packager, %host ) };
-        if ( !$resolved ) {
-            $lacks{$repo} = { needs => [], missing => [], sources => [], unresolved => [], failing => [], error => $@ =~ s{\s+\z}{}r };
-            next;
-        }
-        my %source = map { $_->{name} => $_ } grep { !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} };
-        my @needs  = map {
-            my $archive = defined $_->{source} ? $source{ $_->{source} } : undef;
-            +{ name => $_->{name}, package => $_->{package}, archive => $archive };
-        } grep { defined $_->{package} && !( $has{ $_->{package} } //= App::Clod::Packages::installed( $packager, $_->{package} ) ? 1 : 0 ) } @{ $resolved->{needs} };
-        my @failing = @needs ? () : map {
-            my $error = App::Clod::Packages::program_error( $claude, $_->{test} );
-            defined $error ? { program => $_->{test}, dependency => $_->{name}, error => $error } : ();
-        } grep { defined $_->{test} } @{ $resolved->{needs} };
-        my @unresolved = @{ $resolved->{unresolved} };
-        next if !@needs && !@failing && !@unresolved;
-        $lacks{$repo} = {
-            needs   => \@needs,
-            missing => [ List::Util::uniq( map { $_->{package} } @needs ) ],
-            sources => [
-                do {
-                    my %seen;
-                    grep { defined && !$seen{ $_->{name} }++ } map { $_->{archive} } @needs;
-                }
-            ],
-            unresolved => \@unresolved,
-            failing    => \@failing,
-        };
-    }
-    return \%lacks;
+    my $resolved = eval { Dist::Conformance::Check::SystemPackages->resolve( $declared, packager => $packager, %$host ) };
+    return { needs => [], missing => [], sources => [], unresolved => [], failing => [], error => $@ =~ s{\s+\z}{}r } if !$resolved;
+    my %source = map { $_->{name} => $_ } grep { !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} };
+    my @needs  = map {
+        my $archive = defined $_->{source} ? $source{ $_->{source} } : undef;
+        +{ name => $_->{name}, package => $_->{package}, archive => $archive };
+    } grep { defined $_->{package} && !( $has->{ $_->{package} } //= App::Clod::Packages::installed( $packager, $_->{package} ) ? 1 : 0 ) } @{ $resolved->{needs} };
+    my $claude  = claude($config);
+    my @failing = @needs ? () : map {
+        my $error = App::Clod::Packages::program_error( $claude, $_->{test} );
+        defined $error ? { program => $_->{test}, dependency => $_->{name}, error => $error } : ();
+    } grep { defined $_->{test} } @{ $resolved->{needs} };
+    my @unresolved = @{ $resolved->{unresolved} };
+    return if !@needs && !@failing && !@unresolved;
+    return {
+        needs   => \@needs,
+        missing => [ List::Util::uniq( map { $_->{package} } @needs ) ],
+        sources => [
+            do {
+                my %seen;
+                grep { defined && !$seen{ $_->{name} }++ } map { $_->{archive} } @needs;
+            }
+        ],
+        unresolved => \@unresolved,
+        failing    => \@failing,
+    };
 }
 
 =func self_update
@@ -2389,6 +2513,11 @@ item clears, or shows what still fails.  Its result has C<repo>,
 C<packages>, C<sources>, the names of the archives, and C<output>, what the installer printed.  When the installer
 fails, the job fails with that as C<error>.
 
+With C<resume>, the id of a job whose branch needs these packages, as
+L</waits_for_packages> says, an install that works also L</resume>s the work
+of that job.  Then the result has C<resumed>, the id of the job that goes on
+with it.
+
 =cut
 
 sub packages_install ( $job, $config, $args ) {
@@ -2406,7 +2535,39 @@ sub packages_install ( $job, $config, $args ) {
     $dir->remove_tree;
     recheck($job);
     return $job->fail( { %result, error => $error } ) if !defined $output;
-    return $job->finish( { %result, output => $output } );
+    my $resumed = defined $args->{resume} ? resume( $job, $args->{resume} ) : undef;
+    return $job->finish( { %result, output => $output, ( $resumed ? ( resumed => $resumed ) : () ) } );
+}
+
+=func resume
+
+C<($job, $from)>.  Queues a L</spoke_address> with C<resume> on the pull
+request of the job C<$from>, whose branch needed system packages that the
+host has now.  Its instructions, F<share/prompts/resume.md>, say that the
+packages are installed, and that the run must finish the work and run the
+tests.  It notes C<resumed>, the id of the new job, on the job C<$from>.
+Returns that id.
+
+A Minion lock named after C<$from> lets the work of one job resume once, so a
+second install for it resumes nothing, and returns undef.  So does a job
+C<$from> that is gone, or whose result needs no packages.
+
+=cut
+
+sub resume ( $job, $from ) {
+    my $minion = $job->minion;
+    my $source = $minion->job($from);
+    my $info   = $source                       ? $source->info   : {};
+    my $result = ref $info->{result} eq 'HASH' ? $info->{result} : {};
+    return log_note( $job, "job $from waits for no system package, so nothing resumes" ) if !$result->{needs_packages};
+    return log_note( $job, "the work of job $from has resumed already" )                 if !$minion->lock( "resume:$from", $CLAIM_SECONDS );
+
+    my $item = { %{ $info->{args}[0]{item} }, number => $result->{pr}, is_pr => 1, kind => 'address_review' };
+    my $args = { item => $item, repo => $result->{repo}, resume => 1, instructions => prompt( resume => packages => join q{, }, @{ $result->{packages} } ) };
+    my $id   = $minion->enqueue( spoke_address => [$args], { notes => { origin => origin_of($item), repo => $result->{repo}, resumes => 0 + $from } } );
+    $source->note( resumed => $id );
+    log_note( $job, "queued spoke_address job $id to finish " . origin_of($item) );
+    return $id;
 }
 
 =func refresh_references

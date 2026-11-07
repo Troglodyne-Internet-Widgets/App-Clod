@@ -16,6 +16,8 @@ message in the style of this repository. Do not push and do not open a pull
 request: the hub does both. If the change needs nothing in this repository,
 make no commit and say why in `summary`.
 
+{{packages}}
+
 If you cannot do the change without an answer from a person, because the task
 is ambiguous or needs a decision that is not yours to make, make no commit.
 Put the question in `question`, written to the person who must answer it, and
