@@ -91,11 +91,12 @@ subtest 'the tools of a run that changes a spoke' => sub {
     my $cmd     = App::Clod::Tasks::claude($config)->command;
     my ($i)     = grep { $cmd->[$_] eq '--allowedTools' } 0 .. $#$cmd;
     my %allowed = map  { $_ => 1 } split /,/, $cmd->[ $i + 1 ];
-    for my $program (qw{perlcritic perltidy make nytprofhtml nytprofmerge}) {
+    for my $program (qw{perlcritic perltidy make strace gdb nytprofhtml nytprofmerge}) {
         ok( $allowed{"Bash($program:*)"} && $allowed{"Bash(rtk $program:*)"}, "claude may run $program, also through rtk" );
     }
     my %read = map { $_ => 1 } @{ $config->{claude}{read_tools} };
-    ok( !$read{'Bash(perltidy:*)'}, 'and a run that only reads may not, because perltidy rewrites files' );
+    ok( !$read{'Bash(perltidy:*)'},                       'and a run that only reads may not, because perltidy rewrites files' );
+    ok( !( grep { $read{"Bash($_:*)"} } qw{strace gdb} ), q{nor may it trace or debug, because strace and gdb each run a program of their choosing} );
 };
 
 subtest create_repos => sub {
