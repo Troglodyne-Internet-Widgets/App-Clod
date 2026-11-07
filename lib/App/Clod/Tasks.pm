@@ -1694,16 +1694,20 @@ If the branch declares system packages that the host lacks, as
 L</branch_packages> finds them, the job makes the pull request a draft, says
 in its comment what is missing, and its result has what
 L</waits_for_packages> gives, as L</spoke_fix> does.  It does so also when
-the run made no commit because claude refused some of its calls, as
-L</address_run> says.  Then the job posts no reply and no comment of the run,
-because they can say that a change was made.  Its comment says only what the
-host lacks, and its result has C<denied>, the refused calls.
+the run made no commit, and claude refused some of its calls or the run says
+in C<blocked> what kept it from finishing, as L</address_run> says.  Then the
+job posts no reply and no comment of the run, because they can say that a
+change was made.  Its comment says only what the host lacks, and its result
+has C<denied>, the refused calls, and C<blocked>, what the run said.  The job
+asks L</branch_packages> once.  When L</address_run> asked already, the job
+takes its answer.
 
 A run that made no commit, and says in C<blocked> that it finished, goes on as
 if claude had refused nothing: the replies, the draft state, and the comment.
 Its result keeps the refused calls in C<denied>.  A run that made no commit
 and says in C<blocked> what kept it from finishing fails the job, as
-L</address_run> says, also when claude refused nothing.  A run that committed
+L</address_run> says, also when claude refused nothing, unless the host lacks
+a package.  A run that committed
 and says in C<blocked> that something kept it from finishing pushes its
 commits, and the comment of the job says what the run said, as
 L</unfinished_note> gives it.
@@ -1752,7 +1756,7 @@ sub spoke_address ( $job, $config, $args ) {
                 $gh->reply_review_comment( $repo, $item->{number}, $reply->@{qw(id body)} );
                 push @replied, $reply->{id};
             }
-            my $lacks = $held // branch_packages( $job, $config, $tree );
+            my $lacks = exists $work->{lacks} ? $work->{lacks} : branch_packages( $job, $config, $tree );
             draft_state( $job, $gh, $pull, $lacks ? 1 : 0 ) if $lacks || $args->{resume};
             my $said     = $held ? undef : @$comments ? $answer->{comment} : $args->{resume} ? $answer->{summary} : undef;
             my @said     = grep { ( $_ // q{} ) ne q{} } $said, $held ? undef : unfinished_note($work), $lacks ? packages_note($lacks) : undef;
@@ -1791,15 +1795,16 @@ undef.  Otherwise it returns the work for L</push_or_keep>, with C<onto>, the
 head of the pull request that the run started from.
 
 The work has C<refusals>, as L</refusals> gives them.  A run can commit
-nothing while claude refused some of its calls.  Then it asks
-L</branch_packages> what the host lacks.  A missing package can be the cause,
-because a program that the host does not have gets no rule.  If the host
-lacks a package, the work also has C<lacks>, as L</branch_packages> gives it,
-and the job notes it and the refused calls.  Otherwise, a run that made no
-commit and was L</stopped> fails the job, as L</refused> says, and this
-returns undef.  That is a run that says in C<blocked> what kept it from
-finishing, whether or not claude refused calls.  If the run says that it
-finished, the work goes on as if claude had refused nothing.
+nothing while claude refused some of its calls, or while it says in
+C<blocked> what kept it from finishing.  Then this asks L</branch_packages>
+what the host lacks, and the work has its answer in C<lacks>, also when it is
+undef.  A missing package can be the cause, because a program that the host
+does not have gets no rule, and the run cannot run it.  If the host lacks a
+package, the job notes it, and what claude refused and the run said.  If the
+host lacks nothing, and the run was L</stopped>, it fails the job, as
+L</refused> says, and returns undef.  If the run says that it finished, the
+work goes on as if claude had refused nothing.  A run that made no commit,
+with nothing refused and nothing in C<blocked>, does not ask here.
 
 =cut
 
@@ -1845,14 +1850,12 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
 
     my %work = ( answer => $answer, commits => $commits, usage => \%usage, onto => $pull->{head}{sha}, refusals => refusals($outcome) );
 
+    return \%work if $commits || ( !@{ $outcome->{denied} // [] } && !stopped($outcome) );
+
     # Before the replies, which can say that a change was made.
-    if ( !$commits && @{ $outcome->{denied} // [] } ) {
-        if ( my $lacks = branch_packages( $job, $config, $tree ) ) {
-            log_note( $job, 'waits for ' . join( q{ }, @{ $lacks->{missing} } ) . ", which the branch declares and the host lacks.\n" . refused($outcome) );
-            return { %work, lacks => $lacks };
-        }
-    }
-    if ( !$commits && stopped($outcome) ) {
+    my $lacks = $work{lacks} = branch_packages( $job, $config, $tree );
+    log_note( $job, 'waits for ' . join( q{ }, @{ $lacks->{missing} } ) . ", which the branch declares and the host lacks.\n" . refused($outcome) ) if $lacks;
+    if ( !$lacks && stopped($outcome) ) {
         $job->fail( { repo => $repo, error => refused($outcome), %{ refusals($outcome) }, summary => $answer->{summary}, %usage } );
         return;
     }

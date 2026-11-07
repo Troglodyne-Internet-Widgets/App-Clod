@@ -1657,12 +1657,31 @@ subtest 'a branch that needs system packages' => sub {
     $state{pull}            = { %{ $state{pull} }, draft => Mojo::JSON::true };
     $state{review_comments} = [];
     answer( { summary => 'Ran prove -l t/video.t: All tests successful. Nothing to change.', blocked => q{}, replies => [] }, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'cd t && ffmpeg -version' } } ] );
+    my $asks  = Test::MockModule->new('App::Clod::Tasks');
+    my $asked = 0;
+    $asks->redefine( branch_packages => sub (@args) { $asked++; return $asks->original('branch_packages')->(@args) } );
     my $resumed_refused = run_job( spoke_address => { item => { %item, kind => 'address_review', is_pr => 1, number => 101 }, repo => 'Test-Org/one', resume => 1 } );
     is( $resumed_refused->{state},                          'finished',                                                           'a resumed run that commits nothing and says that nothing blocked it finishes, also when claude refused a call' ) or diag Mojo::Util::dumper $resumed_refused->{result};
     is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Ran prove -l t/video.t: All tests successful. Nothing to change.'], 'and posts its summary on the pull request' );
     like( calls_of('graphql'), [ [ 'graphql', '/graphql', { query => qr/markPullRequestReadyForReview/ } ] ], 'and makes the draft ready for review' );
     is( [ @{ $resumed_refused->{result} }{qw{needs_packages denied}} ], [ undef, ['Bash(cd t && ffmpeg -version)'] ], 'and needs no package, and keeps the refused calls in its result' );
+    is( $asked,                                                         1,                                            'and the job asks once what the host lacks' );
+    $asks->unmock('branch_packages');
     delete $have{ffmpeg};
+
+    # A run that says the program is missing, with nothing refused.
+    @calls                  = ();
+    $state{pull}            = { %{ $state{pull} }, draft => Mojo::JSON::false };
+    $state{review_comments} = [ { id => 53, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'test it with ffmpeg' } ];
+    my $missing = 'ffmpeg is not installed, so t/video.t cannot run.';
+    answer( { summary => 'Not tested.', blocked => $missing, replies => [ { id => 53, body => 'Done.' } ], comment => 'Tested it.' } );
+    my $absent = run_job( spoke_address => { item => { %item, kind => 'address_review', is_pr => 1, number => 101 }, repo => 'Test-Org/one' } );
+    is( $absent->{state}, 'finished', 'a run that commits nothing and says what blocked it, on a branch that needs a package that the host lacks, does not fail' ) or diag Mojo::Util::dumper $absent->{result};
+    like( $absent->{result}, { needs_packages => 1, packages => ['ffmpeg'], pr => 101, blocked => $missing }, 'it says what the host lacks, and what blocked the run' );
+    is( $absent->{result}{denied}, undef, 'and lists no refused calls, because there were none' );
+    like( calls_of('graphql')->[0][2]{query}, qr/convertPullRequestToDraft/, 'and makes the pull request a draft' );
+    is( calls_of('reply'),                                  [],                                                                     'and replies to nobody' );
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], [ match qr/\AThis\ pull\ request\ is\ a\ draft,\ because .* ffmpeg/s ], 'and its comment says what the host lacks, and nothing that the run said' );
 
     my $tree = $tmp->child('declares-tests')->make_path;
     $tree->child('metamerge.yml')->spew(<<~'YAML');
