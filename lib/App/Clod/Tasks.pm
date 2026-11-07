@@ -1333,6 +1333,12 @@ L</waits_for_packages> gives.  The dashboard then offers to install the
 packages and to resume the work, as L</packages_install> does with
 C<resume>.
 
+A run can commit and still say in C<blocked> that something kept it from
+finishing.  Then the job pushes the commits and opens the pull request, and
+its body says what the run said, as L</unfinished_note> gives it.  The result
+has C<blocked> and C<denied>.  The work that the run did is on the branch,
+where a person can read it and finish it.
+
 =cut
 
 sub spoke_fix ( $job, $config, $args ) {
@@ -1358,11 +1364,11 @@ sub spoke_fix ( $job, $config, $args ) {
 
             my $answer = $work->{answer};
             my $lacks  = branch_packages( $job, $config, $tree );
-            my $body   = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior ), ( $lacks ? packages_note($lacks) : () );
+            my $body   = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior ), unfinished_note($work), ( $lacks ? packages_note($lacks) : () );
             my $pull   = $gh->create_pull( $repo, { title => $answer->{title} || $item->{title}, head => $branch, base => $base, body => $body, ( $lacks ? ( draft => Mojo::JSON::true ) : () ) } );
             log_note( $job, "opened $pull->{html_url}" . ( $lacks ? ' as a draft, because the host lacks ' . join( q{ }, @{ $lacks->{missing} } ) : q{} ) );
             assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $item->{requester} ) );
-            return $job->finish( { repo => $repo, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, summary => $answer->{summary}, commits => $work->{commits}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{usage} } } );
+            return $job->finish( { repo => $repo, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, summary => $answer->{summary}, commits => $work->{commits}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{refusals} // {} }, %{ $work->{usage} } } );
         }
     );
 }
@@ -1373,7 +1379,13 @@ C<($job, $config, $gh, $args, $spoke, $tree, $tools, %fix)>.  The claude run of
 L</spoke_fix>, in C<$tree>, where C<%fix> has C<branch>, C<base> and C<prior>.
 If the run asked a question, changed nothing, or failed, it finishes or fails
 the job and returns undef.  If it committed, it returns the work for
-L</push_or_keep>.
+L</push_or_keep>, with C<refusals>, as L</refusals> gives them.
+
+A run that made no commit and was L</stopped> fails the job, as L</refused>
+says.  That is a run that says in C<blocked> what kept it from finishing,
+whether or not claude refused calls.  A run that made no commit, and says in
+C<blocked> that it finished, finishes as C<no_change>, also when claude
+refused some of its calls.  Its result keeps them in C<denied>.
 
 =cut
 
@@ -1388,8 +1400,8 @@ sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
         add_dirs => $tools->{add_dirs},
         schema   => {
             type       => 'object',
-            required   => [qw{title summary}],
-            properties => { title => { type => 'string' }, summary => { type => 'string' }, question => { type => 'string' }, path => { type => 'string' } },
+            required   => [qw{title summary blocked}],
+            properties => { title => { type => 'string' }, summary => { type => 'string' }, blocked => { type => 'string' }, question => { type => 'string' }, path => { type => 'string' } },
         },
     ) // return;
     my %usage   = usage_of($outcome);
@@ -1408,15 +1420,15 @@ sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
         $job->finish( { repo => $repo, question => $answer->{question}, summary => $answer->{question}, %$asked, %usage } );
         return;
     }
-    if ( !$commits && @{ $outcome->{denied} // [] } ) {
-        $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } );
+    if ( !$commits && stopped($outcome) ) {
+        $job->fail( { repo => $repo, error => refused($outcome), %{ refusals($outcome) }, summary => $answer->{summary}, %usage } );
         return;
     }
     if ( !$commits ) {
-        $job->finish( { repo => $repo, no_change => 1, summary => $answer->{summary}, %usage } );
+        $job->finish( { repo => $repo, no_change => 1, summary => $answer->{summary}, %{ refusals($outcome) }, %usage } );
         return;
     }
-    return { answer => $answer, commits => $commits, usage => \%usage };
+    return { answer => $answer, commits => $commits, usage => \%usage, refusals => refusals($outcome) };
 }
 
 our %REVIEW_SCHEMA = (
@@ -1682,10 +1694,23 @@ If the branch declares system packages that the host lacks, as
 L</branch_packages> finds them, the job makes the pull request a draft, says
 in its comment what is missing, and its result has what
 L</waits_for_packages> gives, as L</spoke_fix> does.  It does so also when
-the run made no commit because claude refused some of its calls, as
-L</address_run> says.  Then the job posts no reply and no comment of the run,
-because they can say that a change was made.  Its comment says only what the
-host lacks, and its result has C<denied>, the refused calls.
+the run made no commit, and claude refused some of its calls or the run says
+in C<blocked> what kept it from finishing, as L</address_run> says.  Then the
+job posts no reply and no comment of the run, because they can say that a
+change was made.  Its comment says only what the host lacks, and its result
+has C<denied>, the refused calls, and C<blocked>, what the run said.  The job
+asks L</branch_packages> once.  When L</address_run> asked already, the job
+takes its answer.
+
+A run that made no commit, and says in C<blocked> that it finished, goes on as
+if claude had refused nothing: the replies, the draft state, and the comment.
+Its result keeps the refused calls in C<denied>.  A run that made no commit
+and says in C<blocked> what kept it from finishing fails the job, as
+L</address_run> says, also when claude refused nothing, unless the host lacks
+a package.  A run that committed
+and says in C<blocked> that something kept it from finishing pushes its
+commits, and the comment of the job says what the run said, as
+L</unfinished_note> gives it.
 
 With C<resume> in its arguments, L</packages_install> queued the job after it
 installed those packages.  Then the job runs even when nothing waits for an
@@ -1726,17 +1751,17 @@ sub spoke_address ( $job, $config, $args ) {
             my $answer = $work->{answer};
             my %open   = map { $_->{id} => 1 } @$pending;
             my @replied;
-            my $refused = $work->{denied};
-            for my $reply ( $refused ? () : grep { $open{ $_->{id} } } @{ $answer->{replies} } ) {
+            my $held = $work->{lacks};
+            for my $reply ( $held ? () : grep { $open{ $_->{id} } } @{ $answer->{replies} } ) {
                 $gh->reply_review_comment( $repo, $item->{number}, $reply->@{qw(id body)} );
                 push @replied, $reply->{id};
             }
-            my $lacks = $work->{lacks} // branch_packages( $job, $config, $tree );
+            my $lacks = exists $work->{lacks} ? $work->{lacks} : branch_packages( $job, $config, $tree );
             draft_state( $job, $gh, $pull, $lacks ? 1 : 0 ) if $lacks || $args->{resume};
-            my $said     = $refused ? undef : @$comments ? $answer->{comment} : $args->{resume} ? $answer->{summary} : undef;
-            my @said     = grep { ( $_ // q{} ) ne q{} } $said, $lacks ? packages_note($lacks) : undef;
+            my $said     = $held ? undef : @$comments ? $answer->{comment} : $args->{resume} ? $answer->{summary} : undef;
+            my @said     = grep { ( $_ // q{} ) ne q{} } $said, $held ? undef : unfinished_note($work), $lacks ? packages_note($lacks) : undef;
             my $answered = @said ? $gh->comment( $repo, $item->{number}, join "\n\n", @said )->{html_url} : undef;
-            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $work->{commits}, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, ( $lacks ? waits_for_packages($lacks) : () ), ( $refused ? ( denied => $refused ) : () ), %{ $work->{usage} } } );
+            return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $work->{commits}, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{refusals} // {} }, %{ $work->{usage} } } );
         }
     );
 }
@@ -1769,12 +1794,17 @@ C<pending> and C<comments>.  If the run failed, it fails the job and returns
 undef.  Otherwise it returns the work for L</push_or_keep>, with C<onto>, the
 head of the pull request that the run started from.
 
-A run can commit nothing because claude refused some of its calls.  Then it
-asks L</branch_packages> what the host lacks.  A missing package can be the
-cause, because a program that the host does not have gets no rule.  If the
-host lacks a package, the work also has C<lacks>, as L</branch_packages>
-gives it, and C<denied>, the refused calls, and the job notes both.  If the
-host lacks nothing, it fails the job, as L</refused> says, and returns undef.
+The work has C<refusals>, as L</refusals> gives them.  A run can commit
+nothing while claude refused some of its calls, or while it says in
+C<blocked> what kept it from finishing.  Then this asks L</branch_packages>
+what the host lacks, and the work has its answer in C<lacks>, also when it is
+undef.  A missing package can be the cause, because a program that the host
+does not have gets no rule, and the run cannot run it.  If the host lacks a
+package, the job notes it, and what claude refused and the run said.  If the
+host lacks nothing, and the run was L</stopped>, it fails the job, as
+L</refused> says, and returns undef.  If the run says that it finished, the
+work goes on as if claude had refused nothing.  A run that made no commit,
+with nothing refused and nothing in C<blocked>, does not ask here.
 
 =cut
 
@@ -1801,9 +1831,10 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
         add_dirs => $tools->{add_dirs},
         schema   => {
             type       => 'object',
-            required   => [qw{summary replies}],
+            required   => [qw{summary blocked replies}],
             properties => {
                 summary => { type => 'string' },
+                blocked => { type => 'string' },
                 replies => { type => 'array', items => { type => 'object', required => [qw{id body}], properties => { id => { type => 'integer' }, body => { type => 'string' } } } },
                 comment => { type => 'string' },
             },
@@ -1817,31 +1848,104 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
     }
     my $commits = $spoke->commits_since( $tree, "origin/$branch" );
 
-    my %work = ( answer => $answer, commits => $commits, usage => \%usage, onto => $pull->{head}{sha} );
+    my %work = ( answer => $answer, commits => $commits, usage => \%usage, onto => $pull->{head}{sha}, refusals => refusals($outcome) );
+
+    return \%work if $commits || ( !@{ $outcome->{denied} // [] } && !stopped($outcome) );
 
     # Before the replies, which can say that a change was made.
-    if ( !$commits && @{ $outcome->{denied} // [] } ) {
-        my $lacks = branch_packages( $job, $config, $tree );
-        if ( !$lacks ) {
-            $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } );
-            return;
-        }
-        log_note( $job, 'waits for ' . join( q{ }, @{ $lacks->{missing} } ) . ", which the branch declares and the host lacks.\n" . refused($outcome) );
-        return { %work, lacks => $lacks, denied => $outcome->{denied} };
+    my $lacks = $work{lacks} = branch_packages( $job, $config, $tree );
+    log_note( $job, 'waits for ' . join( q{ }, @{ $lacks->{missing} } ) . ", which the branch declares and the host lacks.\n" . refused($outcome) ) if $lacks;
+    if ( !$lacks && stopped($outcome) ) {
+        $job->fail( { repo => $repo, error => refused($outcome), %{ refusals($outcome) }, summary => $answer->{summary}, %usage } );
+        return;
     }
     return \%work;
 }
 
+=func blocked
+
+C<($outcome)>.  What the answer of a fix run or of an answer to a review says
+in C<blocked>: what kept the run from finishing, such as a refused call, and
+what it kept the run from doing.  An empty string when C<blocked> is empty, which
+means that the run finished its work, also when claude refused some of its
+calls.  Undef when the answer has no C<blocked>, because claude did not keep
+to the schema.
+
+=cut
+
+sub blocked ($outcome) {
+    my $answer = $outcome->{structured};
+    my $said   = ref $answer eq 'HASH' ? $answer->{blocked} : undef;
+    return if !defined $said;
+    return $said =~ m{\S} ? $said : q{};
+}
+
+=func stopped
+
+C<($outcome)>.  True when the run says in C<blocked> that something kept it
+from finishing, such as a refused call or a fetch that failed.  This does not
+depend on whether claude refused calls.  A run can be refused one call and get
+the same thing with other calls.  Then it leaves C<blocked> empty, and this is
+false.
+
+An answer that has no C<blocked> at all counts as stopped when claude refused
+a call, and as not stopped when claude refused nothing.  Before C<blocked>
+existed, each refused call stopped a run that made no commit, and this keeps
+that for a claude that does not keep to the schema.
+
+=cut
+
+sub stopped ($outcome) {
+    my $why = blocked($outcome);
+    return $why ne q{} if defined $why;
+    return @{ $outcome->{denied} // [] } ? 1 : 0;
+}
+
+=func refusals
+
+C<($outcome)>.  The part of the result of a job that says what claude refused,
+as a hash reference: C<denied>, the refused calls, when there are any, and
+C<blocked>, what the run says kept it from finishing, when it says
+something.  A job that finished keeps them too, so that a person can see them.
+
+=cut
+
+sub refusals ($outcome) {
+    my $why = blocked($outcome) // q{};
+    return { ( @{ $outcome->{denied} // [] } ? ( denied => $outcome->{denied} ) : () ), ( $why ne q{} ? ( blocked => $why ) : () ) };
+}
+
 =func refused
 
-C<($outcome)>.  The error of a run that made no commit because claude refused
-some of its tool calls, with each of them.  A run that made no commit and had
-none refused changed nothing on purpose, and is not an error.
+C<($outcome)>.  The error of a run that made no commit and was L</stopped>.
+It names each refused call, when claude refused some, and what the run says
+in C<blocked>, when it says something.  A run that made no commit and was not
+stopped changed nothing on purpose, and is not an error.
 
 =cut
 
 sub refused ($outcome) {
-    return join "\n", 'the run made no commit, and claude refused these calls, which nobody can approve in -p:', map { "  $_" } @{ $outcome->{denied} };
+    my $why    = blocked($outcome) // q{};
+    my @denied = @{ $outcome->{denied} // [] };
+    my @calls  = @denied ? ( ', and claude refused these calls, which nobody can approve in -p:', map { "\n  $_" } @denied ) : ();
+    return join q{}, 'the run made no commit', @calls, ( $why ne q{} ? "\nThe run says: $why" : () );
+}
+
+=func unfinished_note
+
+C<(\%work)>.  The paragraph for the pull request when the run committed, but
+says in C<blocked> that something kept it from finishing.  It says what the
+run said, and names the refused calls, when there are some.  An empty list when the run says
+that nothing kept it from finishing.
+
+=cut
+
+sub unfinished_note ($work) {
+    my $refusals = $work->{refusals}    // {};
+    my $why      = $refusals->{blocked} // return;
+    my @denied   = map { "`$_`" } @{ $refusals->{denied} // [] };
+    return join q{ }, "The run did not finish this change. It says: $why", ( @denied ? 'Claude refused these calls of the run: ' . join( q{, }, @denied ) . q{.} : () ),
+      'A person must finish the change, or ask the bot here to finish it.';
 }
 
 =func reply

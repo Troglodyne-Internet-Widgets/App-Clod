@@ -459,12 +459,44 @@ subtest spoke_fix => sub {
     is( scalar @{ calls_of('pull') }, 1, 'so no second pull request' );
 
     # In -p nobody can approve a call that the permissions do not allow, so a
-    # run that committed nothing because of one failed.
-    answer( { title => 't', summary => 'Not committed: the commit was refused.' }, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'rtk git add -A' } } ] );
+    # run that committed nothing because of one failed.  An answer with no
+    # blocked, from a claude that did not keep to the schema, says nothing
+    # about why, so it counts as blocked.
+    my @add = ( denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'rtk git add -A' } } ] );
+    answer( { title => 't', summary => 'Not committed: the commit was refused.' }, @add );
     my $refused = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
     is( $refused->{state}, 'failed', 'a run that commits nothing because claude refused a call fails' ) or diag Mojo::Util::dumper $refused->{result};
     like( $refused->{result}{error}, qr/made\ no\ commit.*\n\ \ Bash\(rtk\ git\ add\ -A\)\z/s, 'and its error names each refused call, as the rule that would allow it' );
     is( scalar @{ calls_of('pull') }, 1, 'and it opens nothing' );
+
+    answer( { title => 't', summary => 'Not committed.', blocked => 'git add was refused, so I could not commit the change.' }, @add );
+    my $blocked = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( $blocked->{state}, 'failed', 'a run that commits nothing and says that a refused call blocked it fails' ) or diag Mojo::Util::dumper $blocked->{result};
+    my $says = qr/The\ run\ says:\ git\ add\ was\ refused/;
+    like( $blocked->{result}{error}, qr/made\ no\ commit .* Bash\(rtk\ git\ add\ -A\)\n$says/sx, 'and its error names the refused call and what the run said' );
+
+    # A run can be refused one call, and get the same with other calls.
+    answer( { title => 't', summary => 'Nothing to change. The tests pass.', blocked => q{} }, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'cd t && prove -l' } } ] );
+    my $finished = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( $finished->{state},                                         'finished',                               'a run that commits nothing and says that nothing blocked it finishes, also when claude refused a call' ) or diag Mojo::Util::dumper $finished->{result};
+    is( [ @{ $finished->{result} }{qw{no_change denied blocked}} ], [ 1, ['Bash(cd t && prove -l)'], undef ], 'as no change, with the refused calls in its result' );
+    is( scalar @{ calls_of('pull') },                               1,                                        'and it opens nothing' );
+
+    # A run can be blocked by something other than a refused call.
+    my $fetch = 'The fetch of the release failed, so the vendored copy is not updated.';
+    answer( { title => 't', summary => 'Not updated.', blocked => $fetch } );
+    my $unfetched = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( $unfetched->{state},          'failed',                                       'a run that commits nothing and says what blocked it fails, also when claude refused nothing' ) or diag Mojo::Util::dumper $unfetched->{result};
+    is( $unfetched->{result}{error},  "the run made no commit\nThe run says: $fetch", 'and its error says what the run said, with no list of refused calls' );
+    is( scalar @{ calls_of('pull') }, 1,                                              'and it opens nothing' );
+
+    @calls = ();
+    answer( { title => 't', summary => 'Renamed the sub.', blocked => 'git push was refused, so the callers in bin/ are not renamed.' }, commit => 1, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'rtk git push' } } ] );
+    my $partial = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    is( $partial->{state}, 'finished', 'a run that commits and says that a refused call blocked it finishes' ) or diag Mojo::Util::dumper $partial->{result};
+    like( $partial->{result}, { pr => 101, blocked => qr/callers\ in\ bin/, denied => ['Bash(rtk git push)'] }, 'and opens the pull request, with what blocked it in its result' );
+    my $unfinished = qr/did\ not\ finish\ this\ change\.\ It\ says:\ git\ push/;
+    like( calls_of('pull')->[0][2]{body}, qr/Renamed\ the\ sub\. .* $unfinished .* `Bash\(rtk\ git\ push\)`/sx, 'and its body says what the run said, and the refused calls' );
 
     answer( { title => 't', summary => 's' }, commit => 1 );
     my $unnamed = run_job( spoke_fix => { item => { %item, title => '!!!' }, repo => 'Test-Org/one', instructions => 'x' } );
@@ -691,6 +723,37 @@ subtest spoke_address => sub {
     is( $refused->{state}, 'failed', 'an answer to a review that commits nothing because claude refused a call fails' ) or diag Mojo::Util::dumper $refused->{result};
     like( $refused->{result}{error}, qr/Bash\(rtk\ git\ commit\ -m\ x\)/, 'and names the refused call' );
     is( calls_of('reply'), [], 'and replies to nobody' );
+
+    my @commit = ( denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'rtk git commit -m x' } } ] );
+    answer( { summary => 'Renamed.', blocked => 'git commit was refused, so the rename is not committed.', replies => [ { id => 21, body => 'Done.' } ] }, @commit );
+    my $blocked = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'answer them' } );
+    is( $blocked->{state}, 'failed', 'an answer to a review that commits nothing and says that a refused call blocked it fails' ) or diag Mojo::Util::dumper $blocked->{result};
+    my $says = qr/The\ run\ says:\ git\ commit\ was\ refused/;
+    like( $blocked->{result}{error}, qr/Bash\(rtk\ git\ commit\ -m\ x\)\n$says/, 'and names the refused call and what the run said' );
+    is( calls_of('reply'), [], 'and replies to nobody' );
+
+    answer( { summary => 'The name is right already. The tests pass.', blocked => q{}, replies => [ { id => 21, body => 'The name is right already.' } ] }, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'cd t && prove -l' } } ] );
+    my $finished = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'answer them' } );
+    is( $finished->{state},                               'finished',                     'an answer to a review that commits nothing and says that nothing blocked it finishes, also when claude refused a call' ) or diag Mojo::Util::dumper $finished->{result};
+    is( [ map { $_->[2]{body} } @{ calls_of('reply') } ], ['The name is right already.'], 'and replies' );
+    is( $finished->{result}{denied},                      ['Bash(cd t && prove -l)'],     'and keeps the refused calls in its result' );
+
+    @calls = ();
+    my $fetch = 'The fetch of the release failed, so the vendored copy is not updated.';
+    answer( { summary => 'Not updated.', blocked => $fetch, replies => [ { id => 21, body => 'Updated.' } ] } );
+    my $unfetched = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'answer them' } );
+    is( $unfetched->{state},                        'failed',                                       'an answer to a review that commits nothing and says what blocked it fails, also when claude refused nothing' ) or diag Mojo::Util::dumper $unfetched->{result};
+    is( $unfetched->{result}{error},                "the run made no commit\nThe run says: $fetch", 'and its error says what the run said, with no list of refused calls' );
+    is( [ calls_of('reply'), calls_of('comment') ], [ [], [] ],                                     'and says nothing on the pull request' );
+
+    @calls = ();
+    answer( { summary => 'Renamed half.', blocked => 'git push was refused, so the callers in bin/ are not renamed.', replies => [ { id => 21, body => 'Renamed in lib/.' } ] }, commit => 1, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'rtk git push' } } ] );
+    my $partial = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'answer them' } );
+    is( $partial->{state}, 'finished', 'an answer to a review that commits and says that a refused call blocked it finishes' ) or diag Mojo::Util::dumper $partial->{result};
+    like( $partial->{result}, { commits => 1, blocked => qr/callers\ in\ bin/, denied => ['Bash(rtk git push)'] }, 'and pushes, with what blocked it in its result' );
+    is( [ map { $_->[2]{body} } @{ calls_of('reply') } ], ['Renamed in lib/.'], 'and replies' );
+    my $unfinished = qr/\AThe\ run\ did\ not\ finish\ this\ change\./;
+    like( [ map { $_->[2]{body} } @{ calls_of('comment') } ], [qr/$unfinished\ It\ says:\ git\ push .* `Bash\(rtk\ git\ push\)`/sx], 'and its comment says what the run said, and the refused calls' );
 
     @calls                  = ();
     $state{review_comments} = [];
@@ -1588,7 +1651,37 @@ subtest 'a branch that needs system packages' => sub {
     is( $lacks_nothing->{state}, 'failed', 'with nothing missing, a run that commits nothing because claude refused a call still fails' );
     like( $lacks_nothing->{result}{error}, qr/made\ no\ commit .* Bash\(ffmpeg\ -version\)/s, 'and names the refused call' );
     is( [ calls_of('reply'), calls_of('comment') ], [ [], [] ], 'and says nothing on the pull request' );
+
+    # A resumed run that did its work, with one call refused along the way.
+    @calls                  = ();
+    $state{pull}            = { %{ $state{pull} }, draft => Mojo::JSON::true };
+    $state{review_comments} = [];
+    answer( { summary => 'Ran prove -l t/video.t: All tests successful. Nothing to change.', blocked => q{}, replies => [] }, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'cd t && ffmpeg -version' } } ] );
+    my $asks  = Test::MockModule->new('App::Clod::Tasks');
+    my $asked = 0;
+    $asks->redefine( branch_packages => sub (@args) { $asked++; return $asks->original('branch_packages')->(@args) } );
+    my $resumed_refused = run_job( spoke_address => { item => { %item, kind => 'address_review', is_pr => 1, number => 101 }, repo => 'Test-Org/one', resume => 1 } );
+    is( $resumed_refused->{state},                          'finished',                                                           'a resumed run that commits nothing and says that nothing blocked it finishes, also when claude refused a call' ) or diag Mojo::Util::dumper $resumed_refused->{result};
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Ran prove -l t/video.t: All tests successful. Nothing to change.'], 'and posts its summary on the pull request' );
+    like( calls_of('graphql'), [ [ 'graphql', '/graphql', { query => qr/markPullRequestReadyForReview/ } ] ], 'and makes the draft ready for review' );
+    is( [ @{ $resumed_refused->{result} }{qw{needs_packages denied}} ], [ undef, ['Bash(cd t && ffmpeg -version)'] ], 'and needs no package, and keeps the refused calls in its result' );
+    is( $asked,                                                         1,                                            'and the job asks once what the host lacks' );
+    $asks->unmock('branch_packages');
     delete $have{ffmpeg};
+
+    # A run that says the program is missing, with nothing refused.
+    @calls                  = ();
+    $state{pull}            = { %{ $state{pull} }, draft => Mojo::JSON::false };
+    $state{review_comments} = [ { id => 53, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'test it with ffmpeg' } ];
+    my $missing = 'ffmpeg is not installed, so t/video.t cannot run.';
+    answer( { summary => 'Not tested.', blocked => $missing, replies => [ { id => 53, body => 'Done.' } ], comment => 'Tested it.' } );
+    my $absent = run_job( spoke_address => { item => { %item, kind => 'address_review', is_pr => 1, number => 101 }, repo => 'Test-Org/one' } );
+    is( $absent->{state}, 'finished', 'a run that commits nothing and says what blocked it, on a branch that needs a package that the host lacks, does not fail' ) or diag Mojo::Util::dumper $absent->{result};
+    like( $absent->{result}, { needs_packages => 1, packages => ['ffmpeg'], pr => 101, blocked => $missing }, 'it says what the host lacks, and what blocked the run' );
+    is( $absent->{result}{denied}, undef, 'and lists no refused calls, because there were none' );
+    like( calls_of('graphql')->[0][2]{query}, qr/convertPullRequestToDraft/, 'and makes the pull request a draft' );
+    is( calls_of('reply'),                                  [],                                                                     'and replies to nobody' );
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], [ match qr/\AThis\ pull\ request\ is\ a\ draft,\ because .* ffmpeg/s ], 'and its comment says what the host lacks, and nothing that the run said' );
 
     my $tree = $tmp->child('declares-tests')->make_path;
     $tree->child('metamerge.yml')->spew(<<~'YAML');
