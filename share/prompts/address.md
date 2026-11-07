@@ -26,6 +26,8 @@ one as well, with `--force-with-lease`.
 
 {{instructions}}
 
+{{packages}}
+
 {{tools}}
 
 Answer with `summary`, and `replies`: one entry per thread `id`, with the

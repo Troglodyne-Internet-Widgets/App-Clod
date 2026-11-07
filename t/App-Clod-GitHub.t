@@ -40,6 +40,11 @@ get '/search/issues' => sub ($c) {
     my $count = $c->param('q') =~ m{many} ? $App::Clod::GitHub::SEARCH_MAX : 1;
     return $c->render( json => { items => [ map { { number => $_ } } 1 .. $count ] } );
 };
+post '/graphql' => sub ($c) {
+    $seen{graphql} = $c->req->json;
+    return $c->render( json => { errors => [ { message => 'Could not resolve to a node' }, { message => 'and one more' } ] } ) if $c->req->json->{variables}{id} eq 'PR_gone';
+    return $c->render( json => { data   => { pullRequest => { isDraft => Mojo::JSON::true } } } );
+};
 get '/repos/Test-Org/one' => sub ($c) { return $c->render( json => { message => 'Bad credentials' }, status => 401 ) };
 
 # Answers each request with the next status of its queue, and then with 200.
@@ -82,6 +87,16 @@ subtest search_issues => sub {
     is( [ map { $_->{number} } @$found ], [1],                              'the items of the search' );
     is( $seen{q},                         'user:Test-Org is:issue is:open', 'of the query as given' );
     like( dies { $gh->search_issues('user:Test-Org many') }, qr/finds\ more\ than\ 1000\ items/, 'and a search that finds more than GitHub returns dies, because its count would be too low' );
+};
+
+subtest graphql => sub {
+    is( $gh->mark_draft('PR_one'), { pullRequest => { isDraft => Mojo::JSON::true } }, 'a mutation returns the data of the answer' );
+    like( $seen{graphql}, { query => qr/convertPullRequestToDraft/, variables => { id => 'PR_one' } }, 'and posts the query with its variables' );
+    $gh->mark_ready('PR_one');
+    like( $seen{graphql}{query}, qr/markPullRequestReadyForReview/, 'a draft is made ready with its own mutation' );
+    is( dies { $gh->mark_ready('PR_gone') },                              "GitHub GraphQL: Could not resolve to a node; and one more\n", 'an answer with errors dies with each of them, though its status is 200' );
+    is( App::Clod::GitHub::graphql_url('https://api.github.test'),        'https://api.github.test/graphql',                             'the GraphQL API of github.com is beside its REST API' );
+    is( App::Clod::GitHub::graphql_url('https://forge.test.test/api/v3'), 'https://forge.test.test/api/graphql',                         'and that of an Enterprise Server replaces /api/v3' );
 };
 
 subtest request => sub {

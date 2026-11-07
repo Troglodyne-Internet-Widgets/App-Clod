@@ -317,7 +317,8 @@ sub reply_review_comment ( $self, $repo, $number, $comment_id, $body ) {
 
 =method create_pull
 
-C<($repo, \%pull)>, where C<%pull> has C<title>, C<head>, C<base> and C<body>.
+C<($repo, \%pull)>, where C<%pull> has C<title>, C<head>, C<base> and C<body>,
+and optionally C<draft>, true for a draft.
 
 =cut
 
@@ -338,6 +339,57 @@ C<($repo, $number, \%fields)>.
 =cut
 
 sub update_pull ( $self, $repo, $number, $fields ) { return $self->patch( "/repos/$repo/pulls/$number", $fields ) }
+
+=method mark_draft
+
+C<($node_id)>.  Makes the pull request with that C<node_id> a draft.  The
+REST API cannot do this, so it goes through L</graphql>.
+
+=cut
+
+sub mark_draft ( $self, $node_id ) {
+    return $self->graphql( 'mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { pullRequest { isDraft } } }', id => $node_id );
+}
+
+=method mark_ready
+
+C<($node_id)>.  Makes the draft pull request with that C<node_id> ready for
+review, through L</graphql>, as L</mark_draft> does.
+
+=cut
+
+sub mark_ready ( $self, $node_id ) {
+    return $self->graphql( 'mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }', id => $node_id );
+}
+
+=method graphql
+
+C<($query, %variables)>.  Posts the query to the GraphQL API, at
+L</graphql_url>, and returns C<data> of the answer.  GitHub answers a query
+that it cannot do with a 200 and C<errors>.  Then this dies with each
+message.
+
+=cut
+
+sub graphql ( $self, $query, %variables ) {
+    my $answer = $self->request( POST => graphql_url( $self->api ), json => { query => $query, variables => \%variables } )->json // {};
+    my @errors = map { $_->{message} // 'no message' } @{ $answer->{errors} // [] };
+    die 'GitHub GraphQL: ' . join( q{; }, @errors ) . "\n" if @errors;
+    return $answer->{data};
+}
+
+=func graphql_url
+
+C<($api)>, an L</api>.  The URL of the GraphQL API beside it: F</graphql>
+for api.github.com, and F</api/graphql> for a GitHub Enterprise Server, whose
+REST API is at F</api/v3>.
+
+=cut
+
+sub graphql_url ($api) {
+    return $api =~ s{/api/v3/?\z}{/api/graphql}r if $api =~ m{/api/v3/?\z};
+    return "$api/graphql";
+}
 
 =method review
 

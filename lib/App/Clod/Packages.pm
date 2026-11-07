@@ -168,6 +168,7 @@ comes from L</os_release>.
 
 L<App::Clod::Tasks/self_check> asks this module what the host lacks, and
 L<App::Clod::Tasks/packages_install> installs it, from a button of the
-dashboard.
+dashboard.  L<App::Clod::Tasks/branch_packages> asks the same about the
+branch of a pull request of the bot.
 
 =cut

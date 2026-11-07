@@ -92,6 +92,31 @@
     </div>
   </main>
 
+  <div class="modal fade" id="confirm-install" tabindex="-1" aria-labelledby="confirm-install-title" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="confirm-install-title"><i class="bi bi-shield-exclamation"></i> Read the declaration before you install it</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cancel"></button>
+        </div>
+        <div class="modal-body">
+          <p>Nobody has reviewed the branch that declares these packages. The bot wrote that branch from the text of an issue.</p>
+          <p>If you confirm, the host installs these packages as root:</p>
+          <ul class="font-monospace" id="confirm-packages"></ul>
+          <div id="confirm-archives">
+            <p>The install also adds each of these apt archives and its signing key. After that, the host trusts the archive for every package that it installs, not only for these.</p>
+            <ul id="confirm-sources"></ul>
+          </div>
+          <p class="mb-0">Read the change to the declaration in the diff of the pull request before you confirm: <a id="confirm-diff" target="_blank" rel="noopener noreferrer">metamerge.yml in the pull request</a>.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-danger" id="confirm-go">I read the diff. Install and resume</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.8/js/bootstrap.bundle.min.js" integrity="sha512-HvOjJrdwNpDbkGJIG2ZNqDlVqMo77qbs4Me4cah0HoDrfhrbA+8SBlZn1KrvAQw7cILLPFJvdwIgphzQmMm+Pw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script>
     const base = '<%= url_for('/') %>'.replace(/\/$/, '');
@@ -159,12 +184,35 @@
     });
 
     const buttons = a => (a.buttons || []).map(b => `<button type="button" class="btn btn-sm act text-nowrap"
-      data-act="${esc(b.act)}" data-body="${esc(JSON.stringify(b.body || {}))}">${esc(b.label)}</button>`).join('');
+      data-act="${esc(b.act)}" data-body="${esc(JSON.stringify(b.body || {}))}"${b.confirm ? ` data-confirm="${esc(JSON.stringify(b.confirm))}"` : ''}>${esc(b.label)}</button>`).join('');
 
-    // Every action needs this header, which no other site can make the browser send.
-    document.getElementById('actions').addEventListener('click', async e => {
+    // A button with confirm posts only from the dialog, after it shows what the install does.
+    const confirmDialog = new bootstrap.Modal(document.getElementById('confirm-install'));
+    let confirming = null;
+    function ask(button) {
+      const c = JSON.parse(button.dataset.confirm);
+      document.getElementById('confirm-packages').innerHTML = c.packages.map(p => `<li>${esc(p)}</li>`).join('');
+      document.getElementById('confirm-sources').innerHTML = c.sources.map(s => `<li><span class="font-monospace">${esc(s.name)}</span>: ${esc(s.uri)}<br>
+        <small>key ${esc(s.key)}, fingerprint <span class="font-monospace">${esc(s.fingerprint)}</span></small></li>`).join('');
+      document.getElementById('confirm-archives').hidden = !c.sources.length;
+      document.getElementById('confirm-diff').href = c.diff_url;
+      confirming = button;
+      confirmDialog.show();
+    }
+    document.getElementById('confirm-go').addEventListener('click', () => {
+      confirmDialog.hide();
+      if (confirming) act(confirming);
+      confirming = null;
+    });
+
+    document.getElementById('actions').addEventListener('click', e => {
       const button = e.target.closest('button[data-act]');
       if (!button) return;
+      button.dataset.confirm ? ask(button) : act(button);
+    });
+
+    // Every action needs this header, which no other site can make the browser send.
+    async function act(button) {
       button.disabled = true;
       const res = await fetch(`${base}/act/${button.dataset.act}`, {
         method: 'POST', headers: { 'X-Clod-Action': 'yes', 'Content-Type': 'application/json' }, body: button.dataset.body,
@@ -174,7 +222,7 @@
         return;
       }
       refresh();
-    });
+    }
 
     async function work() {
       const d = await (await fetch(`${base}/api/work`)).json();

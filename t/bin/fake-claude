@@ -39,9 +39,16 @@ open my $in, '<', $ENV{FAKE_CLAUDE_STREAM} or die "$ENV{FAKE_CLAUDE_STREAM}: $!"
 print {*STDOUT} readline $in;
 close $in or die $!;
 
-# A spoke run commits, as the real one does in a worktree.
+# A spoke run commits, as the real one does in a worktree.  FAKE_CLAUDE_FILE
+# names a file that it writes FAKE_CLAUDE_TEXT to, and adds, before it commits.
 if ( $ENV{FAKE_CLAUDE_COMMIT} ) {
     my ( $out, $err );
+    if ( my $file = $ENV{FAKE_CLAUDE_FILE} ) {
+        open my $fh, '>', $file or die "$file: $!";
+        print {$fh} $ENV{FAKE_CLAUDE_TEXT};
+        close $fh                                                        or die "$file: $!";
+        IPC::Run::run( [ qw{git add}, $file ], '>', \$out, '2>', \$err ) or die "git add: $err";
+    }
     IPC::Run::run( [ qw{git commit --quiet --allow-empty -m}, 'fake change' ], '>', \$out, '2>', \$err ) or die "git commit: $err";
 }
 exit( $ENV{FAKE_CLAUDE_EXIT} // 0 );

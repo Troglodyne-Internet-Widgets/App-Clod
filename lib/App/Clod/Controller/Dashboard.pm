@@ -8,7 +8,10 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base 'Mojolicious::Controller', -signatures;
 
+use Digest::SHA ();
 use Time::HiRes qw{time};
+
+use Dist::Conformance::Check::SystemPackages();
 
 use App::Clod::Budget();
 use App::Clod::Claude();
@@ -56,13 +59,15 @@ L<App::Clod::Outage/summary>.  The things that need a person, each a
 C<{level, text}> and sometimes a C<job>.  The page filters them by C<level>
 in the browser, so the server sends all of them.  An outage comes first.  An item that
 a button can settle has C<buttons>, each a C<{label, act}> and sometimes a
-C<body>: the dashboard posts C<body> to F</act/E<lt>actE<gt>>.  A failed job
+C<body>: the dashboard posts C<body> to F</act/E<lt>actE<gt>>.  A button with
+C<confirm> opens a dialog first, see L</waiting_items>.  A failed job
 has Retry and Ignore, and a spoke that fails harness checks has Fix, unless a
 L<App::Clod::Tasks/harness_fix> of it waits or runs, or its pull request
 waits for review.  Then the item has C<link>, a C<{url, label}>, to the pull
 request, and no button.  A spoke whose declaration of system packages is not
-valid is an item, as a scan that failed is.  A failed job that
-somebody ignored is not an item.
+valid is an item, as a scan that failed is.  A pull request whose branch
+needs system packages that the host lacks is an item of L</waiting_items>.
+A failed job that somebody ignored is not an item.
 
 =cut
 
@@ -135,6 +140,7 @@ sub action_items ( $self, $budget, $outages = [] ) {
     push @actions, { level => 'warning', text => 'Claude work is paused until the quota resets' . ( $budget->{paused_until} ? q{ at } . gmtime( $budget->{paused_until} ) . ' UTC' : q{} ) . q{.} } if $budget->{paused};
 
     push @actions, $self->self_items( $minion, App::Clod::Tasks::last_result( $minion, 'self_check' ) );
+    push @actions, waiting_items($minion);
 
     my $failed = $minion->jobs( { states => ['failed'] } );
     my $shown  = 0;
@@ -269,17 +275,78 @@ sub button_item ( $minion, $task, $text, $button, $repo = undef ) {
 
 =func pending_job
 
-C<($minion, $task, $repo)>.  The id of a job of C<$task> that waits or runs,
-or undef.  With C<$repo>, only a job with that C<repo> in its notes counts.
+C<($minion, $task, $repo, $note)>.  The id of a job of C<$task> that waits or
+runs, or undef.  With C<$repo>, only a job with that value in its notes counts:
+in the note C<$note>, which is C<repo> unless it is given.
 
 =cut
 
-sub pending_job ( $minion, $task, $repo = undef ) {
+sub pending_job ( $minion, $task, $repo = undef, $note = 'repo' ) {
     my $jobs = $minion->jobs( { tasks => [$task], states => [qw{inactive active}] } );
     while ( my $info = $jobs->next ) {
-        return $info->{id} if !defined $repo || ( $info->{notes}{repo} // q{} ) eq $repo;
+        return $info->{id} if !defined $repo || ( $info->{notes}{$note} // q{} ) eq $repo;
     }
     return;
+}
+
+=func waiting_items
+
+C<($minion)>.  An action item for each pull request whose branch needs system
+packages that the host lacks, as the result of a
+L<App::Clod::Tasks/spoke_fix> or L<App::Clod::Tasks/spoke_address> says,
+from L<App::Clod::Tasks/waits_for_packages>.  Only the newest finished job of
+each pull request counts, so a later run that needs nothing clears the item.
+A job that somebody ignored is not an item.
+
+The item has two buttons.  Install and resume posts the job to
+F</act/packages/install>, and carries C<confirm>, which the page shows in a
+dialog before it posts: C<pr_url>, C<diff_url>, the change to
+F<metamerge.yml> in the diff of the pull request, C<packages>, and
+C<sources>, each with C<name>, C<uri>, C<key> and C<fingerprint>.  Ignore
+takes the item off the list.
+
+While an install for the job waits or runs, the item names it and has no
+button.  After the install, the item names the job that resumes the work
+while that job waits or runs, and then is gone.
+
+=cut
+
+my %PENDING = map { $_ => 1 } qw{inactive active};
+
+sub waiting_items ($minion) {
+    my $jobs = $minion->jobs( { tasks => [qw{spoke_fix spoke_address}], states => ['finished'] } );
+    my ( %seen, @items );
+    while ( my $info = $jobs->next ) {
+        my $result = ref $info->{result} eq 'HASH' ? $info->{result} : next;
+        my $url    = $result->{pr_url} // next;
+        next if $seen{$url}++ || !$result->{needs_packages} || $info->{notes}{ignored};
+        my $id   = $info->{id};
+        my $text = "$result->{repo}#$result->{pr} needs " . needed( @{ $result->{needs} // [] } ) . ' to test its change.';
+        if ( my $resumed = $info->{notes}{resumed} ) {
+            my $next = $minion->job($resumed);
+            push @items, { level => 'warning', job => $resumed, text => "$text The packages are installed, and the work resumes." } if $next && $PENDING{ $next->info->{state} };
+            next;
+        }
+        if ( my $install = pending_job( $minion, 'packages_install', $id, 'resume' ) ) {
+            push @items, { level => 'warning', job => $install, text => "$text It is queued." };
+            next;
+        }
+        my %confirm = (
+            pr_url   => $url,
+            diff_url => "$url/files#diff-" . Digest::SHA::sha256_hex($Dist::Conformance::Check::SystemPackages::FILE),
+            packages => $result->{packages} // [],
+            sources  => [ map { { name => $_->{name}, uri => $_->{uri}, key => $_->{key}, fingerprint => $_->{fingerprint} } } @{ $result->{sources} // [] } ],
+        );
+        push @items,
+          {
+            level   => 'warning',
+            job     => $id,
+            text    => $text,
+            link    => { url => $url, label => pull_label($url) },
+            buttons => [ { label => 'Install and resume', act => 'packages/install', body => { job => $id }, confirm => \%confirm }, { label => 'Ignore', act => "jobs/$id/ignore" } ],
+          };
+    }
+    return @items;
 }
 
 =method self_update
@@ -365,13 +432,16 @@ sub retry ($self) {
 
 =method ignore
 
-Marks the failed job C<id> as ignored, with the note C<ignored>, the time.  It
-stays in Minion, and stops being an action item.
+Marks the job C<id> as ignored, with the note C<ignored>, the time.  It
+stays in Minion, and stops being an action item.  The job must have failed, or
+its branch must need system packages, as L</waiting_job> finds.  Any other job
+is a 404.
 
 =cut
 
 sub ignore ($self) {
-    my $job = $self->failed_job // return;
+    my $id  = $self->param('id');
+    my $job = waiting_job( $self->minion, $id ) ? $self->minion->job($id) : ( $self->failed_job // return );
     $job->note( ignored => time );
     return $self->render( json => { ignored => $job->id } );
 }
@@ -418,17 +488,63 @@ spoke declares on its default branch, and no name that a request names.  A
 spoke that misses no package is a 404.  If one waits or runs for it already,
 it queues no second one, and says which.
 
+With C<job> in the body in place of C<repo>, it is the button Install and
+resume of L</waiting_items>.  Then the packages and the archives come from
+the result of that job, which L</waiting_job> must find, and the install has
+C<resume>, the job, as L<App::Clod::Tasks/packages_install> takes it.  Any
+other job is a 404.  So the button installs what the hub read from the
+branch of that job, and no name that a request names.  If an install for the
+job waits or runs already, it queues no second one, and says which.
+
 =cut
 
 sub packages_install ($self) {
-    my $minion  = $self->minion;
-    my $repo    = ( $self->req->json // {} )->{repo}                     // q{};
+    my $minion = $self->minion;
+    my $body   = $self->req->json // {};
+    return $self->resume_install( $body->{job} ) if exists $body->{job};
+    my $repo    = $body->{repo}                                          // q{};
     my $check   = App::Clod::Tasks::last_result( $minion, 'self_check' ) // {};
     my $lacks   = ( $check->{system_packages} // {} )->{$repo}           // {};
     my @missing = @{ $lacks->{missing} // [] };
     return $self->render( json => { error => "$repo misses no system package" }, status => 404 ) if !@missing;
     my $id = pending_job( $minion, 'packages_install', $repo ) // $minion->enqueue( packages_install => [ { repo => $repo, packages => \@missing, sources => $lacks->{sources} // [] } ], { notes => { repo => $repo } } );
     return $self->render( json => { queued => $id } );
+}
+
+=method resume_install
+
+C<($id)>.  The part of L</packages_install> for C<job>: it queues the install
+of the packages of job C<$id>, with C<resume>.
+
+=cut
+
+sub resume_install ( $self, $id ) {
+    my $minion = $self->minion;
+    my $info   = waiting_job( $minion, $id ) // return $self->render( json => { error => 'job ' . ( $id // q{} ) . ' waits for no system package' }, status => 404 );
+    my $result = $info->{result};
+    my $queued = pending_job( $minion, 'packages_install', $info->{id}, 'resume' ) // $minion->enqueue(
+        packages_install => [ { repo => $result->{repo}, packages => $result->{packages}, sources => $result->{sources} // [], resume => $info->{id} } ],
+        { notes => { resume => $info->{id}, origin => "$result->{repo}#$result->{pr}" } }
+    );
+    return $self->render( json => { queued => $queued } );
+}
+
+=func waiting_job
+
+C<($minion, $id)>.  The info of the job C<$id> when it finished with a branch
+that needs system packages, as L<App::Clod::Tasks/waits_for_packages> says,
+and its work has not resumed.  Undef for any other job, and for an C<$id>
+that is not a number.
+
+=cut
+
+sub waiting_job ( $minion, $id ) {
+    return if ( $id // q{} ) !~ m{\A\d+\z};
+    my $job    = $minion->job($id) // return;
+    my $info   = $job->info;
+    my $result = ref $info->{result} eq 'HASH' ? $info->{result} : return;
+    return if $info->{state} ne 'finished' || !$result->{needs_packages} || !@{ $result->{packages} // [] } || $info->{notes}{resumed};
+    return $info;
 }
 
 =method work
