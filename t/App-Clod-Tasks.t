@@ -1497,6 +1497,7 @@ subtest 'a branch that needs system packages' => sub {
     is( $fix->{state}, 'finished', 'a fix whose branch needs a package that the host lacks does not fail' ) or diag Mojo::Util::dumper $fix->{result};
     like( $fix->{result},                            { repo => 'Test-Org/one', pr => 101, pr_url => qr{/pull/101\z}, branch => qr{\Aclod/}, needs_packages => 1, packages => ['ffmpeg'], sources => [], needs => [ { name => 'ffmpeg', package => 'ffmpeg', archive => undef } ] }, 'it names the pull request and what the host lacks, as an install takes it' );
     like( record_of("$tmp/branch-record")->{prompt}, qr/x_system_packages .* Mark\s+only\s+those\s+tests\s+as\s+TODO/s,                                                                                                                                                             'the run is told to declare a dependency, and how to commit tests that fail for it' );
+    unlike( record_of("$tmp/branch-record")->{flags}{'--allowedTools'}[0], qr/ffmpeg/, 'a branch that declares nothing before the run gives the run no rule for a test' );
     ok( dies { git( '--git-dir', $bare, qw{cat-file -e main:metamerge.yml} ) }, 'the declaration is on the branch alone, not on the default branch' );
     my $pull = calls_of('pull')->[0][2];
     ok( $pull->{draft}, 'the pull request is a draft' );
@@ -1536,7 +1537,11 @@ subtest 'a branch that needs system packages' => sub {
     $state{pull}           = { user => { login => $BOT }, number => 101, draft => Mojo::JSON::true, node_id => 'PR_test', head => { ref => $fix->{result}{branch}, sha => git( '--git-dir', $bare, 'rev-parse', $fix->{result}{branch} ), repo => { full_name => 'Test-Org/one' } }, base => { ref => 'main' }, html_url => $fix->{result}{pr_url} };
     $state{issue_comments} = [];
     answer( { summary => 'Ran prove -l t/video.t: All tests successful.', replies => [] }, commit => 1 );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/resume-record";
     my $done = run_id($resumed);
+    my $ran  = record_of("$tmp/resume-record");
+    like( $ran->{flags}{'--allowedTools'}[0], qr/,Bash\(ffmpeg\ -version\),Bash\(rtk\ ffmpeg\ -version\)\z/, 'the resumed run may run the test that the branch declares, exactly as it is declared' );
+    like( $ran->{prompt},                     qr/run\ these\ tests .* `ffmpeg\ -version`/s,                  'and is told so' );
     is( $done->{state},                                     'finished',                                        'the resumed run finishes, with nothing that waits for an answer' ) or diag Mojo::Util::dumper $done->{result};
     is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Ran prove -l t/video.t: All tests successful.'], 'and posts its summary on the pull request' );
     like( calls_of('graphql'), [ [ 'graphql', '/graphql', { query => qr/markPullRequestReadyForReview/, variables => { id => 'PR_test' } } ] ], 'and makes the draft ready for review, as the host lacks nothing now' );
@@ -1556,6 +1561,36 @@ subtest 'a branch that needs system packages' => sub {
     my $refusal   = qr/GitHub\ GraphQL:\ Pull\ request\ is\ in\ clean\ status/;
     like( $address->{notes}{log},            bag { item { message => qr/$undrafted\ is\ a\ draft:\ $refusal/ }; etc }, 'and a GraphQL error is a note, which does not fail the job' );
     like( calls_of('comment')->[0][2]{body}, qr/is\ a\ draft,\ because .* ffmpeg/s,                                    'and its comment says what the host lacks' );
+
+    my $tree = $tmp->child('declares-tests')->make_path;
+    $tree->child('metamerge.yml')->spew(<<~'YAML');
+        x_system_packages:
+          ffmpeg: { deb: ffmpeg, test: "ffmpeg -h encoder=libx264,libx265" }
+          probe:  { deb: ffmpeg, test: "ffmpeg -h encoder=libx264,libx265" }
+          glob:   { deb: glob, test: "ls *" }
+          paren:  { deb: paren, test: "x) Bash(rm" }
+          slash:  { deb: slash, test: 'echo \(' }
+          list:   { deb: list, test: "list -v; rm -rf /bogus" }
+          pipe:   { deb: pipe, test: "pipe -v | sh" }
+          home:   { deb: home, test: "home -v $HOME" }
+          quoted: { deb: quoted, test: "quoted -e 'x y'" }
+          env:    { deb: env, test: "PATH=/bogus env -v" }
+          other:  { rpm: other, test: other -v }
+        YAML
+    my $job = $minion->job( $minion->enqueue( spoke_fix => [ {} ] ) );
+    is( [ App::Clod::Tasks::declared_tests( $job, $config, $tree ) ], ['ffmpeg -h encoder=libx264,libx265'], 'of the tests that resolve on this host, once each, a test with a comma becomes a rule, and one that a shell or Claude Code would read as more than the hub runs does not' );
+    my @refused = map { $_->{message} } @{ $job->info->{notes}{log} };
+    my @shell   = ( 'PATH=/bogus env -v', 'ls *', 'home -v $HOME', 'list -v; rm -rf /bogus', 'x) Bash(rm', 'pipe -v | sh', "quoted -e 'x y'", 'echo \(' );
+    is( \@refused,                                                    [ map { "the run may not run the test `$_` of the branch, because it is not plain words: letters, digits and _ . / : = \@ % + , -" } @shell ], 'and the job notes each one that it leaves out' );
+    is( App::Clod::Tasks::change_tools( $config, 'ffmpeg -version' ), [ @{ App::Clod::Tasks::claude($config)->allowed_tools }, 'Bash(ffmpeg -version)' ],                                                            'a rule comes after the tools of the configuration' );
+
+    $tree->child('metamerge.yml')->spew("x_system_packages:\n  ffmpeg:\n    deb: foo=1.2\n");
+    $job = $minion->job( $minion->enqueue( spoke_fix => [ {} ] ) );
+    is( [ App::Clod::Tasks::declared_tests( $job, $config, $tree ) ], [], 'a declaration that is not valid gives no rule' );
+    my $unread = qr/\Athe\ run\ may\ not\ run\ the\ tests .* cannot\ be\ read:/;
+    like( $job->info->{notes}{log}[0]{message}, qr/$unread\ metamerge\.yml\ is\ not\ valid/, 'and the job notes why' );
+    delete $config->{system_packages};
+    is( [ App::Clod::Tasks::declared_tests( $job, $config, $tree ) ], [], 'and without system_packages there is none' );
     $minion->reset( { all => 1 } );
 };
 

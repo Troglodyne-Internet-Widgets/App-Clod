@@ -167,8 +167,9 @@ sub spoke ( $config, $repo ) {
 =func claude
 
 C<($config)>.  An L<App::Clod::Claude> with the configured program, tools and
-telemetry.  Its default tools, which the runs that change a repository get,
-are C<allowed_tools> and then C<extra_tools>.  A read-only run passes
+telemetry.  Its default tools are C<allowed_tools> and then C<extra_tools>.
+The runs that change a repository get them, and the rules of
+L</change_tools> after them.  A read-only run passes
 C<read_tools> as C<tools>, so C<extra_tools> never reaches it.
 
 =cut
@@ -265,13 +266,30 @@ sub system_text ( $config, $task ) {
 
 =func packages_prompt
 
-C<($config)>.  What a run that changes a spoke is told about a system
-package that the host lacks: F<share/prompts/system-packages.md>.  Empty
-without C<system_packages>, because then the hub installs nothing.
+C<($config, @tests)>.  What a run that changes a spoke is told about a system
+package that the host lacks: F<share/prompts/system-packages.md>.  With
+C<@tests>, from L</declared_tests>, it also names the tests that the run may
+run, as F<share/prompts/package-tests.md> says.  Empty without
+C<system_packages>, because then the hub installs nothing.
 
 =cut
 
-sub packages_prompt ($config) { return $config->{system_packages} ? prompt('system-packages') : q{} }
+sub packages_prompt ( $config, @tests ) {
+    return q{} if !$config->{system_packages};
+    return prompt( 'system-packages', tests => @tests ? prompt( 'package-tests', tests => join q{, }, map { "`$_`" } @tests ) : q{} );
+}
+
+=func change_tools
+
+C<($config, @tests)>.  The tools of a run that changes a spoke: the default
+tools of L</claude>, and then the exact rule C<Bash(TEST)> for each of
+C<@tests>, from L</declared_tests>.
+
+=cut
+
+sub change_tools ( $config, @tests ) {
+    return [ @{ claude($config)->allowed_tools }, map { "Bash($_)" } @tests ];
+}
 
 =func retry_after
 
@@ -1166,6 +1184,48 @@ sub branch_packages ( $job, $config, $tree ) {
     return $lacks && @{ $lacks->{missing} } ? $lacks : undef;
 }
 
+=func declared_tests
+
+C<($job, $config, $tree)>.  The C<test> of each system package that the
+branch in C<$tree> declares and that resolves on this host, as L</resolved>
+resolves it, once each.  L</fix_run> and L</address_run> read them before the
+run, and let it run each one, with the exact rule that L</change_tools>
+makes.  The hub runs the same command line as the same account, see
+L</lacks_of>, so the rule gives the run nothing that the declaration did not
+have already.  A rule allows the command line alone, and not as a part of a
+pipe or a list of commands.
+
+The hub splits a test into words and runs it with no shell, and the run runs
+it in a shell.  So a test is kept only when it is words of C<$PLAIN_TEST>,
+which a shell splits in the same way and expands in no way, and which a
+permission rule of Claude Code reads as the test itself.  The first word is
+a program, which starts with a letter, a digit, C<_> or C</>, and has no
+C<=>, because a shell reads C<NAME=value> there as a variable.  Without this
+limit, C<;> or C<|> in a test would let the run do more than the hub did, and
+C<(>, C<)> or C<*> would make the rule wider than the test, or more rules than
+one.  A comma is kept, because Claude Code splits C<--allowedTools> only
+outside the parentheses of a rule.  A test that is not plain is left out, and
+the job notes it.
+
+None without C<system_packages>.  A declaration that cannot be read or
+resolved gives none, and the job notes why.
+
+=cut
+
+our $PLAIN_TEST = qr{\A [\w/] [\w./:\@%+,-]* (?: [ ]+ [\w./:=\@%+,-]+ )* \z};
+
+sub declared_tests ( $job, $config, $tree ) {
+    return if !$config->{system_packages};
+    my $resolved = eval { resolved( $config, Dist::Conformance::Check::SystemPackages->declared("$tree"), { App::Clod::Packages::os_release() } ) };
+    if ( !$resolved ) {
+        log_note( $job, 'the run may not run the tests of the system packages of the branch, because they cannot be read: ' . ( split m{\n}, $@ )[0] );
+        return;
+    }
+    my @tests = List::Util::uniq( @{ $resolved->{programs} } );
+    log_note( $job, "the run may not run the test `$_` of the branch, because it is not plain words: letters, digits and _ . / : = \@ % + , -" ) for grep { !m{$PLAIN_TEST} } @tests;
+    return grep                                                                                                                                           { m{$PLAIN_TEST} } @tests;
+}
+
 =func waits_for_packages
 
 C<($lacks)>, from L</branch_packages>.  The part of the result of a job whose
@@ -1258,10 +1318,12 @@ L</push_or_keep>.
 
 sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
     my ( $item, $repo ) = @$args{qw{item repo}};
+    my @tests   = declared_tests( $job, $config, $tree );
     my $outcome = run_claude(
         $job, $config,
         dir      => $tree,
-        prompt   => prompt( fix => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, packages => packages_prompt($config), tools => $tools->{note}, context => context( $config, $gh, $item ) ),
+        prompt   => prompt( fix => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, packages => packages_prompt( $config, @tests ), tools => $tools->{note}, context => context( $config, $gh, $item ) ),
+        tools    => change_tools( $config, @tests ),
         add_dirs => $tools->{add_dirs},
         schema   => {
             type       => 'object',
@@ -1648,6 +1710,7 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
     my ( $item, $repo ) = @$args{qw{item repo}};
     my $pull    = $address{pull};
     my $branch  = $pull->{head}{ref};
+    my @tests   = declared_tests( $job, $config, $tree );
     my $outcome = run_claude(
         $job, $config,
         dir    => $tree,
@@ -1657,11 +1720,12 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
             base         => $pull->{base}{ref},
             origin       => origin_url( $config, $item ),
             instructions => $args->{instructions},
-            packages     => packages_prompt($config),
+            packages     => packages_prompt( $config, @tests ),
             tools        => $tools->{note},
             history      => context( $config, $gh, $item ),
             context      => Mojo::JSON::encode_json( { threads => $address{pending}, comments => $address{comments} } ),
         ),
+        tools    => change_tools( $config, @tests ),
         add_dirs => $tools->{add_dirs},
         schema   => {
             type       => 'object',
@@ -2266,12 +2330,24 @@ sub host_packages ( $config, $scan, %host ) {
     return \%lacks;
 }
 
+=func resolved
+
+C<($config, $declared, \%host)>.  The declaration C<$declared>, as
+L<Dist::Conformance::Check::SystemPackages/declared> reads it, resolved for the
+C<packager> of C<system_packages> and C<%host>, as
+L<Dist::Conformance::Check::SystemPackages/resolve> resolves it.  Dies when
+C<resolve> dies.
+
+=cut
+
+sub resolved ( $config, $declared, $host ) {
+    return Dist::Conformance::Check::SystemPackages->resolve( $declared, packager => $config->{system_packages}{packager}, %$host );
+}
+
 =func lacks_of
 
 C<($config, $declared, \%host, \%has)>.  What the host lacks of one
-declaration, C<$declared> as L<Dist::Conformance::Check::SystemPackages/declared>
-reads it, resolved for the C<packager> of C<system_packages> and C<%host>, as
-L<Dist::Conformance::Check::SystemPackages/resolve> resolves it.  C<%has>
+declaration, C<$declared>, as L</resolved> resolves it.  C<%has>
 keeps whether the host has each package that it asked about, so a caller that
 passes the same hash for several declarations asks once about each package.
 Undef when the host lacks nothing, and else a hash of:
@@ -2313,7 +2389,7 @@ empty lists.
 
 sub lacks_of ( $config, $declared, $host, $has = {} ) {
     my $packager = $config->{system_packages}{packager};
-    my $resolved = eval { Dist::Conformance::Check::SystemPackages->resolve( $declared, packager => $packager, %$host ) };
+    my $resolved = eval { resolved( $config, $declared, $host ) };
     return { needs => [], missing => [], sources => [], unresolved => [], failing => [], error => $@ =~ s{\s+\z}{}r } if !$resolved;
     my %source = map { $_->{name} => $_ } grep { !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} };
     my @needs  = map {

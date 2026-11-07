@@ -380,7 +380,11 @@ C<x_system_packages> of each spoke, from its default branch, and
 L<App::Clod::Tasks/self_check> finds the packages of C<packager> that the
 host lacks, and the tests of the dependencies that fail.  The dashboard shows
 each spoke that needs packages, with a button that installs them.  See
-L<App::Clod::Packages>.
+L<App::Clod::Packages>.  The runs that change a repository may also run the
+C<test> of each dependency that their branch declares, exactly as it is
+written, as L<App::Clod::Tasks/declared_tests> says.  So this is a
+permission that no person confirms, as C<extra_tools> is, but only for a
+command line that the hub runs itself.
 
 C<packager> is the packager of the host, a key of
 C<%App::Clod::Packages::INSTALLED>: C<deb> for now.  C<installer> is the
