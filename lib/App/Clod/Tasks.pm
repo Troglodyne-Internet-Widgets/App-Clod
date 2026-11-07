@@ -7,12 +7,13 @@ no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 
-use IPC::Run    ();
-use List::Util  ();
-use Mojo::File  ();
-use Mojo::JSON  ();
-use POSIX       ();
-use Time::HiRes qw{time};
+use IPC::Run         ();
+use List::Util       ();
+use Mojo::File       ();
+use Mojo::JSON       ();
+use POSIX            ();
+use Text::ParseWords ();
+use Time::HiRes      qw{time};
 
 use App::Clod::Budget();
 use App::Clod::Claude();
@@ -266,29 +267,29 @@ sub system_text ( $config, $task ) {
 
 =func packages_prompt
 
-C<($config, @tests)>.  What a run that changes a spoke is told about a system
-package that the host lacks: F<share/prompts/system-packages.md>.  With
-C<@tests>, from L</declared_tests>, it also names the tests that the run may
-run, as F<share/prompts/package-tests.md> says.  Empty without
-C<system_packages>, because then the hub installs nothing.
+C<($config, @programs)>.  What a run that changes a spoke is told about a
+system package that the host lacks: F<share/prompts/system-packages.md>.
+With C<@programs>, from L</declared_programs>, it also names the programs
+that the run may run, as F<share/prompts/package-programs.md> says.  Empty
+without C<system_packages>, because then the hub installs nothing.
 
 =cut
 
-sub packages_prompt ( $config, @tests ) {
+sub packages_prompt ( $config, @programs ) {
     return q{} if !$config->{system_packages};
-    return prompt( 'system-packages', tests => @tests ? prompt( 'package-tests', tests => join q{, }, map { "`$_`" } @tests ) : q{} );
+    return prompt( 'system-packages', programs => @programs ? prompt( 'package-programs', programs => join q{, }, map { "`$_`" } @programs ) : q{} );
 }
 
 =func change_tools
 
-C<($config, @tests)>.  The tools of a run that changes a spoke: the default
-tools of L</claude>, and then the exact rule C<Bash(TEST)> for each of
-C<@tests>, from L</declared_tests>.
+C<($config, @programs)>.  The tools of a run that changes a spoke: the default
+tools of L</claude>, and then the rule C<Bash(PROGRAM:*)> for each of
+C<@programs>, from L</declared_programs>.
 
 =cut
 
-sub change_tools ( $config, @tests ) {
-    return [ @{ claude($config)->allowed_tools }, map { "Bash($_)" } @tests ];
+sub change_tools ( $config, @programs ) {
+    return [ @{ claude($config)->allowed_tools }, map { "Bash($_:*)" } @programs ];
 }
 
 =func retry_after
@@ -1184,46 +1185,106 @@ sub branch_packages ( $job, $config, $tree ) {
     return $lacks && @{ $lacks->{missing} } ? $lacks : undef;
 }
 
-=func declared_tests
+=func declared_programs
 
-C<($job, $config, $tree)>.  The C<test> of each system package that the
-branch in C<$tree> declares and that resolves on this host, as L</resolved>
-resolves it, once each.  L</fix_run> and L</address_run> read them before the
-run, and let it run each one, with the exact rule that L</change_tools>
-makes.  The hub runs the same command line as the same account, see
-L</lacks_of>, so the rule gives the run nothing that the declaration did not
-have already.  A rule allows the command line alone, and not as a part of a
-pipe or a list of commands.
+C<($job, $config, $tree)>.  The programs that a run in C<$tree> may run with
+any arguments, once each.  L</fix_run> and L</address_run> read them before
+the run, and give the run the rule C<Bash(PROGRAM:*)> for each one, as
+L</change_tools> makes it.  A program is the first word of the C<test> of a
+system package that the branch declares and that resolves on this host, as
+L</resolved> resolves it.  It gets a rule only when all of these hold:
 
-The hub splits a test into words and runs it with no shell, and the run runs
-it in a shell.  So a test is kept only when it is words of C<$PLAIN_TEST>,
-which a shell splits in the same way and expands in no way, and which a
-permission rule of Claude Code reads as the test itself.  The first word is
-a program, which starts with a letter, a digit, C<_> or C</>, and has no
-C<=>, because a shell reads C<NAME=value> there as a variable.  Without this
-limit, C<;> or C<|> in a test would let the run do more than the hub did, and
-C<(>, C<)> or C<*> would make the rule wider than the test, or more rules than
-one.  A comma is kept, because Claude Code splits C<--allowedTools> only
-outside the parentheses of a rule.  A test that is not plain is left out, and
-the job notes it.
+=over
 
-None without C<system_packages>.  A declaration that cannot be read or
-resolved gives none, and the job notes why.
+=item *
+
+It is a bare name, as C<$BARE_NAME> matches it: no C</>, and nothing that
+Claude Code reads in a rule, or splits C<--allowedTools> at.
+
+=item *
+
+It is not a word of the shell, a key of C<%SHELL_WORDS>.  The shell of the run
+runs a builtin or a keyword such as C<eval> or C<source> in place of a file of
+that name, and many of them run other commands.
+
+=item *
+
+The dependency names a package for this host, and the host has it installed.
+
+=item *
+
+It is an executable file on the C<PATH> of the run, as
+L<App::Clod::Packages/program_file> finds it.
+
+=item *
+
+That file belongs to the package of the same dependency, as
+L<App::Clod::Packages/owners> says.  So C<bash -c ...> as the test of
+C<ffmpeg> gives no rule for C<bash>.
+
+=back
+
+The rule lets the run do whatever the program can do with any arguments.  The
+package is one that the dependency names.  If the host lacked it, a person
+confirmed it in the dialog of the dashboard before the hub installed it.  A
+package that the host had before was confirmed by nobody, so a dependency
+C<bash> with the test C<bash --version> gives C<Bash(bash:*)>.  That is no
+more than the default C<allowed_tools> give, because they already let the run
+run C<perl> and C<make> with any arguments.  A rule allows a command alone.
+Claude Code checks each command of a pipe or a list of commands on its own.
+
+For each program that fails a condition, the job notes which.  None without
+C<system_packages>.  A declaration that cannot be read or resolved gives none,
+and the job notes why.
 
 =cut
 
-our $PLAIN_TEST = qr{\A [\w/] [\w./:\@%+,-]* (?: [ ]+ [\w./:=\@%+,-]+ )* \z};
+our $BARE_NAME = qr{\A \w [\w.+-]* \z};
 
-sub declared_tests ( $job, $config, $tree ) {
+# The builtins and the keywords of bash, as its manual lists them, that are bare names.
+our %SHELL_WORDS = map { $_ => 1 } qw{
+  alias bg bind break builtin caller case cd command compgen complete compopt continue coproc declare dirs disown do done
+  echo elif else enable esac eval exec exit export false fc fg fi for function getopts hash help history if in jobs kill
+  let local logout mapfile popd printf pushd pwd read readarray readonly return select set shift shopt source suspend
+  test then time times trap true type typeset ulimit umask unalias unset until wait while
+};
+
+sub declared_programs ( $job, $config, $tree ) {
     return if !$config->{system_packages};
     my $resolved = eval { resolved( $config, Dist::Conformance::Check::SystemPackages->declared("$tree"), { App::Clod::Packages::os_release() } ) };
     if ( !$resolved ) {
-        log_note( $job, 'the run may not run the tests of the system packages of the branch, because they cannot be read: ' . ( split m{\n}, $@ )[0] );
+        log_note( $job, 'gives the run no rule for the programs of the system packages of the branch, because they cannot be read: ' . ( split m{\n}, $@ )[0] );
         return;
     }
-    my @tests = List::Util::uniq( @{ $resolved->{programs} } );
-    log_note( $job, "the run may not run the test `$_` of the branch, because it is not plain words: letters, digits and _ . / : = \@ % + , -" ) for grep { !m{$PLAIN_TEST} } @tests;
-    return grep                                                                                                                                           { m{$PLAIN_TEST} } @tests;
+    my $claude = claude($config);
+    my @programs;
+    for my $need ( grep { defined $_->{test} } @{ $resolved->{needs} } ) {
+        my ($program) = Text::ParseWords::shellwords( $need->{test} );
+        my $why = eval { program_refusal( $config->{system_packages}{packager}, $claude, $need, $program ) // q{} } // ( split m{\n}, $@ )[0];
+        if ( $why eq q{} ) { push @programs, $program }
+        else               { log_note( $job, "gives the run no rule for the program of the test of $need->{name}, because $why" ) }
+    }
+    return List::Util::uniq(@programs);
+}
+
+=func program_refusal
+
+C<($packager, $claude, $need, $program)>.  Why C<$program>, the first word of
+the C<test> of C<$need>, a need as L</resolved> gives it, gets no rule, as
+L</declared_programs> lists the conditions.  Undef when it gets one.  Dies
+when the packager cannot say.
+
+=cut
+
+sub program_refusal ( $packager, $claude, $need, $program ) {
+    return 'its test names no program'                    if !defined $program;
+    return "$program is not the bare name of a program"   if $program !~ $BARE_NAME;
+    return "$program is a word of the shell"              if $SHELL_WORDS{$program};
+    return "$need->{name} names no package for this host" if !defined $need->{package};
+    return "$need->{package} is not installed"            if !App::Clod::Packages::installed( $packager, $need->{package} );
+    my $file = App::Clod::Packages::program_file( $claude, $program ) // return "$program is no executable file on the PATH of the run";
+    return "$file is not a file of the package $need->{package}" if List::Util::none { $_ eq $need->{package} } App::Clod::Packages::owners( $packager, $file );
+    return;
 }
 
 =func waits_for_packages
@@ -1318,12 +1379,12 @@ L</push_or_keep>.
 
 sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
     my ( $item, $repo ) = @$args{qw{item repo}};
-    my @tests   = declared_tests( $job, $config, $tree );
-    my $outcome = run_claude(
+    my @programs = declared_programs( $job, $config, $tree );
+    my $outcome  = run_claude(
         $job, $config,
         dir      => $tree,
-        prompt   => prompt( fix => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, packages => packages_prompt( $config, @tests ), tools => $tools->{note}, context => context( $config, $gh, $item ) ),
-        tools    => change_tools( $config, @tests ),
+        prompt   => prompt( fix => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, packages => packages_prompt( $config, @programs ), tools => $tools->{note}, context => context( $config, $gh, $item ) ),
+        tools    => change_tools( $config, @programs ),
         add_dirs => $tools->{add_dirs},
         schema   => {
             type       => 'object',
@@ -1708,10 +1769,10 @@ the pull request that the run started from.
 
 sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
     my ( $item, $repo ) = @$args{qw{item repo}};
-    my $pull    = $address{pull};
-    my $branch  = $pull->{head}{ref};
-    my @tests   = declared_tests( $job, $config, $tree );
-    my $outcome = run_claude(
+    my $pull     = $address{pull};
+    my $branch   = $pull->{head}{ref};
+    my @programs = declared_programs( $job, $config, $tree );
+    my $outcome  = run_claude(
         $job, $config,
         dir    => $tree,
         prompt => prompt(
@@ -1720,12 +1781,12 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
             base         => $pull->{base}{ref},
             origin       => origin_url( $config, $item ),
             instructions => $args->{instructions},
-            packages     => packages_prompt( $config, @tests ),
+            packages     => packages_prompt( $config, @programs ),
             tools        => $tools->{note},
             history      => context( $config, $gh, $item ),
             context      => Mojo::JSON::encode_json( { threads => $address{pending}, comments => $address{comments} } ),
         ),
-        tools    => change_tools( $config, @tests ),
+        tools    => change_tools( $config, @programs ),
         add_dirs => $tools->{add_dirs},
         schema   => {
             type       => 'object',

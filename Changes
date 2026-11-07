@@ -1,13 +1,15 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
-    - Let the fix and review runs run the test of each system package that
-      their branch declares, such as ffmpeg -version.  A run that resumed
-      after a person installed the package was refused that command, and so
-      it could not finish the work.  Each test gets one exact permission
-      rule, and the prompt names the tests.  A test gets a rule only when it
-      is plain words, which a shell and a permission rule read as the hub
-      runs them.  Any other test gets no rule, and the job notes why.
+    - Let the fix and review runs run the program of each system package
+      that their branch declares, such as ffmpeg, with any arguments.  A run
+      that resumed after a person installed the package was refused
+      ffmpeg -version, and so it could not finish the work.  The program is
+      the first word of the test of the dependency, and the prompt names it.
+      It gets a rule only when it is a bare name, not a word of the shell,
+      and an executable file on the PATH of the run that belongs to the
+      package of the same dependency, and that package is installed.
+      Otherwise the job notes which condition failed.
     - Tell the fix and review runs that the hub already installed the git
       hooks of the spoke.  A run that tried to install them again was refused,
       and then said that its commits had run no hooks.

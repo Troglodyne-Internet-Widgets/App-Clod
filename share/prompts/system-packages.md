@@ -28,4 +28,4 @@ that the branch declares, the hub makes the pull request a draft, and a person
 installs the package. Then the work comes back to you on this branch. You
 remove the TODO marks and run the tests again.
 
-{{tests}}
+{{programs}}

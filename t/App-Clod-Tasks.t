@@ -1482,6 +1482,8 @@ subtest 'a branch that needs system packages' => sub {
     $packages->redefine( installed     => sub ( $packager,  $name ) { return $have{$name} } );
     $packages->redefine( program_error => sub ( $claude,    $line ) { return } );
     $packages->redefine( install       => sub ( $installer, $file, @names ) { push @installed, \@names; return "Setting up @names\n" } );
+    $packages->redefine( program_file  => sub ( $claude,    $name ) { return "/bogus/bin/$name" } );
+    $packages->redefine( owners        => sub ( $packager,  $file ) { return $file =~ m{([^/]+)\z} } );
     my $ffmpeg = "x_system_packages:\n  ffmpeg:\n    deb: ffmpeg\n    test: ffmpeg -version\n";
 
     answer( { title => 'Use ffmpeg', summary => 'Calls ffmpeg. t/video.t fails, because ffmpeg is missing.' }, commit => 1, file => [ 'metamerge.yml', $ffmpeg ] );
@@ -1540,8 +1542,9 @@ subtest 'a branch that needs system packages' => sub {
     $fake{FAKE_CLAUDE_RECORD} = "$tmp/resume-record";
     my $done = run_id($resumed);
     my $ran  = record_of("$tmp/resume-record");
-    like( $ran->{flags}{'--allowedTools'}[0], qr/,Bash\(ffmpeg\ -version\),Bash\(rtk\ ffmpeg\ -version\)\z/, 'the resumed run may run the test that the branch declares, exactly as it is declared' );
-    like( $ran->{prompt},                     qr/run\ these\ tests .* `ffmpeg\ -version`/s,                  'and is told so' );
+    like( $ran->{flags}{'--allowedTools'}[0], qr/,Bash\(ffmpeg:\*\),Bash\(rtk\ ffmpeg:\*\)\z/, 'the resumed run may run the program of the test that the branch declares, with any arguments' );
+    my $any = qr/programs\ that\ you\ can\ run\ with\ any\s+arguments/;
+    like( $ran->{prompt}, qr/$any .* `ffmpeg`/s, 'and is told so' );
     is( $done->{state},                                     'finished',                                        'the resumed run finishes, with nothing that waits for an answer' ) or diag Mojo::Util::dumper $done->{result};
     is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Ran prove -l t/video.t: All tests successful.'], 'and posts its summary on the pull request' );
     like( calls_of('graphql'), [ [ 'graphql', '/graphql', { query => qr/markPullRequestReadyForReview/, variables => { id => 'PR_test' } } ] ], 'and makes the draft ready for review, as the host lacks nothing now' );
@@ -1565,32 +1568,47 @@ subtest 'a branch that needs system packages' => sub {
     my $tree = $tmp->child('declares-tests')->make_path;
     $tree->child('metamerge.yml')->spew(<<~'YAML');
         x_system_packages:
-          ffmpeg: { deb: ffmpeg, test: "ffmpeg -h encoder=libx264,libx265" }
-          probe:  { deb: ffmpeg, test: "ffmpeg -h encoder=libx264,libx265" }
-          glob:   { deb: glob, test: "ls *" }
-          paren:  { deb: paren, test: "x) Bash(rm" }
-          slash:  { deb: slash, test: 'echo \(' }
-          list:   { deb: list, test: "list -v; rm -rf /bogus" }
-          pipe:   { deb: pipe, test: "pipe -v | sh" }
-          home:   { deb: home, test: "home -v $HOME" }
-          quoted: { deb: quoted, test: "quoted -e 'x y'" }
-          env:    { deb: env, test: "PATH=/bogus env -v" }
-          other:  { rpm: other, test: other -v }
+          ffmpeg:  { deb: ffmpeg, test: "ffmpeg -h encoder=libx264,libx265" }
+          probe:   { deb: ffmpeg, test: "ffmpeg -version" }
+          bash:    { deb: ffmpeg, test: "bash -c 'ffmpeg -version'" }
+          path:    { deb: tool, test: "/usr/bin/tool -v" }
+          glob:    { deb: glob, test: "gl*b -v" }
+          source:  { deb: source, test: "source t/setup" }
+          eval:    { deb: eval, test: "eval ffmpeg" }
+          absent:  { deb: absent, test: "absent -v" }
+          nofile:  { deb: nofile, test: "nofile -v" }
+          broken:  { deb: broken, test: "broken -v" }
+          nothing: { deb: { name: nothing, ubuntu: ~ }, test: "nothing -v" }
+          quote:   { deb: quote, test: "quote 'open" }
+          other:   { rpm: other, test: other -v }
         YAML
+    $packages->redefine( installed    => sub ( $packager, $name ) { die "dpkg-query: broken\n" if $name eq 'broken'; return $name ne 'absent' } );
+    $packages->redefine( program_file => sub ( $claude,   $name ) { return $name eq 'nofile' ? undef : "/bogus/bin/$name" } );
     my $job = $minion->job( $minion->enqueue( spoke_fix => [ {} ] ) );
-    is( [ App::Clod::Tasks::declared_tests( $job, $config, $tree ) ], ['ffmpeg -h encoder=libx264,libx265'], 'of the tests that resolve on this host, once each, a test with a comma becomes a rule, and one that a shell or Claude Code would read as more than the hub runs does not' );
-    my @refused = map { $_->{message} } @{ $job->info->{notes}{log} };
-    my @shell   = ( 'PATH=/bogus env -v', 'ls *', 'home -v $HOME', 'list -v; rm -rf /bogus', 'x) Bash(rm', 'pipe -v | sh', "quoted -e 'x y'", 'echo \(' );
-    is( \@refused,                                                    [ map { "the run may not run the test `$_` of the branch, because it is not plain words: letters, digits and _ . / : = \@ % + , -" } @shell ], 'and the job notes each one that it leaves out' );
-    is( App::Clod::Tasks::change_tools( $config, 'ffmpeg -version' ), [ @{ App::Clod::Tasks::claude($config)->allowed_tools }, 'Bash(ffmpeg -version)' ],                                                            'a rule comes after the tools of the configuration' );
+    is( [ App::Clod::Tasks::declared_programs( $job, $config, $tree ) ], ['ffmpeg'], 'of the tests that resolve on this host, the program of each one that passes every condition, once' );
+    my @noted = map { $_->{message} } @{ $job->info->{notes}{log} };
+    my %why   = (
+        absent  => 'absent is not installed',
+        bash    => '/bogus/bin/bash is not a file of the package ffmpeg',
+        broken  => 'dpkg-query: broken',
+        eval    => 'eval is a word of the shell',
+        glob    => 'gl*b is not the bare name of a program',
+        nofile  => 'nofile is no executable file on the PATH of the run',
+        nothing => 'nothing names no package for this host',
+        path    => '/usr/bin/tool is not the bare name of a program',
+        quote   => 'its test names no program',
+        source  => 'source is a word of the shell',
+    );
+    is( \@noted,                                             [ map { "gives the run no rule for the program of the test of $_, because $why{$_}" } sort keys %why ], 'and the job notes each one that it leaves out, and which condition it fails' );
+    is( App::Clod::Tasks::change_tools( $config, 'ffmpeg' ), [ @{ App::Clod::Tasks::claude($config)->allowed_tools }, 'Bash(ffmpeg:*)' ],                            'a rule for a program, with any arguments, comes after the tools of the configuration' );
 
     $tree->child('metamerge.yml')->spew("x_system_packages:\n  ffmpeg:\n    deb: foo=1.2\n");
     $job = $minion->job( $minion->enqueue( spoke_fix => [ {} ] ) );
-    is( [ App::Clod::Tasks::declared_tests( $job, $config, $tree ) ], [], 'a declaration that is not valid gives no rule' );
-    my $unread = qr/\Athe\ run\ may\ not\ run\ the\ tests .* cannot\ be\ read:/;
+    is( [ App::Clod::Tasks::declared_programs( $job, $config, $tree ) ], [], 'a declaration that is not valid gives no rule' );
+    my $unread = qr/\Agives\ the\ run\ no\ rule .* cannot\ be\ read:/;
     like( $job->info->{notes}{log}[0]{message}, qr/$unread\ metamerge\.yml\ is\ not\ valid/, 'and the job notes why' );
     delete $config->{system_packages};
-    is( [ App::Clod::Tasks::declared_tests( $job, $config, $tree ) ], [], 'and without system_packages there is none' );
+    is( [ App::Clod::Tasks::declared_programs( $job, $config, $tree ) ], [], 'and without system_packages there is none' );
     $minion->reset( { all => 1 } );
 };
 
