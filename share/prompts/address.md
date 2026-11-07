@@ -3,6 +3,9 @@ the head of pull request {{origin}} that this bot opened. The pull request is
 opened against {{base}}. Follow the CLAUDE.md of this repository and the skills
 it names.
 
+The hub installed the git hooks of this repository before this run, so each
+commit runs them.  Do not install them again, also where CLAUDE.md says to.
+
 People answered the pull request since the bot last did. Their review threads
 are in the JSON below under `threads`. Their plain comments and the bodies of
 their reviews are under `comments`, where a review body has `review` set. For
