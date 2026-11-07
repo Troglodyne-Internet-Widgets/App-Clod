@@ -1,6 +1,9 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Tell the fix and review runs that the hub already installed the git
+      hooks of the spoke.  A run that tried to install them again was refused,
+      and then said that its commits had run no hooks.
     - Let a change that needs a new system package get it before it merges.
       The fix and review prompts tell the run to declare the dependency in
       the metamerge.yml of the branch, to run the tests, to mark as TODO the

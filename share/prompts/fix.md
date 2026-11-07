@@ -1,6 +1,9 @@
 You are working in a git worktree of {{repo}}, on branch {{branch}}.
 Follow the CLAUDE.md of this repository and the skills it names.
 
+The hub installed the git hooks of this repository before this run, so each
+commit runs them.  Do not install them again, also where CLAUDE.md says to.
+
 The task comes from {{origin}}. Triage chose this repository with these instructions:
 
 {{instructions}}
