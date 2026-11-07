@@ -1333,7 +1333,7 @@ L</waits_for_packages> gives.  The dashboard then offers to install the
 packages and to resume the work, as L</packages_install> does with
 C<resume>.
 
-A run can commit and still say in C<blocked> that a refused call kept it from
+A run can commit and still say in C<blocked> that something kept it from
 finishing.  Then the job pushes the commits and opens the pull request, and
 its body says what the run said, as L</unfinished_note> gives it.  The result
 has C<blocked> and C<denied>.  The work that the run did is on the branch,
@@ -1382,9 +1382,10 @@ the job and returns undef.  If it committed, it returns the work for
 L</push_or_keep>, with C<refusals>, as L</refusals> gives them.
 
 A run that made no commit and was L</stopped> fails the job, as L</refused>
-says.  A run that made no commit, and says in C<blocked> that it finished,
-finishes as C<no_change>, also when claude refused some of its calls.  Its
-result keeps them in C<denied>.
+says.  That is a run that says in C<blocked> what kept it from finishing,
+whether or not claude refused calls.  A run that made no commit, and says in
+C<blocked> that it finished, finishes as C<no_change>, also when claude
+refused some of its calls.  Its result keeps them in C<denied>.
 
 =cut
 
@@ -1420,7 +1421,7 @@ sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
         return;
     }
     if ( !$commits && stopped($outcome) ) {
-        $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } );
+        $job->fail( { repo => $repo, error => refused($outcome), %{ refusals($outcome) }, summary => $answer->{summary}, %usage } );
         return;
     }
     if ( !$commits ) {
@@ -1700,8 +1701,10 @@ host lacks, and its result has C<denied>, the refused calls.
 
 A run that made no commit, and says in C<blocked> that it finished, goes on as
 if claude had refused nothing: the replies, the draft state, and the comment.
-Its result keeps the refused calls in C<denied>.  A run that committed and
-says in C<blocked> that a refused call kept it from finishing pushes its
+Its result keeps the refused calls in C<denied>.  A run that made no commit
+and says in C<blocked> what kept it from finishing fails the job, as
+L</address_run> says, also when claude refused nothing.  A run that committed
+and says in C<blocked> that something kept it from finishing pushes its
 commits, and the comment of the job says what the run said, as
 L</unfinished_note> gives it.
 
@@ -1792,10 +1795,11 @@ nothing while claude refused some of its calls.  Then it asks
 L</branch_packages> what the host lacks.  A missing package can be the cause,
 because a program that the host does not have gets no rule.  If the host
 lacks a package, the work also has C<lacks>, as L</branch_packages> gives it,
-and the job notes it and the refused calls.  If the host lacks nothing, and
-the run was L</stopped>, it fails the job, as L</refused> says, and returns
-undef.  If the run says that it finished, the work goes on as if claude had
-refused nothing.
+and the job notes it and the refused calls.  Otherwise, a run that made no
+commit and was L</stopped> fails the job, as L</refused> says, and this
+returns undef.  That is a run that says in C<blocked> what kept it from
+finishing, whether or not claude refused calls.  If the run says that it
+finished, the work goes on as if claude had refused nothing.
 
 =cut
 
@@ -1847,10 +1851,10 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
             log_note( $job, 'waits for ' . join( q{ }, @{ $lacks->{missing} } ) . ", which the branch declares and the host lacks.\n" . refused($outcome) );
             return { %work, lacks => $lacks };
         }
-        if ( stopped($outcome) ) {
-            $job->fail( { repo => $repo, error => refused($outcome), denied => $outcome->{denied}, summary => $answer->{summary}, %usage } );
-            return;
-        }
+    }
+    if ( !$commits && stopped($outcome) ) {
+        $job->fail( { repo => $repo, error => refused($outcome), %{ refusals($outcome) }, summary => $answer->{summary}, %usage } );
+        return;
     }
     return \%work;
 }
@@ -1858,8 +1862,8 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
 =func blocked
 
 C<($outcome)>.  What the answer of a fix run or of an answer to a review says
-in C<blocked>: the refused call that kept the run from finishing, and what it
-kept the run from doing.  An empty string when C<blocked> is empty, which
+in C<blocked>: what kept the run from finishing, such as a refused call, and
+what it kept the run from doing.  An empty string when C<blocked> is empty, which
 means that the run finished its work, also when claude refused some of its
 calls.  Undef when the answer has no C<blocked>, because claude did not keep
 to the schema.
@@ -1875,27 +1879,30 @@ sub blocked ($outcome) {
 
 =func stopped
 
-C<($outcome)>.  True when claude refused some calls of the run, and the run
-says in C<blocked> that a refused call kept it from finishing.  A run can be
-refused one call and get the same thing with other calls.  Then it leaves
-C<blocked> empty, and this is false.  An answer that has no C<blocked> at all
-counts as stopped when claude refused a call.  Before C<blocked> existed, each
-refused call stopped a run that made no commit, and this keeps that for a
-claude that does not keep to the schema.
+C<($outcome)>.  True when the run says in C<blocked> that something kept it
+from finishing, such as a refused call or a fetch that failed.  This does not
+depend on whether claude refused calls.  A run can be refused one call and get
+the same thing with other calls.  Then it leaves C<blocked> empty, and this is
+false.
+
+An answer that has no C<blocked> at all counts as stopped when claude refused
+a call, and as not stopped when claude refused nothing.  Before C<blocked>
+existed, each refused call stopped a run that made no commit, and this keeps
+that for a claude that does not keep to the schema.
 
 =cut
 
 sub stopped ($outcome) {
-    return 0 if !@{ $outcome->{denied} // [] };
     my $why = blocked($outcome);
-    return !defined $why || $why ne q{};
+    return $why ne q{} if defined $why;
+    return @{ $outcome->{denied} // [] } ? 1 : 0;
 }
 
 =func refusals
 
 C<($outcome)>.  The part of the result of a job that says what claude refused,
 as a hash reference: C<denied>, the refused calls, when there are any, and
-C<blocked>, what the run says that they kept it from doing, when it says
+C<blocked>, what the run says kept it from finishing, when it says
 something.  A job that finished keeps them too, so that a person can see them.
 
 =cut
@@ -1907,23 +1914,25 @@ sub refusals ($outcome) {
 
 =func refused
 
-C<($outcome)>.  The error of a run that made no commit because claude refused
-some of its tool calls, as L</stopped> finds it.  It names each refused call,
-and what the run says in C<blocked>, when it says something.  A run that made
-no commit and was not stopped changed nothing on purpose, and is not an error.
+C<($outcome)>.  The error of a run that made no commit and was L</stopped>.
+It names each refused call, when claude refused some, and what the run says
+in C<blocked>, when it says something.  A run that made no commit and was not
+stopped changed nothing on purpose, and is not an error.
 
 =cut
 
 sub refused ($outcome) {
-    my $why = blocked($outcome) // q{};
-    return join "\n", 'the run made no commit, and claude refused these calls, which nobody can approve in -p:', ( map { "  $_" } @{ $outcome->{denied} } ), ( $why ne q{} ? "The run says: $why" : () );
+    my $why    = blocked($outcome) // q{};
+    my @denied = @{ $outcome->{denied} // [] };
+    my @calls  = @denied ? ( ', and claude refused these calls, which nobody can approve in -p:', map { "\n  $_" } @denied ) : ();
+    return join q{}, 'the run made no commit', @calls, ( $why ne q{} ? "\nThe run says: $why" : () );
 }
 
 =func unfinished_note
 
 C<(\%work)>.  The paragraph for the pull request when the run committed, but
-says in C<blocked> that a refused call kept it from finishing.  It says what
-the run said, and names the refused calls.  An empty list when the run says
+says in C<blocked> that something kept it from finishing.  It says what the
+run said, and names the refused calls, when there are some.  An empty list when the run says
 that nothing kept it from finishing.
 
 =cut

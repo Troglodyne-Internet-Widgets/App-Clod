@@ -482,6 +482,14 @@ subtest spoke_fix => sub {
     is( [ @{ $finished->{result} }{qw{no_change denied blocked}} ], [ 1, ['Bash(cd t && prove -l)'], undef ], 'as no change, with the refused calls in its result' );
     is( scalar @{ calls_of('pull') },                               1,                                        'and it opens nothing' );
 
+    # A run can be blocked by something other than a refused call.
+    my $fetch = 'The fetch of the release failed, so the vendored copy is not updated.';
+    answer( { title => 't', summary => 'Not updated.', blocked => $fetch } );
+    my $unfetched = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( $unfetched->{state},          'failed',                                       'a run that commits nothing and says what blocked it fails, also when claude refused nothing' ) or diag Mojo::Util::dumper $unfetched->{result};
+    is( $unfetched->{result}{error},  "the run made no commit\nThe run says: $fetch", 'and its error says what the run said, with no list of refused calls' );
+    is( scalar @{ calls_of('pull') }, 1,                                              'and it opens nothing' );
+
     @calls = ();
     answer( { title => 't', summary => 'Renamed the sub.', blocked => 'git push was refused, so the callers in bin/ are not renamed.' }, commit => 1, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'rtk git push' } } ] );
     my $partial = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
@@ -729,6 +737,14 @@ subtest spoke_address => sub {
     is( $finished->{state},                               'finished',                     'an answer to a review that commits nothing and says that nothing blocked it finishes, also when claude refused a call' ) or diag Mojo::Util::dumper $finished->{result};
     is( [ map { $_->[2]{body} } @{ calls_of('reply') } ], ['The name is right already.'], 'and replies' );
     is( $finished->{result}{denied},                      ['Bash(cd t && prove -l)'],     'and keeps the refused calls in its result' );
+
+    @calls = ();
+    my $fetch = 'The fetch of the release failed, so the vendored copy is not updated.';
+    answer( { summary => 'Not updated.', blocked => $fetch, replies => [ { id => 21, body => 'Updated.' } ] } );
+    my $unfetched = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'answer them' } );
+    is( $unfetched->{state},                        'failed',                                       'an answer to a review that commits nothing and says what blocked it fails, also when claude refused nothing' ) or diag Mojo::Util::dumper $unfetched->{result};
+    is( $unfetched->{result}{error},                "the run made no commit\nThe run says: $fetch", 'and its error says what the run said, with no list of refused calls' );
+    is( [ calls_of('reply'), calls_of('comment') ], [ [], [] ],                                     'and says nothing on the pull request' );
 
     @calls = ();
     answer( { summary => 'Renamed half.', blocked => 'git push was refused, so the callers in bin/ are not renamed.', replies => [ { id => 21, body => 'Renamed in lib/.' } ] }, commit => 1, denied => [ { tool_name => 'Bash', tool_use_id => 'x', tool_input => { command => 'rtk git push' } } ] );

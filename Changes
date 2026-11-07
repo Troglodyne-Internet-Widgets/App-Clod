@@ -11,8 +11,11 @@ Revision history for App-Clod
       With `blocked` empty, the job finishes as it would with nothing
       refused, and keeps the refused calls in its result.  A run that
       commits and fills `blocked` pushes its commits, and its pull request
-      or comment says what the run said.  An answer with no `blocked` at
-      all still fails, as before.
+      or comment says what the run said.  A run that makes no commit and
+      fills `blocked` fails also when claude refused nothing, for example
+      when a fetch failed.  Its error then says what `blocked` said, with
+      no list of refused calls.  An answer with no `blocked` at all still
+      fails when claude refused a call, as before.
     - Let an answer to a review wait for the system packages of its branch
       when the run made no commit because claude refused its calls.  The job
       failed before it asked what the host lacks.  So a run that could not
