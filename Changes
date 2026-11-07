@@ -74,6 +74,9 @@ Revision history for App-Clod
       tidy only what a commit stages, so a change to the profile could not
       be checked against the whole tree, and a profile could be made with
       perl -d:NYTProf but not read.
+    - Allow a run that changes a spoke strace and gdb by default.  A run
+      can then trace or debug a program that the spoke integrates with,
+      and not only guess from its output why a call fails.
     - A spoke whose harness fix waits for review says so on the dashboard,
       with a link to the pull request, and offers no second Fix.  The
       harness scan records that pull request while it is open.  The item
