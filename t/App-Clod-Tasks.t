@@ -1362,6 +1362,18 @@ subtest 'the agent lib' => sub {
     $minion->reset( { all => 1 } );
 };
 
+subtest restart_unit => sub {
+    my $unit = 'clod-worker-test.test.service';
+    my $run  = Test::MockModule->new('IPC::Run');
+    my @argv;
+    $run->redefine( run => sub ( $cmd, @ ) { @argv = @$cmd; return 1 } );
+    App::Clod::Tasks::restart_unit($unit);
+    is( \@argv, [ qw{sudo -n /usr/bin/systemctl restart --no-block}, $unit ], 'the restart does not wait for the stop, which waits for the job that asks for it' );
+
+    $run->redefine( run => sub ( $cmd, @redirects ) { ${ $redirects[5] } = "sudo: a password is required\n"; return 0 } );
+    like( dies { App::Clod::Tasks::restart_unit($unit) }, qr/\Arestart[ ]\Q$unit\E:[ ]sudo:[ ]a[ ]password[ ]is[ ]required/, 'and a refusal dies with what sudo said' );
+};
+
 subtest harness_scan => sub {
     %state = ();
     $state{files} = { 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.10.0"}]}' };

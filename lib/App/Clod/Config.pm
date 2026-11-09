@@ -335,7 +335,8 @@ The systemd units of the bot, such as C<clod-example.test.service> and
 C<clod-worker-example.test.service>, that L<App::Clod::Tasks/self_update>
 restarts after it pulls new code.  Default none: then the dashboard says that
 a person must restart them.  The service user must be allowed to run
-C</usr/bin/systemctl restart $unit> with sudo and no password, for each unit.
+C</usr/bin/systemctl restart --no-block $unit> with sudo and no password, for
+each unit.
 The clod recipe of trog-provisioner grants that, and fills this in.
 
 =item local_lib

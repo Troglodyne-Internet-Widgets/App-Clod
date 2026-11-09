@@ -2729,15 +2729,18 @@ sub own_unit {
 
 =func restart_unit
 
-C<($unit)>.  Restarts the unit with C<sudo -n /usr/bin/systemctl restart>,
-which is the command that servicesudo grants, as it is written.  Dies with
-what sudo or systemctl said if it fails.
+C<($unit)>.  Restarts the unit with C<sudo -n /usr/bin/systemctl restart
+--no-block>, which is the command that the clod recipe grants, as it is
+written.  It returns once systemd has queued the restart.  A restart that
+waited could not return for the unit of the worker, because the stop of the
+worker waits for its jobs, and this one among them.  Dies with what sudo or
+systemctl said if it fails.
 
 =cut
 
 sub restart_unit ($unit) {
     my $err = q{};
-    IPC::Run::run( [ qw{sudo -n /usr/bin/systemctl restart}, $unit ], '<', \undef, '>', \my $out, '2>', \$err ) or die "restart $unit: $err\n";
+    IPC::Run::run( [ qw{sudo -n /usr/bin/systemctl restart --no-block}, $unit ], '<', \undef, '>', \my $out, '2>', \$err ) or die "restart $unit: $err\n";
     return;
 }
 

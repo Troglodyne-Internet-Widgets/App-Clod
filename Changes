@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Restart the units of `restart_units` with `systemctl restart
+      --no-block`.  The worker restarts its own unit from a job, and once
+      its unit lets the jobs of a stop finish, a restart that waited would
+      wait for itself.  The service user now needs sudo for that form of
+      the command.
     - Let a fix or an answer to a review say in its answer, in `blocked`,
       whether a refused call kept it from finishing.  A run that made no
       commit failed when claude refused any of its calls.  A resumed run
