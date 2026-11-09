@@ -219,6 +219,37 @@ sub refresh_reference ( $self, $branch ) {
     );
 }
 
+=method files_at
+
+C<($branch, $path)>.  The files at C<$path> on C<origin/$branch> of the bare
+clone, as hashes with C<path>, C<mode> and C<object>, the id of the blob.  It
+is the file itself, or with a C<$path> that ends in C</>, the files directly in
+that directory.  A symbolic link is a file here, and its blob is its target.
+Empty when there is no such file.  It does not fetch.
+
+=cut
+
+sub files_at ( $self, $branch, $path ) {
+    my @files;
+    for my $line ( split m{\0}, $self->git( q{-C}, $self->mirror->to_string, qw{ls-tree -z}, "origin/$branch", q{--}, $path ) ) {
+        my ( $meta, $name ) = split m{\t}, $line, 2;
+        my ( $mode, $type, $object ) = split q{ }, $meta;
+        push @files, { path => $name, mode => $mode, object => $object } if $type eq 'blob';
+    }
+    return @files;
+}
+
+=method blob
+
+C<($object)>.  The content of a blob of the bare clone, without the newline at
+its end.
+
+=cut
+
+sub blob ( $self, $object ) {
+    return $self->git( q{-C}, $self->mirror->to_string, qw{cat-file blob}, $object );
+}
+
 =method worktree
 
 C<($dir, %opt)>: C<< branch => ..., base => ... >> for a new branch,

@@ -27,6 +27,7 @@ use App::Clod::Spoke();
 use App::Clod::Triage();
 
 use Dist::Conformance::Check::SystemPackages();
+use JSON::Validator::Schema::Draft7();
 
 # What each kind of notification asks the bot to do.
 our %KIND = (
@@ -170,7 +171,8 @@ sub spoke ( $config, $repo ) {
 C<($config)>.  An L<App::Clod::Claude> with the configured program, tools and
 telemetry.  Its default tools are C<allowed_tools> and then C<extra_tools>.
 The runs that change a repository get them, and the rules of
-L</change_tools> after them.  A read-only run passes
+L</change_tools> after them, which include what the repositories of the run
+declare in F<clod.json>.  A read-only run passes
 C<read_tools> as C<tools>, so C<extra_tools> never reaches it.
 
 =cut
@@ -282,14 +284,15 @@ sub packages_prompt ( $config, @programs ) {
 
 =func change_tools
 
-C<($config, @programs)>.  The tools of a run that changes a spoke: the default
-tools of L</claude>, and then the rule C<Bash(PROGRAM:*)> for each of
-C<@programs>, from L</declared_programs>.
+C<($config, \@rules, @programs)>.  The tools of a run that changes a spoke:
+the default tools of L</claude>, then C<@rules>, from L</declared_rules>, and
+then the rule C<Bash(PROGRAM:*)> for each of C<@programs>, from
+L</declared_programs>.
 
 =cut
 
-sub change_tools ( $config, @programs ) {
-    return [ @{ claude($config)->allowed_tools }, map { "Bash($_:*)" } @programs ];
+sub change_tools ( $config, $rules, @programs ) {
+    return [ @{ claude($config)->allowed_tools }, @$rules, map { "Bash($_:*)" } @programs ];
 }
 
 =func retry_after
@@ -1016,7 +1019,9 @@ L</tool_branch>, runs C<< $work->($spoke, $tree, \%tools) >>, and removes every
 worktree and the directory of the job under F<work/> whatever happened.  A
 worktree that git will not remove is deleted with the rest and pruned from its
 bare clone, so that it holds no branch.  C<%tools> has C<add_dirs>, the tool
-worktrees for the run, and C<note>, the L</tools_note> for its prompt.  The
+worktrees for the run, C<note>, the L</tools_note> for its prompt, and
+C<checkouts>, a hash for each worktree with C<repo>, C<spoke> and C<dir>, the
+spoke of the run first, as L</declared_rules> takes them.  The
 spoke's own repository gets no second worktree when it is a tool spoke.  If
 another job holds the lock, the job retries later.
 
@@ -1036,7 +1041,7 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
     return retry_after( $job, 120 ) if !$guard;
     my $root  = Mojo::File->new( $config->{workspace}, 'work', $job->id );
     my $spoke = spoke( $config, $repo );
-    my @made  = ( { spoke => $spoke, dir => $root->child($repo) } );
+    my @made  = ( { repo => $repo, spoke => $spoke, dir => $root->child($repo) } );
     my $tree  = $spoke->worktree( $made[0]{dir}, %$how );
     my @out   = eval {
         my $gh = github($config);
@@ -1046,7 +1051,7 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
             $checkout{spoke}->worktree( $checkout{dir}, detach => $checkout{branch} );
         }
         my @checkouts = @made[ 1 .. $#made ];
-        $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ) } );
+        $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ), checkouts => [@made] } );
     };
     my $err = $@;
     my @stuck;
@@ -1287,6 +1292,135 @@ sub program_refusal ( $packager, $claude, $need, $program ) {
     return;
 }
 
+=func declared_rules
+
+C<($job, $gh, \@checkouts)>, the C<checkouts> of L</in_worktree>.  The rules
+that the repositories of a run declare for it, for L</change_tools>.
+
+A repository declares the programs in it that a run may run in F<clod.json> at
+its top: C<run> is a list of paths relative to the top, such as
+C<bin/provision>.  A path that ends in C</*> declares each file directly in
+that directory.  The file is read from the default branch, after the fetch
+that made the worktree, and never from the branch of the run.  So a declaration
+takes effect when a person merges it, and a pull request cannot give its own
+run a rule.
+
+Each file gets C<Bash(DIR/PATH:*)>, where C<DIR> is the absolute path of its
+worktree, and for the spoke of the run also C<Bash(PATH:*)>, the path that the
+run calls from the top of its worktree.  A rule names one file, because a rule
+that ends in C<*> also matches a path through C<..> to any other file.
+
+A path gets no rule, and the job notes why, unless all of these hold:
+
+=over
+
+=item *
+
+It matches C<$DECLARED_PATH>: names, each C<$DECLARED_NAME>, of letters, digits, C<_>, C<.>, C<+> and
+C<->, joined by C</>, with no name C<.> or C<..>, none that begins with C<->,
+and C<*> only as the last name after another.
+
+=item *
+
+On the default branch, it is an executable file, or a symbolic link whose
+target is the name of another file in its directory.
+
+=back
+
+A F<clod.json> that cannot be read gives no rule, and the job notes why.  So
+does a C<DIR> that a rule cannot hold, as C<$RULE_DIR> matches it.
+
+What a rule allows is what is at that path in the worktree, which the run can
+change, so a rule lets the run do no more than C<Bash(perl:*)> of the default
+C<allowed_tools> already does.  It spares the run a refusal.
+
+=cut
+
+our $DECLARED_NAME = qr{ (?! \.\.? (?! [^/] ) ) [\w.+] [\w.+-]* };
+our $DECLARED_PATH = qr{\A $DECLARED_NAME (?: / $DECLARED_NAME )* (?: / \* )? \z};
+our $RULE_DIR      = qr{\A / [\w.+/-]* \z};
+our %EXECUTABLE    = ( 100755 => 'file', 120000 => 'link' );
+
+sub declared_rules ( $job, $gh, $checkouts ) {
+    my ( $own, @tools ) = @$checkouts;
+    return List::Util::uniq( checkout_rules( $job, $gh, $own, 1 ), map { checkout_rules( $job, $gh, $_, 0 ) } @tools );
+}
+
+=func checkout_rules
+
+C<($job, $gh, \%checkout, $own)>.  The rules of L</declared_rules> for one
+checkout of L</in_worktree>.  C<$own> is true for the spoke of the run.
+
+=cut
+
+sub checkout_rules ( $job, $gh, $checkout, $own ) {
+    my ( $repo, $spoke ) = @$checkout{qw{repo spoke}};
+    my $dir   = $checkout->{dir}->to_abs->to_string;
+    my @paths = eval { declared_paths( $job, $spoke, default_branch( $gh, $repo ) ) };
+    if ( my $err = $@ ) {
+        log_note( $job, "gives the run no rule from clod.json of $repo, because " . ( split m{\n}, $err )[0] );
+        return;
+    }
+    return if !@paths;
+    if ( $dir !~ $RULE_DIR ) {
+        log_note( $job, "gives the run no rule for the absolute paths of $repo, because a rule cannot hold its directory $dir" );
+        $dir = undef;
+    }
+    my @rules;
+    for my $path (@paths) {
+        push @rules, "Bash($path:*)"      if $own;
+        push @rules, "Bash($dir/$path:*)" if defined $dir;
+    }
+    return @rules;
+}
+
+=func declared_paths
+
+C<($job, $spoke, $branch)>.  The paths of the files that F<clod.json> on
+C<origin/$branch> of the spoke declares, as L</declared_rules> says.  The job
+notes each path that it leaves out, and why.  Empty when there is no
+F<clod.json>.  Dies when it cannot be read.
+
+=cut
+
+our %RULES_SCHEMA = ( type => 'object', properties => { run => { type => 'array', items => { type => 'string' } } } );
+
+sub declared_paths ( $job, $spoke, $branch ) {
+    my ($file) = grep { $_->{path} eq 'clod.json' } $spoke->files_at( $branch, 'clod.json' );
+    return if !$file;
+    my $declared = Mojo::JSON::decode_json( $spoke->blob( $file->{object} ) );
+    my @errors   = JSON::Validator::Schema::Draft7->new( {%RULES_SCHEMA} )->validate($declared);
+    die join( q{; }, @errors ) . "\n" if @errors;
+    my @paths;
+    for my $path ( @{ $declared->{run} // [] } ) {
+        if ( $path !~ $DECLARED_PATH ) {
+            log_note( $job, "gives the run no rule for $path of clod.json, because it is not a plain path inside the repository" );
+            next;
+        }
+        my $dir   = $path =~ s{/\*\z}{/}r;
+        my @files = $dir eq $path ? grep { $_->{path} eq $path } $spoke->files_at( $branch, $path ) : $spoke->files_at( $branch, $dir );
+        my @found = grep                 { runnable( $spoke, $_ ) } @files;
+        log_note( $job, "gives the run no rule for $path of clod.json, because it names no executable file on $branch" ) if !@found;
+        push @paths, map { $_->{path} } @found;
+    }
+    return @paths;
+}
+
+=func runnable
+
+C<($spoke, \%file)>, a file of L<App::Clod::Spoke/files_at>.  True if it is an
+executable file, or a symbolic link whose target is the name of another file in
+its directory.
+
+=cut
+
+sub runnable ( $spoke, $file ) {
+    my $kind = $EXECUTABLE{ $file->{mode} } // return 0;
+    return 1 if $kind eq 'file';
+    my $target = $spoke->blob( $file->{object} );
+    return $target =~ $BARE_NAME && $target ne $file->{path} =~ s{\A.*/}{}r;
+}
+
 =func waits_for_packages
 
 C<($lacks)>, from L</branch_packages>.  The part of the result of a job whose
@@ -1396,7 +1530,7 @@ sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
         $job, $config,
         dir      => $tree,
         prompt   => prompt( fix => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, packages => packages_prompt( $config, @programs ), tools => $tools->{note}, context => context( $config, $gh, $item ) ),
-        tools    => change_tools( $config, @programs ),
+        tools    => change_tools( $config, [ declared_rules( $job, $gh, $tools->{checkouts} ) ], @programs ),
         add_dirs => $tools->{add_dirs},
         schema   => {
             type       => 'object',
@@ -1827,7 +1961,7 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
             history      => context( $config, $gh, $item ),
             context      => Mojo::JSON::encode_json( { threads => $address{pending}, comments => $address{comments} } ),
         ),
-        tools    => change_tools( $config, @programs ),
+        tools    => change_tools( $config, [ declared_rules( $job, $gh, $tools->{checkouts} ) ], @programs ),
         add_dirs => $tools->{add_dirs},
         schema   => {
             type       => 'object',

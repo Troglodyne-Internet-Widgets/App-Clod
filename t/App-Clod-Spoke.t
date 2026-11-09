@@ -185,6 +185,28 @@ subtest 'one process at a time works on a bare clone' => sub {
     like( $refs, qr{^refs/remotes/origin/main$}m, 'a fetch gives such a clone its remote-tracking refs' );
 };
 
+subtest 'files_at and blob' => sub {
+    my $bin = $seed->child('bin')->make_path;
+    my $sub = $bin->child('sub')->make_path;
+    $sub->child('deep')->spew("x\n");
+    chmod 0755, $bin->child('tool')->spew("#!/bin/sh\n") or die "chmod: $!";
+    $bin->child('plain')->spew("text\n");
+    symlink 'tool', $bin->child('link') or die "symlink: $!";
+    git( '-C',  "$seed", 'add', q{.} );
+    git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet --no-verify -m files} );
+    git( '-C',  "$seed", 'push', '--quiet', "$bare", 'main' );
+    $spoke->fetch;
+
+    my %mode = map { $_->{path} => $_->{mode} } $spoke->files_at( 'main', 'bin/' );
+    is( \%mode,                                                        { 'bin/link' => '120000', 'bin/plain' => '100644', 'bin/tool' => '100755' }, 'a path that ends in / gives the files directly in that directory, with their modes' );
+    is( [ map { $_->{path} } $spoke->files_at( 'main', 'bin/tool' ) ], ['bin/tool'],                                                                'a path of a file gives that file' );
+    is( [ $spoke->files_at( 'main', 'bin' ) ],                         [],                                                                          'a directory without the / is no file' );
+    is( [ $spoke->files_at( 'main', 'bin/none' ) ],                    [],                                                                          'and a path with nothing there gives none' );
+    my ($link) = $spoke->files_at( 'main', 'bin/link' );
+    is( $spoke->blob( $link->{object} ), 'tool', 'the blob of a symbolic link is its target' );
+    like( dies { $spoke->files_at( 'no-such-branch', 'bin/' ) }, qr/no-such-branch/, 'a branch that the bare clone does not have dies' );
+};
+
 subtest git => sub {
     like( dies { $spoke->git(qw{rev-parse --verify no-such-ref}) }, qr/\Agit\ rev-parse\ --verify\ no-such-ref:\ fatal:\ [^\n]+\n\z/, 'a failing git command dies with its error, on one line, with no file or line' );
     ok( !( grep { m{test-token} } git( '--git-dir', $spoke->mirror->to_string, 'config', '--list' ) ), 'the token is not in the clone\'s configuration' );

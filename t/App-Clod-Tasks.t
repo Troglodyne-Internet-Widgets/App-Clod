@@ -977,6 +977,123 @@ subtest 'tool spokes and the spoke prompt' => sub {
     $minion->reset( { all => 1 } );
 };
 
+subtest 'the rules that a repository declares in clod.json' => sub {
+    %state = ();
+    @calls = ();
+    my $config = $app->clod_config;
+    my $bare   = $remote->child('Test-Org/two.git')->to_string;
+    my $seed   = $tmp->child( 'seed', 'Test-Org/two' );
+    my $commit = sub ( $branch, %files ) {
+        git( q{-C}, "$seed", qw{checkout --quiet -B}, $branch, 'origin-main' ) if $branch ne 'main';
+        for my $name ( sort keys %files ) {
+            my $file = $seed->child($name);
+            $file->dirname->make_path;
+            my ( $kind, $text ) = @{ $files{$name} };
+            if ( $kind eq 'link' ) { symlink $text, $file or die "symlink: $!" }
+            else                   { $file->spew($text); chmod $kind eq 'program' ? oct '0755' : oct '0644', $file or die "chmod: $!" }
+        }
+        git( q{-C}, "$seed", qw{add .} );
+        git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet -m files} );
+        git( q{-C}, "$seed", qw{push --quiet --force}, $bare, $branch );
+        git( q{-C}, "$seed", qw{checkout --quiet main} );
+        return;
+    };
+    my $declare = sub (@run) { return ( 'clod.json' => [ text => Mojo::JSON::encode_json( { run => \@run } ) ] ) };
+    $commit->(
+        'main',
+        $declare->(qw{bin/provision scripts/* ../etc/x bin/missing bin/plain}),
+        'bin/provision'      => [ program => "#!/bin/sh\n" ],
+        'bin/plain'          => [ plain   => "text\n" ],
+        'bin/other'          => [ program => "#!/bin/sh\n" ],
+        'scripts/run_bin'    => [ program => "#!/bin/sh\n" ],
+        'scripts/new_guest'  => [ link    => 'run_bin' ],
+        'scripts/away'       => [ link    => '../bin/other' ],
+        'scripts/README'     => [ plain   => "read me\n" ],
+        'scripts/sub/deeper' => [ program => "#!/bin/sh\n" ],
+    );
+    git( q{-C}, "$seed", qw{branch --quiet --force origin-main main} );
+    my $record_file = "$tmp/declared-record";
+    my $rules_of    = sub () {
+        return [ grep { m{\ABash\( (?!rtk\ ) [^:]* /} } split m{,}, record_of($record_file)->{flags}{'--allowedTools'}[0] ];
+    };
+
+    answer( { title => 't', summary => 's' } );
+    unlink $record_file;
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    my $own  = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    my $tree = $tmp->child( 'workspace', 'work', $own->{id}, 'Test-Org', 'two' )->to_string;
+    is( $own->{state}, 'finished', 'a fix in a repository with a clod.json finishes' ) or diag Mojo::Util::dumper $own->{result};
+    is(
+        $rules_of->(),
+        [ map { ( "Bash($_:*)", "Bash($tree/$_:*)" ) } qw{bin/provision scripts/new_guest scripts/run_bin} ],
+        'its run may run each declared executable file and each link to a name in its directory, by the path from the top of its worktree and by the absolute path, and nothing else in a declared directory'
+    );
+    my @notes = map { $_->{message} } @{ $own->{notes}{log} // [] };
+    is(
+        [ grep { m{clod\.json} } @notes ],
+        [
+            'gives the run no rule for ../etc/x of clod.json, because it is not a plain path inside the repository',
+            'gives the run no rule for bin/missing of clod.json, because it names no executable file on main',
+            'gives the run no rule for bin/plain of clod.json, because it names no executable file on main',
+        ],
+        'and the job notes each path that it leaves out, and why'
+    );
+
+    answer( { title => 't', summary => 's' } );
+    unlink $record_file;
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    $config->{tool_spokes} = ['Test-Org/two'];
+    my $other = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    my $tool  = $tmp->child( 'workspace', 'work', $other->{id}, 'Test-Org', 'two' )->to_string;
+    is( $rules_of->(), [ map { "Bash($tool/$_:*)" } qw{bin/provision scripts/new_guest scripts/run_bin} ], 'a run in another spoke may run them by the absolute path in its tool worktree alone' );
+
+    # A branch of an earlier spoke of the change, which puts the tool worktree there, declares more.
+    $commit->( 'clod/1-grant', $declare->( 'bin/provision', 'bin/other' ) );
+    $minion->add_task( fake_spoke => sub ( $job, $r ) { $job->finish($r) } );
+    my $first = $minion->enqueue( fake_spoke => [ { repo => 'Test-Org/two', branch => 'clod/1-grant', pr_url => 'https://test.test/two/1' } ] );
+    run_id($first);
+    answer( { title => 't', summary => 's' } );
+    unlink $record_file;
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    my $after = run_id( $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ], { parents => [$first] } ) );
+    my $later = $tmp->child( 'workspace', 'work', $after->{id}, 'Test-Org', 'two' )->to_string;
+    is( $rules_of->(), [ map { "Bash($later/$_:*)" } qw{bin/provision scripts/new_guest scripts/run_bin} ], 'the rules come from the default branch, and not from the branch that the worktree is at' );
+
+    git( q{--git-dir}, $remote->child('Test-Org/one.git')->to_string, qw{branch clod/2-declared main} );
+    $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/2-declared', repo => { full_name => 'Test-Org/one' } }, base => { ref => 'main' }, html_url => 'https://test.test/pull/12' };
+    $state{review_comments} = [ { id => 31, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'rename this' } ];
+    answer( { summary => 'Renamed.', replies => [ { id => 31, body => 'Done.' } ] }, commit => 1 );
+    unlink $record_file;
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    my $address  = run_job( spoke_address => { item => { %item, kind => 'address_review', is_pr => 1, number => 12 }, repo => 'Test-Org/one', instructions => 'answer them' } );
+    my $answered = $tmp->child( 'workspace', 'work', $address->{id}, 'Test-Org', 'two' )->to_string;
+    is( $address->{state}, 'finished',                                                                             'an answer to a review with the tool spoke finishes' ) or diag Mojo::Util::dumper $address->{result};
+    is( $rules_of->(),     [ map { "Bash($answered/$_:*)" } qw{bin/provision scripts/new_guest scripts/run_bin} ], 'and may run them too, because it changes a spoke' );
+    delete @state{qw{pull review_comments}};
+
+    answer( { event => 'COMMENT', body => 'Fine.', comments => [] } );
+    unlink $record_file;
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    my $review = run_job( spoke_review => { item => { %item, kind => 'review', is_pr => 1, number => 9 }, repo => 'Test-Org/one', instructions => 'x' } );
+    is( $review->{state}, 'finished', 'a review with the tool spoke finishes' ) or diag Mojo::Util::dumper $review->{result};
+    is( $rules_of->(),    [],         'and gets none of its rules, because it only reads' );
+    $config->{tool_spokes} = [];
+
+    $commit->( 'main', 'clod.json' => [ text => '{"run":"bin/provision"}' ] );
+    answer( { title => 't', summary => 's' } );
+    unlink $record_file;
+    $fake{FAKE_CLAUDE_RECORD} = $record_file;
+    my $bad = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( $rules_of->(), [], 'a clod.json that is not valid gives no rule' );
+    my $unread = 'gives the run no rule from clod.json of Test-Org/two, because';
+    like( [ map { $_->{message} } @{ $bad->{notes}{log} } ], bag { item qr{\A\Q$unread\E}; etc }, 'and the job notes why' );
+
+    git( q{-C}, "$seed", qw{rm --quiet -r clod.json bin scripts} );
+    git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet -m clean} );
+    git( q{-C}, "$seed", 'push', '--quiet', $bare, 'main' );
+    $minion->reset( { all => 1 } );
+};
+
 subtest reply => sub {
     %state = ();
     @calls = ();
@@ -1729,8 +1846,8 @@ subtest 'a branch that needs system packages' => sub {
         quote   => 'its test names no program',
         source  => 'source is a word of the shell',
     );
-    is( \@noted,                                             [ map { "gives the run no rule for the program of the test of $_, because $why{$_}" } sort keys %why ], 'and the job notes each one that it leaves out, and which condition it fails' );
-    is( App::Clod::Tasks::change_tools( $config, 'ffmpeg' ), [ @{ App::Clod::Tasks::claude($config)->allowed_tools }, 'Bash(ffmpeg:*)' ],                            'a rule for a program, with any arguments, comes after the tools of the configuration' );
+    is( \@noted,                                                                [ map { "gives the run no rule for the program of the test of $_, because $why{$_}" } sort keys %why ], 'and the job notes each one that it leaves out, and which condition it fails' );
+    is( App::Clod::Tasks::change_tools( $config, ['Bash(bin/x:*)'], 'ffmpeg' ), [ @{ App::Clod::Tasks::claude($config)->allowed_tools }, 'Bash(bin/x:*)', 'Bash(ffmpeg:*)' ],           'a rule for a program, with any arguments, comes after the tools of the configuration and the rules that the repositories declare' );
 
     $tree->child('metamerge.yml')->spew("x_system_packages:\n  ffmpeg:\n    deb: foo=1.2\n");
     $job = $minion->job( $minion->enqueue( spoke_fix => [ {} ] ) );

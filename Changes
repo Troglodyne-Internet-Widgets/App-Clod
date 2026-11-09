@@ -1,6 +1,12 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Let a repository declare in `clod.json` at its top the programs in it
+      that a run which changes a spoke may run.  The bot reads it from the
+      default branch, so a declaration takes effect when it merges, and a
+      pull request cannot grant its own run a rule.  Each declared file
+      gets a rule that names it exactly, by its path in the worktree, so a
+      tool spoke needs no `extra_tools` rule that begins with `*`.
     - Let a run that changes a work tree edit the skills of that work tree,
       in `.claude/skills/`.  Claude Code asks before it writes in
       `.claude/`, nobody answers in `claude -p`, and no allow rule can, so
