@@ -8,7 +8,8 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
-use IPC::Run ();
+use IPC::Run   ();
+use Mojo::File ();
 use Mojo::JSON();
 use Time::HiRes qw{time};
 use version     ();
@@ -18,6 +19,9 @@ my $UNKNOWN_RESET = 1800;
 
 # How much of each end of its stderr a run keeps in the job result.
 my $STDERR_END = 2000;
+
+# The PermissionRequest hook of a run that edits, in share/agent-bin.
+my $SKILL_HOOK = 'clod-skill-edits';
 
 =head1 WHAT CLAUDE DOES NOT GET
 
@@ -39,6 +43,28 @@ unattended.
 =cut
 
 our @WITHHELD = qw{GH_TOKEN GITHUB_TOKEN};
+
+=head1 THE SKILLS OF A WORK TREE
+
+Claude Code protects F<.claude/>.  In C<acceptEdits> it asks before it writes
+there, and no allow rule answers for a person.  In C<-p> nobody answers, so a
+run cannot change a skill of its repository.  So a run in C<acceptEdits>,
+which is how a run that changes a work tree runs, gets
+L</skill_settings>: a C<PermissionRequest> hook, F<clod-skill-edits> of
+F<share/agent-bin>, that allows an C<Edit> or C<Write> inside
+F<.claude/skills/> of its C<dir>, and decides nothing else.  The change still
+reaches the default branch only through a pull request.  A run in another
+mode does not get the hook, because there the hook would let a run that may
+not edit edit the skills.
+
+The hook runs from the F<bin> of L</lib>, where L<App::Clod::Deps/install_programs>
+puts it for the account of L</run_as> to read and run, or from F<share> with
+no L</lib>.  It runs on the perl of the worker, C<$^X>, with an empty
+environment.  So C<PERL5LIB>, which names L</own_lib>, a lib that the agent
+may install into, cannot give it another module, and C<PATH> cannot give it
+another perl.
+
+=cut
 
 =attr bin
 
@@ -156,13 +182,29 @@ read it.
 sub command ( $self, %run ) {
     my @cmd = $self->as_account( $self->bin, qw{-p --output-format stream-json --verbose} );
     push @cmd, '--model', $self->model if $self->model;
-    push @cmd, '--permission-mode', $run{permission_mode} // 'acceptEdits';
+    my $mode = $run{permission_mode} // 'acceptEdits';
+    push @cmd, '--permission-mode', $mode;
+    push @cmd, '--settings',        $self->skill_settings( $run{dir} ) if $mode eq 'acceptEdits' && defined $run{dir};
     my $tools = $run{tools} // $self->allowed_tools;
     push @cmd, '--allowedTools',         join( q{,}, map { rtk_too($_) } @$tools ) if @$tools;
     push @cmd, '--add-dir',              $_ for @{ $run{add_dirs} // [] };
     push @cmd, '--json-schema',          Mojo::JSON::encode_json( $run{schema} ) if $run{schema};
     push @cmd, '--append-system-prompt', $run{system}                            if $run{system};
     return \@cmd;
+}
+
+=method skill_settings
+
+C<($dir)>.  The C<--settings> of a run in the work tree C<$dir>, as JSON: a
+C<PermissionRequest> hook, F<clod-skill-edits>, that lets the run edit the
+skills of C<$dir>.  See L</THE SKILLS OF A WORK TREE>.
+
+=cut
+
+sub skill_settings ( $self, $dir ) {
+    my $hook = defined $self->lib ? Mojo::File->new( $self->lib, 'bin', $SKILL_HOOK ) : App::Clod::share_dir()->child( 'agent-bin', $SKILL_HOOK );
+    my $run  = { type => 'command', command => '/usr/bin/env', args => [ '-i', $^X, "$hook", Mojo::File->new($dir)->to_abs->to_string ] };
+    return Mojo::JSON::encode_json( { hooks => { PermissionRequest => [ { matcher => 'Edit|Write', hooks => [$run] } ] } } );
 }
 
 =method child_env

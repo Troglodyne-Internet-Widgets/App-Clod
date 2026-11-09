@@ -1,0 +1,88 @@
+#!/usr/bin/env perl
+use 5.040;
+use warnings FATAL => 'all';
+use re '/aasx';
+
+# PODNAME: clod-skill-edits
+# ABSTRACT: Let a claude run edit the skills of its own work tree, and nothing else
+
+use Cwd        ();
+use JSON::PP   ();    ## no critic (PreferredModules) it runs with no PERL5LIB, so only a core module is there
+use List::Util ();
+
+my %TOOLS = map { $_ => 1 } qw{Edit Write};
+
+my $ALLOW = qq{{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\n};
+
+# The real path of $path, absolute, whose last components need not exist yet.
+# Those components may not be . or .., nor a link that points nowhere, because
+# what they name would depend on what a write creates.
+sub resolved ($path) {
+    my @rest;
+    while ( !-e $path ) {
+        return if -l $path;
+        my ( $parent, $name ) = $path =~ m{\A(.*)/([^/]*)\z} or return;
+        unshift @rest, $name;
+        $path = $parent eq q{} ? q{/} : $parent;
+    }
+    return if List::Util::any { $_ eq q{} || $_ eq q{.} || $_ eq q{..} } @rest;
+    my $real = Cwd::realpath($path) // return;
+    return join q{/}, $real, @rest;
+}
+
+sub allowed ( $input, $worktree ) {
+    return 0 if ref $input ne 'HASH' || !$TOOLS{ $input->{tool_name} // q{} };
+    my $tool_input = $input->{tool_input};
+    return 0 if ref $tool_input ne 'HASH';
+    my $path = $tool_input->{file_path};
+    return 0 if !defined $path || index( $path, q{/} ) != 0;
+    my $tree = Cwd::realpath($worktree) // return 0;
+    my $real = resolved($path)          // return 0;
+
+    # Edit and Write change a file, not a directory.  A write to a second name
+    # of a file elsewhere changes that file too.
+    return 0 if -e $real && ( -d _ || ( stat _ )[3] > 1 );
+    return index( $real, "$tree/.claude/skills/" ) == 0 ? 1 : 0;
+}
+
+my $worktree = shift @ARGV // exit 0;
+my $input    = eval {
+    JSON::PP::decode_json(
+        do { local $/ = undef; <> }
+          // q{}
+    );
+};
+print $ALLOW if allowed( $input, $worktree );
+exit 0;
+
+__END__
+
+=head1 SYNOPSIS
+
+    clod-skill-edits $worktree < request.json
+
+=head1 DESCRIPTION
+
+A C<PermissionRequest> hook of claude, which L<App::Clod::Claude> gives to the
+runs that change a work tree.  Claude Code protects F<.claude/>: in
+C<acceptEdits> it asks before it writes there, and an allow rule cannot answer
+for a person.  In C<claude -p> nobody answers, so the write is refused, and a
+run cannot change a skill of its repository.
+
+This hook answers for the person, and allows a call of C<Edit> or C<Write>
+only when its C<file_path> is inside F<.claude/skills/> of C<$worktree>, the
+work tree of the run, after symbolic links and C<..> are resolved.  For every
+other request it prints nothing, and claude refuses the call as it would
+without the hook.  So F<.claude/settings.json>, F<.claude/hooks/>, F<.git/>,
+the directories that C<--add-dir> adds, and F<~/.claude/skills/> of the account
+stay out of reach.  A change to a skill of the work tree reaches the default
+branch only through a pull request that a person reviews, and a change to
+F<~/.claude/skills/> would change every later run with no review.
+
+It takes the work tree as its argument, not from C<cwd> of the request, which
+follows the directory that the run changes to.  It refuses a file with a
+second hard link, because a write to it changes the other name too.  It needs
+only the modules of the core of perl, so that it can run with no
+C<PERL5LIB>, which names a lib that the agent may install into.
+
+=cut
