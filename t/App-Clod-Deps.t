@@ -89,7 +89,7 @@ subtest missing => sub {
 
 subtest install_programs => sub {
     my $lib = $tmp->child('programs-lib');
-    is( [ App::Clod::Deps::stale_programs("$lib") ], ['clod-cpm'], 'an agent lib without the programs lacks them' );
+    is( [ App::Clod::Deps::stale_programs("$lib") ], [qw{clod-cpm clod-skill-edits}], 'an agent lib without the programs lacks each of them' );
     App::Clod::Deps::install_programs("$lib");
     is( [ App::Clod::Deps::stale_programs("$lib") ], [], 'and has them once they are installed' );
     my $cpm = $lib->child(qw{bin clod-cpm});

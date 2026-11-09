@@ -9,11 +9,14 @@ use FindBin::libs;
 use File::Temp ();
 use Mojo::File ();
 use Mojo::JSON ();
+use IPC::Run   ();
 
+use App::Clod();
 use App::Clod::Claude();
+use App::Clod::Deps();
 
 my $here   = Mojo::File->new(__FILE__)->dirname->to_abs;
-my $fake   = $here->child( 'bin', 'fake-claude' )->to_string;
+my $fake   = $here->child(qw{bin fake-claude})->to_string;
 my $tmp    = File::Temp->newdir;
 my $record = "$tmp/record";
 
@@ -44,8 +47,36 @@ subtest command => sub {
     );
 };
 
+# The hook of the settings of a run, run as claude runs it, on a request to
+# edit $file.  What it printed.
+sub skill_hook ( $cmd, $file ) {
+    my ($at) = grep { $cmd->[$_] eq '--settings' } 0 .. $#$cmd;
+    die "no --settings\n" if !defined $at;
+    my $hooks   = Mojo::JSON::decode_json( $cmd->[ $at + 1 ] )->{hooks}{PermissionRequest};
+    my $hook    = $hooks->[0]{hooks}[0];
+    my $request = Mojo::JSON::encode_json( { tool_name => 'Edit', tool_input => { file_path => "$file" } } );
+    my $out     = q{};
+    IPC::Run::run( [ $hook->{command}, @{ $hook->{args} } ], '<', \$request, '>', \$out ) or die "the hook failed\n";
+    return $out;
+}
+
+subtest 'command, and the skills of the work tree' => sub {
+    my $tree  = Mojo::File->new("$tmp/skill-tree");
+    my $skill = $tree->child(qw{.claude skills test SKILL.md});
+    $skill->dirname->make_path;
+    my $claude = App::Clod::Claude->new( bin => 'test-claude' );
+    like( skill_hook( $claude->command( dir => "$tree" ), $skill ), qr/"behavior":"allow"/, 'a run that edits its work tree may edit a skill of it' );
+    is( skill_hook( $claude->command( dir => "$tree" ), $tree->child(qw{.claude settings.json}) ), q{}, 'and nothing else of .claude' );
+    ok( !( grep { $_ eq '--settings' } @{ $claude->command( dir => "$tree", permission_mode => 'default' ) } ), 'a run that may not edit gets no hook, which would let it' );
+
+    my $lib = Mojo::File->new("$tmp/agent-lib");
+    App::Clod::Deps::install_programs("$lib");
+    my $from_lib = App::Clod::Claude->new( bin => 'test-claude', lib => "$lib" )->command( dir => "$tree" );
+    like( skill_hook( $from_lib, $skill ), qr/"behavior":"allow"/, 'with an agent lib, the hook runs from its bin, which the agent account can read' );
+};
+
 subtest run => sub {
-    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_RECORD => $record, FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string } );
+    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_RECORD => $record, FAKE_CLAUDE_STREAM => $here->child(qw{data stream-ok.jsonl})->to_string } );
     my @seen;
     my $outcome = $claude->run( dir => "$tmp", prompt => 'the prompt', on_event => sub ($e) { push @seen, $e->{type} } );
 
@@ -71,7 +102,7 @@ subtest 'run, and the environment of claude' => sub {
     local $ENV{GITHUB_TOKEN}            = 'test-github-token';
     local $ENV{CLAUDE_CODE_OAUTH_TOKEN} = 'test-claude-token';
     my $names  = "$tmp/env-names";
-    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_ENV => $names, FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string, TEST_EXTRA => 1 } );
+    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_ENV => $names, FAKE_CLAUDE_STREAM => $here->child(qw{data stream-ok.jsonl})->to_string, TEST_EXTRA => 1 } );
     $claude->run( dir => "$tmp", prompt => 'x' );
     my %seen = map { $_ => 1 } split /\n/, Mojo::File->new($names)->slurp;
     ok( !$seen{GH_TOKEN} && !$seen{GITHUB_TOKEN}, 'claude, and every command it runs, gets no GitHub token' );
@@ -81,7 +112,7 @@ subtest 'run, and the environment of claude' => sub {
 };
 
 subtest 'run, as another account' => sub {
-    local $ENV{PATH}                    = join q{:}, $here->child( 'bin', 'sudo-dir' ), $here->child('bin'), $ENV{PATH};
+    local $ENV{PATH}                    = join q{:}, $here->child(qw{bin sudo-dir}), $here->child('bin'), $ENV{PATH};
     local $ENV{GH_TOKEN}                = 'test-github-token';
     local $ENV{CLAUDE_CODE_OAUTH_TOKEN} = 'test-claude-token';
     local $ENV{FAKE_SUDO_RECORD}        = "$tmp/sudo-account";
@@ -89,7 +120,7 @@ subtest 'run, as another account' => sub {
     my $claude = App::Clod::Claude->new(
         bin    => 'fake-claude',
         run_as => 'test-agent',
-        env    => { FAKE_CLAUDE_ENV => $names, FAKE_CLAUDE_RECORD => $record, FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string, GH_TOKEN => 'test-github-token' },
+        env    => { FAKE_CLAUDE_ENV => $names, FAKE_CLAUDE_RECORD => $record, FAKE_CLAUDE_STREAM => $here->child(qw{data stream-ok.jsonl})->to_string, GH_TOKEN => 'test-github-token' },
     );
     my $outcome = $claude->run( dir => "$tmp", prompt => 'the prompt' );
     is( $outcome->{ok},                              1,            'a run through sudo finds claude on the PATH of the worker, which secure_path replaces' ) or diag $outcome->{stderr};
@@ -117,12 +148,12 @@ subtest 'run, with refused calls' => sub {
     is( $outcome->{ok},     1,                                                                             'a run with refused calls can still end well' );
     is( $outcome->{denied}, [ 'Bash(rtk git add -A)', 'Write(/bogus/.git/hooks/pre-commit)', 'WebFetch' ], 'and it says each refused call, as the rule that would allow it' );
 
-    my $clean = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-ok.jsonl' )->to_string } )->run( dir => "$tmp", prompt => 'x' );
+    my $clean = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child(qw{data stream-ok.jsonl})->to_string } )->run( dir => "$tmp", prompt => 'x' );
     is( $clean->{denied}, [], 'a run with none refused says none' );
 };
 
 subtest 'run, with no newline after the last event' => sub {
-    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-unterminated.jsonl' )->to_string } );
+    my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child(qw{data stream-unterminated.jsonl})->to_string } );
     my @seen;
     my $outcome = $claude->run( dir => "$tmp", prompt => 'x', on_event => sub ($e) { push @seen, $e->{type} } );
     is( \@seen,                 [qw{system assistant rate_limit_event result}], 'the last event still counts' );
@@ -131,7 +162,7 @@ subtest 'run, with no newline after the last event' => sub {
 };
 
 subtest 'run, with no result' => sub {
-    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-no-result.jsonl' )->to_string } );
+    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child(qw{data stream-no-result.jsonl})->to_string } );
     my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );
     is( $outcome->{exit}, 0, 'a run that exits zero' );
     is( $outcome->{ok},   0, 'but sends no result is not ok' );
@@ -154,7 +185,7 @@ subtest ends => sub {
 };
 
 subtest 'run, at the limit' => sub {
-    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-limited.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } );
+    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child(qw{data stream-limited.jsonl})->to_string, FAKE_CLAUDE_EXIT => 1 } );
     my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );
     is( $outcome->{ok},          0,          'a run at the limit is not ok' );
     is( $outcome->{exit},        1,          'and keeps its exit code' );
@@ -162,14 +193,14 @@ subtest 'run, at the limit' => sub {
 };
 
 subtest 'run, with a refused token' => sub {
-    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-unauthorized.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } );
+    my $claude  = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child(qw{data stream-unauthorized.jsonl})->to_string, FAKE_CLAUDE_EXIT => 1 } );
     my $outcome = $claude->run( dir => "$tmp", prompt => 'x' );
     is( $outcome->{ok},           0, 'a run whose token the API refuses is not ok' );
     is( $outcome->{unauthorized}, 1, 'and says that the token was refused' );
     like( $outcome->{result}, qr/401\ Invalid\ bearer\ token/, 'with the reason' );
     ok( !exists $outcome->{quota_reset}, 'and is not taken for the quota' );
 
-    my $limited = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child( 'data', 'stream-limited.jsonl' )->to_string, FAKE_CLAUDE_EXIT => 1 } )->run( dir => "$tmp", prompt => 'x' );
+    my $limited = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child(qw{data stream-limited.jsonl})->to_string, FAKE_CLAUDE_EXIT => 1 } )->run( dir => "$tmp", prompt => 'x' );
     ok( !$limited->{unauthorized}, 'an error that is not a 401 is not a refused token' );
 };
 
@@ -179,7 +210,7 @@ subtest plugins => sub {
     # records that the marketplaces were refreshed first.
     my $home = Mojo::File->new("$tmp/plugin-home");
     my $bin  = $home->child('claude');
-    $home->child( '.claude', 'plugins' )->make_path;
+    $home->child(qw{.claude plugins})->make_path;
     $bin->spew(<<~'SH');
         #!/bin/sh
         case "$*" in
@@ -216,7 +247,7 @@ subtest 'the agent lib' => sub {
     is( App::Clod::Claude->new( bin => "$bin", lib => '/bogus/agent-lib' )->cli('x'), '/bogus/agent-lib/lib/perl5|/bogus/agent-lib/bin', 'claude gets the agent lib first on PERL5LIB and its bin first on PATH' );
     like( App::Clod::Claude->new( bin => "$bin" )->cli('x'), qr/\Anone\|/, 'and without one, no PERL5LIB, so not the modules of the bot' );
 
-    local $ENV{PATH} = join q{:}, $here->child( 'bin', 'sudo-dir' ), $ENV{PATH};
+    local $ENV{PATH} = join q{:}, $here->child(qw{bin sudo-dir}), $ENV{PATH};
     is( App::Clod::Claude->new( bin => "$bin", lib => '/bogus/agent-lib', run_as => 'test-agent' )->cli('x'), '/bogus/agent-lib/lib/perl5|/bogus/agent-lib/bin', 'also as another account, through sudo, which resets the environment' );
 };
 
@@ -230,7 +261,7 @@ subtest 'the own lib of the agent' => sub {
     my $wanted = '/bogus/agent-lib/lib/perl5:/bogus/own-lib/lib/perl5|/bogus/agent-lib/bin:/bogus/own-lib/bin|/bogus/own-lib';
     is( App::Clod::Claude->new( bin => "$bin", %libs )->cli('x'), $wanted, 'comes after the agent lib on PERL5LIB and PATH, so it cannot replace a tool, and CLOD_OWN_LIB names it' );
 
-    local $ENV{PATH} = join q{:}, $here->child( 'bin', 'sudo-dir' ), $ENV{PATH};
+    local $ENV{PATH} = join q{:}, $here->child(qw{bin sudo-dir}), $ENV{PATH};
     is( App::Clod::Claude->new( bin => "$bin", %libs, run_as => 'test-agent' )->cli('x'), $wanted, 'also through sudo' );
 };
 
