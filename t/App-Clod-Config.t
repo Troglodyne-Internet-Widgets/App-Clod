@@ -7,6 +7,8 @@ use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
 
+use List::Util ();
+
 use App::Clod::Config();
 use App::Clod::Tasks();
 
@@ -94,9 +96,16 @@ subtest 'the tools of a run that changes a spoke' => sub {
     for my $program (qw{perlcritic perltidy make strace gdb nytprofhtml nytprofmerge}) {
         ok( $allowed{"Bash($program:*)"} && $allowed{"Bash(rtk $program:*)"}, "claude may run $program, also through rtk" );
     }
+    ok( $allowed{'Bash(chmod:*)'}, 'claude may make a file executable' );
+    for my $program (qw{cat head tail wc ls grep}) {
+        ok( $allowed{"Bash($program:*)"}, "claude may run the read-only command $program, which a pipe or a list of commands also needs" );
+    }
+    ok( $allowed{'Bash(rtk read:*)'} && $allowed{'Bash(rtk ls:*)'} && $allowed{'Bash(rtk wc:*)'}, 'and what rtk makes of cat, head, tail, ls and wc' );
     my %read = map { $_ => 1 } @{ $config->{claude}{read_tools} };
-    ok( !$read{'Bash(perltidy:*)'},                       'and a run that only reads may not, because perltidy rewrites files' );
-    ok( !( grep { $read{"Bash($_:*)"} } qw{strace gdb} ), q{nor may it trace or debug, because strace and gdb each run a program of their choosing} );
+    ok( ( List::Util::all { $read{"Bash($_:*)"} } qw{cat head tail wc ls grep} ), 'a run that only reads may run the read-only commands too' );
+    ok( !$read{'Bash(chmod:*)'},                                                  'but not chmod, which changes a file' );
+    ok( !$read{'Bash(perltidy:*)'},                                               'and a run that only reads may not, because perltidy rewrites files' );
+    ok( !( grep { $read{"Bash($_:*)"} } qw{strace gdb} ),                         q{nor may it trace or debug, because strace and gdb each run a program of their choosing} );
 };
 
 subtest create_repos => sub {

@@ -16,6 +16,9 @@ my $REPO  = { type => 'string', pattern => '\A[\w.-]+/[\w.-]+\z' };
 my $LOGIN = { type => 'string', pattern => '\A[\w.-]+\z' };
 my $TEXT  = { type => 'string' };
 
+# The read-only commands, which allowed_tools and read_tools both allow.
+our @READ_COMMANDS = map { "Bash($_:*)" } qw{cat head tail wc ls grep};
+
 my sub list_of ( $item, %more )       { return { type => 'array',   items                => $item, default => [], %more } }
 my sub section ( $properties, %more ) { return { type => 'object',  additionalProperties => 0, default => {}, properties => $properties, %more } }
 my sub seconds ($default)             { return { type => 'integer', minimum              => 1, default => $default } }
@@ -53,8 +56,8 @@ our %SCHEMA = (
                 model         => { type => 'string', nullable => 1, default => undef },
                 run_as        => { type => 'string', nullable => 1, default => undef, pattern => '\A[a-z_][a-z0-9_-]*\z' },
                 timeout       => seconds(3600),
-                allowed_tools => list_of( $TEXT, default => [qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*) Bash(perlcritic:*) Bash(perltidy:*) Bash(make:*) Bash(strace:*) Bash(gdb:*) Bash(nytprofhtml:*) Bash(nytprofmerge:*) Bash(clod-cpm:*)}] ),
-                read_tools    => list_of( $TEXT, default => [ qw{Read Grep Glob}, 'Bash(git log:*)', 'Bash(git grep:*)', 'Bash(git show:*)', 'Bash(git diff:*)' ] ),
+                allowed_tools => list_of( $TEXT, default => [ qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*) Bash(perlcritic:*) Bash(perltidy:*) Bash(make:*) Bash(strace:*) Bash(gdb:*) Bash(nytprofhtml:*) Bash(nytprofmerge:*) Bash(clod-cpm:*) Bash(chmod:*)}, @READ_COMMANDS ] ),
+                read_tools    => list_of( $TEXT, default => [ qw{Read Grep Glob}, 'Bash(git log:*)', 'Bash(git grep:*)', 'Bash(git show:*)', 'Bash(git diff:*)', @READ_COMMANDS ] ),
                 extra_tools   => list_of($TEXT),
             }
         ),
@@ -229,12 +232,24 @@ The default C<allowed_tools> are the tools of the files and the Perl
 programs that a spoke is built and checked with: C<Read>, C<Edit>, C<Write>,
 C<Grep> and C<Glob>, and C<git>, C<prove>, C<perl>, C<dzil>, C<podchecker>,
 C<perlcritic>, C<perltidy>, C<make>, C<strace>, C<gdb>, C<nytprofhtml>,
-C<nytprofmerge> and C<clod-cpm>.  So a run can criticize and tidy the whole
+C<nytprofmerge>, C<clod-cpm> and C<chmod>, and the read-only commands
+C<cat>, C<head>, C<tail>, C<wc>, C<ls> and C<grep>.  So a run can criticize and tidy the whole
 tree, and not only what the hooks of a commit see.  It can trace or debug a program that a spoke
 integrates with.  It can profile with C<perl -d:NYTProf> and read the profile,
-and install a module into C<agent_own_lib>.  The
-default C<read_tools> are C<Read>, C<Grep> and C<Glob>, and C<git log>, C<git
-grep>, C<git show> and C<git diff>.
+and install a module into C<agent_own_lib>.  It can make a file that it adds
+executable.  The default C<read_tools> are C<Read>, C<Grep> and C<Glob>, C<git
+log>, C<git grep>, C<git show> and C<git diff>, and the same read-only
+commands.
+
+Claude Code can allow a read-only command such as C<tail> without a rule.  But
+the rtk hook rewrites the command before the check: it makes C<rtk ls -l> of
+C<ls -l>, and C<rtk read> of C<cat>, C<head> and C<tail>, and no read-only
+command of Claude Code has that name.  Claude Code checks each
+command of a pipe or a list on its own, so C<prove t/x.t 2E<gt>&1 | tail -6>
+needs C<tail> to be allowed as well as C<prove>.  So the read-only commands get
+a rule, and L<App::Clod::Claude/rtk_too> adds the rule for what rtk makes of
+each.  They let a run read no more than C<Read> does, which reads any file that
+the account can read.
 
 C<run_as> is the account that every C<claude> run runs as, through C<sudo>.
 Unset, claude runs as the worker, and can read the token of the bot in the

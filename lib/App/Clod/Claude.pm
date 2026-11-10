@@ -9,6 +9,7 @@ use re '/aasx';
 use Mojo::Base -base, -signatures;
 
 use IPC::Run   ();
+use List::Util ();
 use Mojo::File ();
 use Mojo::JSON();
 use Time::HiRes qw{time};
@@ -186,7 +187,7 @@ sub command ( $self, %run ) {
     push @cmd, '--permission-mode', $mode;
     push @cmd, '--settings',        $self->skill_settings( $run{dir} ) if $mode eq 'acceptEdits' && defined $run{dir};
     my $tools = $run{tools} // $self->allowed_tools;
-    push @cmd, '--allowedTools',         join( q{,}, map { rtk_too($_) } @$tools ) if @$tools;
+    push @cmd, '--allowedTools',         join( q{,}, List::Util::uniq( map { rtk_too($_) } @$tools ) ) if @$tools;
     push @cmd, '--add-dir',              $_ for @{ $run{add_dirs} // [] };
     push @cmd, '--json-schema',          Mojo::JSON::encode_json( $run{schema} ) if $run{schema};
     push @cmd, '--append-system-prompt', $run{system}                            if $run{system};
@@ -314,14 +315,18 @@ C<($rule)>.  The permission rule, and for a rule of the C<Bash> tool the same
 rule for the command that rtk makes of it.  The rtk hook rewrites C<git add -A>
 to C<rtk git add -A> before the permission check, so C<Bash(git:*)> alone does
 not allow it, and a run with no person to ask is refused.  A rule for rtk
-itself comes back alone.
+itself comes back alone.  rtk names a few commands otherwise, as
+C<%RTK_NAMES> lists them: it rewrites C<tail -20 FILE> to C<rtk read FILE
+--tail-lines 20>, so C<Bash(tail:*)> also gives C<Bash(rtk read:*)>.
 
 =cut
 
+our %RTK_NAMES = map { $_ => 'read' } qw{cat head tail};
+
 sub rtk_too ($rule) {
-    my ($command) = $rule =~ m/\ABash[(](.+)[)]\z/;
-    return $rule if !defined $command || $command =~ m/\Artk\b/;
-    return ( $rule, "Bash(rtk $command)" );
+    my ( $word, $rest ) = $rule =~ m/\ABash[(] ([^\s:)]+) (.*) [)]\z/;
+    return $rule if !defined $word || $word eq 'rtk';
+    return ( $rule, 'Bash(rtk ' . ( $RTK_NAMES{$word} // $word ) . "$rest)" );
 }
 
 =method run
