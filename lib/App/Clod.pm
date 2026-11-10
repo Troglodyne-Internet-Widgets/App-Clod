@@ -221,7 +221,10 @@ each tool spoke, removed after the run, so that runs in parallel never share
 one.  It is at the branch of an earlier spoke of the same change that changed
 the tool spoke, so a run can test with a recipe that the run before it just
 added.  C<extra_tools> allows the runs that change a repository to run those
-tools.  See L<App::Clod::Config>.
+tools.  See L<App::Clod::Config>.  A repository can also declare the programs
+in it that those runs may run, in F<clod.json> at its top.  The bot reads it
+from the default branch, so a declaration takes effect when a person merges
+it.  L<App::Clod::Tasks/declared_rules> says what it may hold.
 
 If the best fix is upstream, the bot changes nothing.  It assigns the issue to
 the owner of the affected path in CODEOWNERS, or to the repository owner, and

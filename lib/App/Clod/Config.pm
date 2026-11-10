@@ -249,7 +249,10 @@ C<Bash(bin/provision:*)>, added to C<allowed_tools> of this installation.  So
 the defaults stay, and only the runs that change a repository, C<spoke_fix>
 and C<spoke_address>, get the rules.  They never reach C<read_tools>, so
 triage, C<spoke_review> and C<reply> stay read-only.  The bot runs unattended,
-so a rule here is permission that no person confirms.  Default none.
+so a rule here is permission that no person confirms.  Default none.  A
+program in a repository is better declared in F<clod.json> of that
+repository, as L<App::Clod::Tasks/declared_rules> says, where a change to it
+is reviewed with the repository.
 
 =item harness
 
