@@ -1489,6 +1489,11 @@ its body says what the run said, as L</unfinished_note> gives it.  The result
 has C<blocked> and C<denied>.  The work that the run did is on the branch,
 where a person can read it and finish it.
 
+L</harness_fix> gives two more arguments.  With C<patch>, the job stages
+that patch in the worktree before the run, as L</stage_patch> does, so the
+run commits it with its own changes.  With C<title>, the pull request has
+that title, in place of the one that the run gives.
+
 =cut
 
 sub spoke_fix ( $job, $config, $args ) {
@@ -1508,6 +1513,7 @@ sub spoke_fix ( $job, $config, $args ) {
         $job, $config, $repo,
         $kept ? { at => $kept->{sha} } : { branch => $branch, base => $base },
         sub ( $spoke, $tree, $tools ) {
+            stage_patch( $spoke, $tree, $args->{patch} ) if !$kept && defined $args->{patch};
             my $work = $kept // fix_run( $job, $config, $gh, $args, $spoke, $tree, $tools, branch => $branch, base => $base, prior => $prior ) // return;
             log_note( $job, "pushes $work->{sha}, which an earlier try kept" ) if $kept;
             push_or_keep( $job, $spoke, $tree, $branch, $work );
@@ -1515,12 +1521,29 @@ sub spoke_fix ( $job, $config, $args ) {
             my $answer = $work->{answer};
             my $lacks  = branch_packages( $job, $config, $tree );
             my $body   = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior ), unfinished_note($work), ( $lacks ? packages_note($lacks) : () );
-            my $pull   = $gh->create_pull( $repo, { title => $answer->{title} || $item->{title}, head => $branch, base => $base, body => $body, ( $lacks ? ( draft => Mojo::JSON::true ) : () ) } );
+            my $pull   = $gh->create_pull( $repo, { title => $args->{title} // ( $answer->{title} || $item->{title} ), head => $branch, base => $base, body => $body, ( $lacks ? ( draft => Mojo::JSON::true ) : () ) } );
             log_note( $job, "opened $pull->{html_url}" . ( $lacks ? ' as a draft, because the host lacks ' . join( q{ }, @{ $lacks->{missing} } ) : q{} ) );
             assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $item->{requester} ) );
             return $job->finish( { repo => $repo, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, summary => $answer->{summary}, commits => $work->{commits}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{refusals} // {} }, %{ $work->{usage} } } );
         }
     );
+}
+
+=func stage_patch
+
+C<($spoke, $tree, $patch)>.  Applies C<$patch>, the output of C<git diff
+--cached --binary>, to the worktree C<$tree> and to its index, and installs
+the hooks that the worktree has now, as L<App::Clod::Spoke/install_hooks>
+does.  So the run of L</spoke_fix> starts with those changes staged, and its
+commit runs the hooks that the patch brings.
+
+=cut
+
+sub stage_patch ( $spoke, $tree, $patch ) {
+    my $file = Mojo::File::tempfile()->spew($patch);
+    $spoke->git( q{-C}, "$tree", qw{apply --index}, "$file" );
+    $spoke->install_hooks($tree);
+    return;
 }
 
 =func fix_run
@@ -1868,7 +1891,8 @@ commits, and the comment of the job says what the run said, as
 L</unfinished_note> gives it.
 
 With C<resume> in its arguments, L</packages_install> queued the job after it
-installed those packages.  Then the job runs even when nothing waits for an
+installed those packages, or L</harness_fix> queued it for what the update of
+the standards left for a person.  Then the job runs even when nothing waits for an
 answer, posts the C<summary> of the run as its comment when there is no
 comment to answer, and makes the pull request ready for review when the host
 lacks nothing more.
@@ -2546,13 +2570,40 @@ C<($job, $config, $args)>, where C<$args> has C<repo>, C<checks>, the failing
 checks of the last harness scan, each with C<check> and C<detail>, and C<by>,
 who pressed the button.  The issue and the pull request go to L</reviewers> of
 C<by>.
-Brings the spoke to the harness standards with no claude run, from the
-dashboard.  It files an issue that names the failing checks, and runs the
-update of L<App::Clod::Harness/update> on a new branch.  If that changes a
-file, it commits, through the hooks of the spoke, with what the spoke needs
-installed, as L</prerequisites_env> does.  Then it pushes, and opens a pull
-request that closes the issue.  The pull request and the issue say what is
-left for a person.  If the update changes nothing, it says so on the issue.
+Brings the spoke to the harness standards, from the dashboard.  It files an
+issue that names the failing checks, and runs the update of
+L<App::Clod::Harness/update> on a new branch.  If that changes a file, it
+commits, through the hooks of the spoke, with what the spoke needs installed,
+as L</prerequisites_env> does.  Then it pushes, and opens a pull request that
+closes the issue.  The pull request and the issue say what is left for a
+person.  If the update changes nothing, it says so on the issue.
+
+The update itself needs no claude run.  What it leaves for a person, its
+C<manual> results, are mostly critic and tidy standards that the code does
+not meet yet, and a claude run does them, with instructions from
+F<share/prompts/harness.md>, which L</harness_run> queues:
+
+=over 4
+
+=item * After the pull request, a L</spoke_address> with C<resume> works on
+its branch.
+
+=item * When the update changes no file, a L</spoke_fix> on the issue opens
+its own pull request.
+
+=item * When the hooks of the spoke refuse the commit, as they do once the
+update adds a critic policy that the code breaks, the job pushes nothing.  A
+L</spoke_fix> on the issue gets the staged changes as a C<patch>, and the
+output of the hook in its instructions, so the run makes the code pass and
+commits the update with its fixes, through the same hooks.  The issue says
+what the hook said, and the result has it in C<refused>.
+
+=back
+
+The pull request that such a L</spoke_fix> opens has the title of the one
+that this job opens, so that L</open_harness_pull> finds it.  The result has
+C<next>, the task and id of the run.  When nothing is left for a person and
+the commit goes through, there is no run.
 
 If the bot already has such a pull request open, the job does nothing, so a
 second press of the button cannot make a second one.  The issue is in the
@@ -2560,7 +2611,8 @@ notes of the job, so a retry does not file it again.
 
 =cut
 
-my $HARNESS_TITLE = 'Meet the harness standards';
+my $HARNESS_TITLE  = 'Meet the harness standards';
+my $LEFT_TO_CLAUDE = 'A claude run of the bot now works on what is left for a person.';
 
 =func prerequisites_env
 
@@ -2611,8 +2663,9 @@ sub harness_fix ( $job, $config, $args ) {
         \%made;
     };
 
-    my $base   = default_branch( $gh, $repo );
-    my $branch = 'clod/' . $job->id . '-harness';
+    my $issue_item = { repo => $repo, number => $issue->{number}, kind => 'fix', requester => $args->{by}, title => $HARNESS_TITLE };
+    my $base       = default_branch( $gh, $repo );
+    my $branch     = 'clod/' . $job->id . '-harness';
     return in_worktree(
         $job, $config, $repo,
         { branch => $branch, base => $base },
@@ -2626,24 +2679,60 @@ sub harness_fix ( $job, $config, $args ) {
                 my $check = $_->{check};
                 map { "- `$check`: $_" } @{ $_->{manual} }
             } @$results;
-            my $left = @manual ? join( "\n", 'Left for a person:', q{}, @manual ) : 'Nothing is left for a person.';
+            my $todo = join "\n", @manual;
+            my $left = @manual ? join( "\n", 'Left for a person:', q{}, $todo ) : 'Nothing is left for a person.';
 
             $spoke->git( q{-C}, "$tree", qw{add -A} );
+            my %done = ( repo => $repo, issue_url => $issue->{url}, changes => \@changes, manual => \@manual );
             if ( $spoke->git( q{-C}, "$tree", qw{status --porcelain} ) eq q{} ) {
-                $gh->comment( $repo, $issue->{number}, "The update of the harness changes no file here.\n\n$left" );
-                return $job->finish( { repo => $repo, issue_url => $issue->{url}, no_change => 1, manual => \@manual } );
+                $gh->comment( $repo, $issue->{number}, join "\n\n", 'The update of the harness changes no file here.', $left, @manual ? $LEFT_TO_CLAUDE : () );
+                my %next = @manual ? harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE }, $todo, 'It changed no file.' ) : ();
+                return $job->finish( { %done, no_change => 1, %next } );
             }
-            my $what = join "\n", 'The update of the harness standards, run by the bot.', q{}, @changes;
-            my %env  = prerequisites_env( $job, $config, $tree );
+            my $what   = join "\n", 'The update of the harness standards, run by the bot.', q{}, @changes;
+            my %env    = prerequisites_env( $job, $config, $tree );
+            my @commit = ( q{-C}, "$tree", qw{commit --quiet -m}, "$HARNESS_TITLE\n\n$what" );
             local @ENV{ keys %env } = values %env;
-            $spoke->git( q{-C}, "$tree", qw{commit --quiet -m}, "Meet the harness standards\n\n$what" );
+            if ( !eval { $spoke->git(@commit); 1 } ) {
+                my $said  = "git @commit: ";
+                my $hook  = substr( $@, index( $@, $said ) == 0 ? length $said : 0 ) =~ s{\s+\z}{}r;
+                my $patch = $spoke->git( q{-C}, "$tree", qw{diff --cached --binary} );
+                log_note( $job, 'the hooks of the spoke refused the commit of the update' );
+                $gh->comment( $repo, $issue->{number}, join "\n\n", "The hooks of this repository refused the commit of the update of the harness:\n\n```\n$hook\n```", $left, 'A claude run of the bot takes the update on, makes the code pass the hooks, and opens a pull request.' );
+                my %next = harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE, patch => "$patch\n" }, @manual ? $todo : 'Nothing more than what the hook refused.', prompt( 'harness-refused', hook => $hook ) );
+                return $job->finish( { %done, refused => $hook, %next } );
+            }
             $spoke->push_branch( $tree, $branch );
-            my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, "Closes #$issue->{number}" ) } );
+            my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, @manual ? $LEFT_TO_CLAUDE : (), "Closes #$issue->{number}" ) } );
             log_note( $job, "opened $pull->{html_url}" );
             assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $args->{by} ) );
-            return $job->finish( { repo => $repo, issue_url => $issue->{url}, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, changes => \@changes, manual => \@manual } );
+            my %pr   = ( branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url} );
+            my %next = @manual ? harness_run( $job, { %$issue_item, number => $pull->{number}, is_pr => 1, kind => 'address_review' }, spoke_address => { resume => 1 }, $todo, 'It committed what it changed on this branch.' ) : ();
+            return $job->finish( { %done, %pr, %next } );
         }
     );
+}
+
+=func harness_run
+
+C<($job, $item, $task, \%args, $left, $done)>.  Queues the claude run of
+L</harness_fix> for what the update left for a person: a C<$task> on
+C<$item>, with C<%args> and the instructions of
+F<share/prompts/harness.md>, where C<$left> lists what is left and C<$done>
+says what the update did.  The job has the notes C<origin> and C<repo>, and
+C<harness>, the repository, so the dashboard offers no second fix while it
+waits or runs.  Returns C<next> for the result of the job, the task and id of
+that run.  The caller queues it last, after every call to GitHub, so that a
+retry of a job that failed does not queue a second run.
+
+=cut
+
+sub harness_run ( $job, $item, $task, $args, $left, $done ) {
+    my $repo = $item->{repo};
+    my %args = ( item => $item, repo => $repo, %$args, instructions => prompt( harness => left => $left, done => $done ) );
+    my $id   = $job->minion->enqueue( $task => [ \%args ], { notes => { origin => origin_of($item), repo => $repo, harness => $repo } } );
+    log_note( $job, "queued $task job $id for what the update left for a person" );
+    return ( next => { task => $task, id => $id } );
 }
 
 =func self_check

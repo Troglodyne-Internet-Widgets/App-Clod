@@ -135,6 +135,13 @@ subtest 'a harness fix that waits for review' => sub {
     $minion->perform_jobs;
     $t->get_ok('/api/overview')->status_is(200);
     is( [ map { $_->{label} } @{ action_about(qr/harness\ check/)->{buttons} // [] } ], ['Fix'], 'and once a scan finds it closed, Fix is back' );
+
+    # The claude run that a harness fix queues when the hooks refuse its commit.
+    my $run = job( spoke_fix => {}, notes => { repo => 'Test-Org/one', harness => 'Test-Org/one' } );
+    $t->get_ok('/api/overview')->status_is(200);
+    like( action_about(qr/harness\ check/), { job => $run, text => qr/A\ harness\ fix\ of\ it\ is\ queued/ }, 'while the claude run of a harness fix waits, the item says so' );
+    $t->post_ok( '/act/harness/fix' => { 'X-Clod-Action' => 'yes' } => json => { repo => 'Test-Org/one' } )->status_is(200)->json_is( '/queued' => $run, 'and Fix queues no second fix' );
+    $minion->perform_jobs;
 };
 
 subtest 'an update of the bot' => sub {
