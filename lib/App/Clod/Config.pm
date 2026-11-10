@@ -372,9 +372,10 @@ and fills this in.
 A local lib that the agent installs into, with F<clod-cpm> in the bin of
 C<agent_lib>, when a change needs a module that nothing installed.  It comes
 after C<agent_lib> on C<PERL5LIB> and C<PATH>, so a module there cannot
-replace a tool or a policy.  Default F<agent-own-lib> in the workspace when
-there is an C<agent_lib>, because the account of C<run_as> can write there,
-and none otherwise.
+replace a tool or a policy.  L<App::Clod::Tasks/harness_fix> installs there
+too, what a spoke needs for the tests that its hooks run.  Default
+F<agent-own-lib> in the workspace when there is an C<agent_lib>, because the
+account of C<run_as> can write there, and none otherwise.
 
 =item system_packages
 

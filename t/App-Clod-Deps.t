@@ -53,6 +53,28 @@ subtest install => sub {
     is( logged('cpm'), [], 'and no module runs no cpm' );
 };
 
+subtest install_needed => sub {
+    my $lib     = $tmp->child('own-lib');
+    my $already = $lib->child(qw{lib perl5 Already})->make_path;
+    $already->child('There.pm')->spew("package Already::There;\n1;\n");
+    local @App::Clod::Deps::DZIL = fake( 'dzil', "Mojolicious\nAlready::There\nNot::Installed::Anywhere\nperl\n" );
+
+    is( [ App::Clod::Deps::install_needed( $lib, $checkout ) ], [], 'a checkout with no dist.ini needs nothing' );
+    is( logged('dzil'),                                         [], 'and asks dzil nothing' );
+
+    $checkout->child('dist.ini')->spew("name = Bogus\n");
+    is( [ App::Clod::Deps::install_needed( $lib, $checkout ) ], ['Not::Installed::Anywhere'], 'with one, a module that neither the lib nor @INC has is installed' );
+    like( logged('cpm'), [qr{\ -L\ \Q$lib\E\ Not::Installed::Anywhere\z}], 'into the lib, alone' );
+    ok( -e "$lib.lock", 'under the lock that clod-cpm takes' );
+    logged('dzil');
+
+    local @App::Clod::Deps::DZIL = fake( 'dzil', "Mojolicious\nAlready::There\n" );
+    is( [ App::Clod::Deps::install_needed( $lib, $checkout ) ], [], 'and with everything there, nothing is' );
+    is( logged('cpm'),                                          [], 'and cpm does not run' );
+    logged('dzil');
+    $checkout->child('dist.ini')->remove;
+};
+
 subtest outdated => sub {
     is( App::Clod::Deps::outdated('/bogus/lib'), [ { module => 'Try::Tiny', version => '0.30', latest => '0.32', dist => 'E/ET/ETHER/Try-Tiny-0.32.tar.gz' } ], 'each line of cpan-outdated, as a hash' );
     like( logged('cpan-outdated')->[0], qr{\ -L\ /bogus/lib\ --exclude-core\ --verbose\z}, 'about the local lib, without the core of the perl' );

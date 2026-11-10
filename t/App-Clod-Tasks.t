@@ -9,6 +9,7 @@ use FindBin::libs;
 use Clone            ();
 use File::Temp       ();
 use IPC::Run         ();
+use List::Util       ();
 use Mojo::File       ();
 use Mojo::JSON       ();
 use Mojo::UserAgent  ();
@@ -1292,6 +1293,35 @@ subtest harness_fix => sub {
     is( $refused->{state}, 'finished', 'an assignment that GitHub refuses does not fail the job' ) or diag Mojo::Util::dumper $refused->{result};
     like( $refused->{notes}{log}, [ { message => qr/opened/ }, { message => qr/could\ not\ assign\ Test-Org\/one\#\d+\ to\ trusted/ } ], 'and says so in its log' );
     delete $state{refuse_assign};
+
+    my ( @asked, @committed_with );
+    my $deps  = Test::MockModule->new('App::Clod::Deps');
+    my $spoke = Test::MockModule->new('App::Clod::Spoke');
+    $deps->redefine( install_needed => sub ( $lib, $tree ) { push @asked, [ $lib, "$tree" ]; return qw{Plack::MIME} } );
+    my $git = $spoke->original('git');
+    $spoke->redefine(
+        git => sub ( $self, @args ) {
+            push @committed_with, $ENV{PERL5LIB} if List::Util::any { $_ eq 'commit' } @args;
+            return $self->$git(@args);
+        }
+    );
+    $app->clod_config->{agent_own_lib} = '/bogus/own-lib';
+    my $bot_lib = $ENV{PERL5LIB} // q{};
+    @calls = ();
+    my $installed = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( $installed->{state}, 'finished', 'a fix in a spoke that needs modules finishes' ) or diag Mojo::Util::dumper $installed->{result};
+    like( \@asked, [ [ '/bogus/own-lib', qr{/Test-Org/one\z} ] ], 'after it installs what the spoke needs into the own lib of the agent' );
+    is( \@committed_with, [ join q{:}, grep { $_ ne q{} } $bot_lib, '/bogus/own-lib/lib/perl5' ], 'and commits with that lib after the lib of the bot, so the hooks of the spoke find them' );
+    like( $installed->{notes}{log}, [ { message => qr/installed\ Plack::MIME\ into\ the\ own\ lib/ } ], 'and notes what it installed' );
+
+    ( @asked, @committed_with ) = ();
+    $deps->redefine( install_needed => sub (@) { die "cpm: no such module\n" } );
+    my $failed = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( [ $failed->{state}, scalar @committed_with ], [ 'finished', 1 ], 'an install that fails still lets the commit run, and its hooks say what is missing' );
+    like( $failed->{notes}{log}, [ { message => qr/could\ not\ install\ .*cpm:\ no\ such\ module/ } ], 'and the job notes why' );
+    $deps->unmock_all;
+    $spoke->unmock_all;
+    delete $app->clod_config->{agent_own_lib};
 
     my $harness = Test::MockModule->new('App::Clod::Harness');
     $harness->redefine( update => sub (@) { return [ { check => 'ClaudeMd', changes => [], manual => ['Say what the repository is for.'] } ] } );

@@ -2498,7 +2498,8 @@ C<by>.
 Brings the spoke to the harness standards with no claude run, from the
 dashboard.  It files an issue that names the failing checks, and runs the
 update of L<App::Clod::Harness/update> on a new branch.  If that changes a
-file, it commits, through the hooks of the spoke, pushes, and opens a pull
+file, it commits, through the hooks of the spoke, with what the spoke needs
+installed, as L</prerequisites_env> does.  Then it pushes, and opens a pull
 request that closes the issue.  The pull request and the issue say what is
 left for a person.  If the update changes nothing, it says so on the issue.
 
@@ -2509,6 +2510,29 @@ notes of the job, so a retry does not file it again.
 =cut
 
 my $HARNESS_TITLE = 'Meet the harness standards';
+
+=func prerequisites_env
+
+C<($job, $config, $tree)>.  Installs what the spoke in C<$tree> needs into
+C<agent_own_lib>, as L<App::Clod::Deps/install_needed> does, and returns the
+C<PERL5LIB> and C<PATH> that the hooks of the spoke need, with that lib after
+those of the worker.  So a commit of the bot runs the tests of a spoke whose
+modules the bot does not have.  The job notes what it installed, and an
+install that fails, and then the hooks run with what there is.  With no
+C<agent_own_lib>, it installs nothing and returns nothing.
+
+=cut
+
+sub prerequisites_env ( $job, $config, $tree ) {
+    my $own       = $config->{agent_own_lib} // return;
+    my @installed = eval { App::Clod::Deps::install_needed( $own, $tree ) };
+    log_note( $job, 'could not install the prerequisites of the spoke into the own lib of the agent: ' . ( split m{\n}, $@ )[0] ) if $@;
+    log_note( $job, "installed @installed into the own lib of the agent" )                                                        if @installed;
+    return (
+        PERL5LIB => join( q{:}, grep { $_ ne q{} } $ENV{PERL5LIB} // q{}, "$own/lib/perl5" ),
+        PATH     => join( q{:}, grep { $_ ne q{} } $ENV{PATH}     // q{}, "$own/bin" ),
+    );
+}
 
 =func open_harness_pull
 
@@ -2559,6 +2583,8 @@ sub harness_fix ( $job, $config, $args ) {
                 return $job->finish( { repo => $repo, issue_url => $issue->{url}, no_change => 1, manual => \@manual } );
             }
             my $what = join "\n", 'The update of the harness standards, run by the bot.', q{}, @changes;
+            my %env  = prerequisites_env( $job, $config, $tree );
+            local @ENV{ keys %env } = values %env;
             $spoke->git( q{-C}, "$tree", qw{commit --quiet -m}, "Meet the harness standards\n\n$what" );
             $spoke->push_branch( $tree, $branch );
             my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, "Closes #$issue->{number}" ) } );

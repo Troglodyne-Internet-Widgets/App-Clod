@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Install what a spoke needs into `agent_own_lib` before the commit of
+      `harness_fix`, and commit with that lib on `PERL5LIB`.  The commit
+      runs the hooks of the spoke, and their tests failed to compile when
+      the bot lacked a module of the spoke, so the job opened no pull
+      request.
     - Let a repository declare in `clod.json` at its top the programs in it
       that a run which changes a spoke may run.  The bot reads it from the
       default branch, so a declaration takes effect when it merges, and a
