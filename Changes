@@ -1,6 +1,12 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Add an Upstream tab to the health page.  It lists the open pull
+      requests that the authorized users wrote in repositories that are not
+      ours, with their merge state, review decision and checks.  The ones
+      that conflict with their base come first, marked as needing a rebase.
+      A new task, upstream_sweep, searches for them every fifteen minutes.
+      The Overview tab counts the ones that conflict.
     - Install what a spoke needs into `agent_own_lib` before the commit of
       `harness_fix`, and commit with that lib on `PERL5LIB`.  The commit
       runs the hooks of the spoke, and their tests failed to compile when

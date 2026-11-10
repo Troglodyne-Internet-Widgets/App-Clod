@@ -191,11 +191,14 @@ L<App::Clod::Tasks/spokes>.
 
 The GitHub logins whose assignments, review requests and mentions the bot acts
 on.  Everything else is marked read and left alone.
+The Upstream tab lists the open pull requests that they wrote in
+repositories that are not ours.
 
 =item owners
 
 The users and organizations whose repositories are ours.  A fix whose best
 place is a repository outside this list goes back to a person.
+The Upstream tab leaves out pull requests in their repositories.
 
 =item minion
 

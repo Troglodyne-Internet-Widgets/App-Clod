@@ -92,6 +92,7 @@ sub startup ($self) {
     $authed->get('/api/overview')->to('dashboard#overview');
     $authed->get('/api/work')->to('dashboard#work');
     $authed->get('/api/harness')->to('dashboard#harness');
+    $authed->get('/api/upstream')->to('dashboard#upstream');
 
     my $act = $authed->under(
         '/act' => sub ($c) {
@@ -277,8 +278,9 @@ F</minion>, all behind the C<auth> configuration.
 
 =item C<clod minion worker>
 
-Runs the jobs.  The worker also enqueues the scheduled jobs: the inbox poll,
-the harness scan and the sweep of assigned issues.
+Runs the jobs.  The worker also enqueues the scheduled jobs that
+L<App::Clod::Tasks/schedule> lists, such as the inbox poll, the harness scan
+and the sweeps.
 
 =back
 
@@ -330,7 +332,8 @@ each organization of C<spoke_orgs>.
 Jobs by state, the Claude Code quota used in the five-hour and seven-day
 windows, and the action items: an outage, a marketplace pin older than the
 plugin, failed jobs, harness checks that fail, token scopes that are missing,
-and an inbox that waits because no repository is a spoke.
+an inbox that waits because no repository is a spoke, and upstream pull
+requests that conflict.
 
 Some action items have a button, which settles them from the page:
 
@@ -398,6 +401,16 @@ the queue, and the open issues assigned to the bot that no job has yet.
 For each spoke, its flavor and the result of each check of that flavor.  A
 spoke without a F<.conformance.yml> shows the default flavor, marked
 "(default)".  See L<App::Clod::Harness>.
+
+=item Upstream
+
+The open pull requests that the C<authorized_users> wrote in repositories
+that are not ours, with their merge state, review decision and checks.  A
+repository is ours when its owner is in C<owners> or C<spoke_orgs>, or owns a
+spoke.  The ones that conflict with their base come first, marked as needing a
+rebase, and the Overview tab counts them.  It also shows when the sweep last
+ran, and the users whose search failed.  See
+L<App::Clod::Tasks/upstream_sweep>.
 
 =back
 

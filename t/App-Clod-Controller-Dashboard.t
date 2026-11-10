@@ -26,7 +26,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep spoke_fix spoke_address triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep upstream_sweep spoke_fix spoke_address triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -389,6 +389,28 @@ subtest 'the filter of the action items' => sub {
         my ( $level, $label ) = @$pair;
         $t->element_exists( qq{#action-filter button.active[data-level="$level"][aria-pressed="true"]}, "the $level button is on by default" )->text_is( qq{#action-filter button[data-level="$level"]} => $label, "and reads $label" );
     }
+};
+
+subtest upstream => sub {
+    $t->get_ok('/api/upstream')->status_is(200)->json_is( '' => { pulls => [], errors => {} }, 'before the first sweep, no pull request and no error' );
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/upstream/), 'and no action item' );
+
+    my %pull = ( repo => 'Upstream/one', number => 1, url => 'https://test.test/Upstream/one/pull/1', mergeable => 'MERGEABLE' );
+    job( upstream_sweep => { checked_at => 1, pulls => [ \%pull, +{ %pull, number => 2, mergeable => 'UNKNOWN' } ], errors => {} } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/upstream/), 'pull requests that do not conflict are no action item' );
+
+    my $sweep = { checked_at => 2, pulls => [ +{ %pull, number => 3, mergeable => q{CONFLICTING} }, +{ %pull, number => 4, mergeable => q{CONFLICTING} }, \%pull ], errors => { 'some-user' => 'GitHub GraphQL: API rate limit exceeded' } };
+    job( upstream_sweep => $sweep );
+    $minion->perform_jobs;
+    $t->get_ok('/api/upstream')->status_is(200)->json_is( '' => $sweep, 'the endpoint serves the last sweep as it is, with its errors' );
+    $t->get_ok('/api/overview')->status_is(200);
+    is( action_about(qr/upstream/), { level => 'warning', text => '2 upstream PRs conflict with their base, and need a rebase:', link => { url => '#upstream', label => 'Upstream' } }, 'conflicting pull requests are one warning that counts them, with a link to the Upstream tab' );
+
+    $t->get_ok('/')->status_is(200);
+    $t->element_exists( '[data-bs-toggle="tab"][data-bs-target="#upstream"]', 'the page has the Upstream tab' )->element_exists( 'section#upstream #upstream-pulls', 'with its table' );
 };
 
 subtest harness => sub {

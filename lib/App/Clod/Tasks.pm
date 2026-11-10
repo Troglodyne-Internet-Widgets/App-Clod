@@ -51,6 +51,7 @@ our %TASKS = (
     assigned_sweep     => \&assigned_sweep,
     activity_sweep     => \&activity_sweep,
     spoke_sweep        => \&spoke_sweep,
+    upstream_sweep     => \&upstream_sweep,
     refresh_references => \&refresh_references,
     create_repo        => \&create_repo,
     file_issues        => \&file_issues,
@@ -69,6 +70,7 @@ our %SCHEDULES = (
     assigned => [ '*/15 * * * *', 'assigned_sweep' ],
     activity => [ '*/15 * * * *', 'activity_sweep' ],
     spokes   => [ '*/15 * * * *', 'spoke_sweep' ],
+    upstream => [ '*/15 * * * *', 'upstream_sweep' ],
     self     => [ '7,37 * * * *', 'self_check' ],
 );
 our %SCHEDULED = map { $_->[1] => 1 } values %SCHEDULES;
@@ -133,7 +135,8 @@ sub hold ($job) {
 =func schedule
 
 C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>,
-C<harness_scan>, C<assigned_sweep>, C<activity_sweep> and C<spoke_sweep>.
+C<harness_scan>, C<assigned_sweep>, C<activity_sweep>, C<spoke_sweep>,
+C<upstream_sweep> and C<self_check>.
 
 =cut
 
@@ -3120,6 +3123,71 @@ sub spoke_sweep ( $job, $config ) {
     $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, dropped => \%dropped, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
     $minion->enqueue('refresh_references') if !$minion->jobs( { tasks => ['refresh_references'], states => [qw{inactive active}] } )->total;
     return;
+}
+
+=func upstream_sweep
+
+Every fifteen minutes.  Lists the open pull requests that each of the
+C<authorized_users> wrote in a repository that is not ours, so that the
+Upstream tab shows which of them need a rebase.  A repository is ours when its
+owner is in C<owners> or in C<spoke_orgs>, or owns a spoke, compared without
+case.  It makes one search for each user, with
+L<App::Clod::GitHub/open_pulls_by>.
+
+Its result has C<checked_at>, C<pulls> and C<errors>, a hash of login to
+error.  Each pull request has C<url>, C<repo>, C<number>, C<title>,
+C<author>, C<login>, the user whose search found it, C<draft>, C<updated_at>,
+C<mergeable>, C<review> and C<ci>, the state of the checks of its last
+commit.  The ones whose C<mergeable> is C<CONFLICTING> come first, then the
+newest.
+
+GitHub answers C<UNKNOWN> for C<mergeable> until it has computed it, and it
+starts when somebody asks.  So for C<UNKNOWN> the sweep keeps what the sweep
+before recorded for the same URL, if it recorded anything.  If the search of a
+user fails, the pull requests that the sweep before found for that user stay,
+so that one failed request does not hide a conflict.
+
+=cut
+
+sub upstream_sweep ( $job, $config ) {
+    my $minion = $job->minion;
+    my $before = last_result( $minion, 'upstream_sweep' ) // {};
+    prune_history( $minion, q{upstream_sweep} );
+    my %known = map { $_->{url} => $_->{mergeable} } @{ $before->{pulls} // [] };
+    my %ours  = map { fc($_)    => 1 } @{ $config->{owners} }, @{ $config->{spoke_orgs} // [] }, map { ( split m{/} )[0] } @{ spokes( $minion, $config ) };
+    my $gh    = github($config);
+    my ( @pulls, %errors );
+    for my $login ( List::Util::uniq( @{ $config->{authorized_users} } ) ) {
+        my $found = eval { $gh->open_pulls_by($login) };
+        if ( !$found ) {
+            $errors{$login} = $@;
+            push @pulls, grep { $_->{login} eq $login } @{ $before->{pulls} // [] };
+            next;
+        }
+        for my $pr (@$found) {
+            my $repo = $pr->{repository} // {};
+            next if $ours{ fc( ( $repo->{owner} // {} )->{login} // q{} ) };
+            my $mergeable = $pr->{mergeable} // 'UNKNOWN';
+            $mergeable = $known{ $pr->{url} } // $mergeable if $mergeable eq 'UNKNOWN';
+            my ($last) = @{ ( $pr->{commits} // {} )->{nodes} // [] };
+            push @pulls,
+              {
+                url        => $pr->{url},
+                repo       => $repo->{nameWithOwner},
+                number     => $pr->{number},
+                title      => $pr->{title},
+                author     => ( $pr->{author} // {} )->{login} // $login,
+                login      => $login,
+                draft      => $pr->{isDraft} ? 1 : 0,
+                updated_at => $pr->{updatedAt},
+                mergeable  => $mergeable,
+                review     => $pr->{reviewDecision},
+                ci         => ( ( ( $last // {} )->{commit} // {} )->{statusCheckRollup} // {} )->{state},
+              };
+        }
+    }
+    @pulls = sort { ( $a->{mergeable} ne q{CONFLICTING} ) <=> ( $b->{mergeable} ne q{CONFLICTING} ) || -( ( $a->{updated_at} // q{} ) cmp ( $b->{updated_at} // q{} ) ) } @pulls;
+    return $job->finish( { checked_at => time, pulls => \@pulls, errors => \%errors } );
 }
 
 1;

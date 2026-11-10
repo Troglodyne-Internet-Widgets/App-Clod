@@ -37,6 +37,7 @@
       <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#overview" type="button">Overview</button></li>
       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#work" type="button">Work</button></li>
       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#harness" type="button">Harness</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#upstream" type="button">Upstream</button></li>
     </ul>
 
     <div class="tab-content">
@@ -85,6 +86,19 @@
             <table class="table table-sm harness mb-0">
               <thead id="harness-head"></thead>
               <tbody id="harness-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-pane fade" id="upstream">
+        <div class="card">
+          <div class="card-header"><i class="bi bi-git"></i> Open pull requests of the authorized users in repositories that are not ours <small class="text-body-secondary" id="upstream-checked"></small></div>
+          <ul class="list-group list-group-flush" id="upstream-errors"></ul>
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead><tr><th>Pull request</th><th>Title</th><th>Author</th><th>Merge</th><th>Review</th><th>CI</th><th>Updated</th></tr></thead>
+              <tbody id="upstream-pulls"></tbody>
             </table>
           </div>
         </div>
@@ -206,6 +220,14 @@
     });
 
     document.getElementById('actions').addEventListener('click', e => {
+      // A link of an item to a tab of this page, such as #upstream, opens that tab.
+      const tabLink = e.target.closest('a[href^="#"]');
+      const tab = tabLink && document.querySelector(`[data-bs-toggle="tab"][data-bs-target="${CSS.escape(tabLink.getAttribute('href'))}"]`);
+      if (tab) {
+        e.preventDefault();
+        bootstrap.Tab.getOrCreateInstance(tab).show();
+        return;
+      }
       const button = e.target.closest('button[data-act]');
       if (!button) return;
       button.dataset.confirm ? ask(button) : act(button);
@@ -265,9 +287,29 @@
       }).join('') + Object.entries(d.errors || {}).map(([r, e]) => `<tr><th>${esc(r)}</th><td colspan="${checks.length + 1}" class="text-danger small">${esc(e)}</td></tr>`).join('');
     }
 
+    const mergeBadge = { CONFLICTING: badge('needs a rebase', 'danger'), MERGEABLE: badge('mergeable', 'success'), UNKNOWN: badge('not known yet', 'secondary') };
+    const reviewBadge = { APPROVED: badge('approved', 'success'), CHANGES_REQUESTED: badge('changes requested', 'warning'), REVIEW_REQUIRED: badge('review required', 'secondary') };
+    const ciBadge = { SUCCESS: badge('success', 'success'), FAILURE: badge('failure', 'danger'), ERROR: badge('error', 'danger'), PENDING: badge('pending', 'warning'), EXPECTED: badge('expected', 'warning') };
+
+    async function upstream() {
+      const d = await (await fetch(`${base}/api/upstream`)).json();
+      document.getElementById('upstream-checked').textContent = d.checked_at ? `as of ${when(d.checked_at)}` : 'no sweep yet';
+      document.getElementById('upstream-errors').innerHTML = Object.entries(d.errors || {}).map(([login, e]) =>
+        `<li class="list-group-item list-group-item-danger small">The search of ${esc(login)} failed, so the list keeps what the sweep before found for them: ${esc(e)}</li>`).join('');
+      document.getElementById('upstream-pulls').innerHTML = (d.pulls || []).map(p => `<tr${p.mergeable === 'CONFLICTING' ? ' class="table-danger"' : ''}>
+        <td class="text-nowrap"><a href="${esc(p.url)}">${esc(p.repo)}#${esc(p.number)}</a> ${p.draft ? badge('draft', 'secondary') : ''}</td>
+        <td><div class="summary">${esc(p.title)}</div></td>
+        <td>${esc(p.author)}</td>
+        <td>${mergeBadge[p.mergeable] || esc(p.mergeable)}</td>
+        <td>${p.review ? reviewBadge[p.review] || esc(p.review) : ''}</td>
+        <td>${p.ci ? ciBadge[p.ci] || esc(p.ci) : ''}</td>
+        <td class="small text-nowrap">${esc((p.updated_at || '').slice(0, 10))}</td></tr>`).join('')
+        || '<tr><td colspan="7" class="text-body-secondary">No open pull requests upstream.</td></tr>';
+    }
+
     async function refresh() {
       try {
-        await Promise.all([overview(), work(), harness()]);
+        await Promise.all([overview(), work(), harness(), upstream()]);
         document.getElementById('updated').textContent = `updated ${new Date().toLocaleTimeString()}`;
       } catch (e) {
         document.getElementById('updated').textContent = `refresh failed: ${e}`;
