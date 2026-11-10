@@ -11,6 +11,7 @@ use Config::Tiny        ();
 use IPC::Run            ();
 use Mojo::File          ();
 use Module::Metadata    ();
+use Mutex::Flock        ();
 use Perl::Critic::Utils ();
 
 # The programs, found on the PATH.  A test points them at fakes.
@@ -50,6 +51,27 @@ sub install ( $lib, @modules ) {
     umask $umask;
     die $@ if !$ok;
     return;
+}
+
+=func install_needed
+
+C<($lib, $checkout)>.  Installs into the local lib C<$lib> each module that
+the distribution in C<$checkout> needs, as L</listdeps> names them, and that
+neither C<$lib> nor the C<@INC> of this process has.  Returns those modules.
+A checkout with no F<dist.ini> needs none.  It holds a lock on F<$lib.lock>
+while it installs, as F<clod-cpm> does, because every worker and every run
+shares C<agent_own_lib>.  It keeps the umask of the worker, so that the account
+of the agent can install beside what it installs.  Dies as L</run> does.
+
+=cut
+
+sub install_needed ( $lib, $checkout ) {
+    return if !-e "$checkout/dist.ini";
+    my @needed = grep { !Module::Metadata->find_module_by_name($_) } missing( $lib, listdeps($checkout) );
+    return if !@needed;
+    Mojo::File->new("$lib")->make_path;
+    Mutex::Flock->new( path => "$lib.lock" )->synchronize( sub { run( {}, @CPM, qw{install --without-test -L}, "$lib", @needed ) } );
+    return @needed;
 }
 
 =func install_programs
