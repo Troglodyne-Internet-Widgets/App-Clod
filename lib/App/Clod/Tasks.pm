@@ -1022,11 +1022,21 @@ L</tool_branch>, runs C<< $work->($spoke, $tree, \%tools) >>, and removes every
 worktree and the directory of the job under F<work/> whatever happened.  A
 worktree that git will not remove is deleted with the rest and pruned from its
 bare clone, so that it holds no branch.  C<%tools> has C<add_dirs>, the tool
-worktrees for the run, C<note>, the L</tools_note> for its prompt, and
+worktrees for the run, C<note>, the L</tools_note> for its prompt,
 C<checkouts>, a hash for each worktree with C<repo>, C<spoke> and C<dir>, the
-spoke of the run first, as L</declared_rules> takes them.  The
+spoke of the run first, as L</declared_rules> takes them, and C<scratch>.  The
 spoke's own repository gets no second worktree when it is a tool spoke.  If
 another job holds the lock, the job retries later.
+
+C<scratch> is the absolute path of an empty directory, C<$SCRATCH> in the
+directory of the job, for the files that a run that changes the spoke writes
+and does not commit, such as the output of a command.  L</fix_run> and
+L</address_run> add it to the session and name it in the prompt, from
+F<share/prompts/scratch.md>.  Claude Code checks the target of a redirect such
+as C<< > /tmp/out >> against the directories of the session, so a run with no
+person to ask cannot write to F</tmp>.  A run that only reads does not get it.
+It is removed with the rest.  Its name begins with a dot, so it is no name of
+an owner on GitHub, and no checkout has it.
 
 A tool worktree is made without the lock of its repository.  The lock keeps two
 jobs from working on one repository at once, and a tool worktree is no such
@@ -1038,6 +1048,8 @@ fails, with the job.  Taking the lock would hold every spoke run back while any
 job works in a tool spoke, for up to four hours.
 
 =cut
+
+our $SCRATCH = '.scratch';
 
 sub in_worktree ( $job, $config, $repo, $how, $work ) {
     my $guard = $job->minion->guard( "repo:$repo", $REPO_SECONDS );
@@ -1054,7 +1066,8 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
             $checkout{spoke}->worktree( $checkout{dir}, detach => $checkout{branch} );
         }
         my @checkouts = @made[ 1 .. $#made ];
-        $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ), checkouts => [@made] } );
+        my $scratch   = $root->child($SCRATCH)->make_path;
+        $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ), checkouts => [@made], scratch => $scratch->to_abs->to_string } );
     };
     my $err = $@;
     my @stuck;
@@ -1531,10 +1544,13 @@ sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
     my @programs = declared_programs( $job, $config, $tree );
     my $outcome  = run_claude(
         $job, $config,
-        dir      => $tree,
-        prompt   => prompt( fix => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, packages => packages_prompt( $config, @programs ), tools => $tools->{note}, context => context( $config, $gh, $item ) ),
+        dir    => $tree,
+        prompt => prompt(
+            fix     => repo => $repo, branch => $fix{branch}, origin => origin_url( $config, $item ), instructions => $args->{instructions}, created => $args->{created} ? prompt( 'fix-created', repo => $repo ) : q{}, prior => $fix{prior}, packages => packages_prompt( $config, @programs ), tools => $tools->{note}, scratch => prompt( scratch => dir => $tools->{scratch} ),
+            context => context( $config, $gh, $item )
+        ),
         tools    => change_tools( $config, [ declared_rules( $job, $gh, $tools->{checkouts} ) ], @programs ),
-        add_dirs => $tools->{add_dirs},
+        add_dirs => [ $tools->{scratch}, @{ $tools->{add_dirs} } ],
         schema   => {
             type       => 'object',
             required   => [qw{title summary blocked}],
@@ -1816,6 +1832,8 @@ Answers what authorized users said on the bot's own pull request since the bot
 last answered: the review threads whose last message is theirs, and the plain
 comments and review bodies after the last comment of the bot.  It pushes the
 fixes, replies in each thread, and answers the plain comments in one comment.
+When the run answers with a C<description>, the job puts it in the description
+of the pull request, as L</describe> does, unless the host lacks a package.
 The prompt also holds the whole conversation of the pull request, and the base
 branch of the pull request, which a rebase that names no branch goes onto.  The
 push is forced with a lease, so a rebase reaches the pull request.
@@ -1898,9 +1916,37 @@ sub spoke_address ( $job, $config, $args ) {
             my $said     = $held ? undef : @$comments ? $answer->{comment} : $args->{resume} ? $answer->{summary} : undef;
             my @said     = grep { ( $_ // q{} ) ne q{} } $said, $held ? undef : unfinished_note($work), $lacks ? packages_note($lacks) : undef;
             my $answered = @said ? $gh->comment( $repo, $item->{number}, join "\n\n", @said )->{html_url} : undef;
+            describe( $job, $config, $gh, $item, $pull, $answer->{description} ) if !$held;
             return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $work->{commits}, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{refusals} // {} }, %{ $work->{usage} } } );
         }
     );
+}
+
+=func describe
+
+C<($job, $config, $gh, $item, $pull, $description)>.  Puts C<$description>,
+the C<description> of the answer of L</address_run>, in place of the part of
+the description of the pull request C<$item> that a run wrote.  C<$pull> is
+that pull request as GitHub gave it before the run.  The rest is what
+the hub wrote: it begins at the last paragraph that begins with C<For> and a
+URL of C<github_web>, the line that L</spoke_fix> puts after the summary, and
+it stays.  With no such paragraph, C<$description> is the whole description.
+An empty or missing C<$description> leaves the description as it is.
+
+The run cannot change the description itself, because it cannot act as the
+bot on GitHub.  A failure goes to the log of the job and does not fail it, as
+in L</draft_state>.
+
+=cut
+
+sub describe ( $job, $config, $gh, $item, $pull, $description ) {
+    return if ( $description // q{} ) eq q{};
+    my $body = $pull->{body} // q{};
+    my $at   = rindex $body, "\n\nFor $config->{github_web}/";
+    my $new  = $description . ( $at >= 0 ? substr $body, $at : q{} );
+    my $done = eval { $gh->update_pull( $item->@{qw(repo number)}, { body => $new } ); 1 };
+    return log_note( $job, 'changed the description of the pull request, as the run asked' ) if $done;
+    return log_note( $job, 'could not change the description of the pull request: ' . ( split m{\n}, $@ )[0] );
 }
 
 =func draft_state
@@ -1961,19 +2007,21 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
             instructions => $args->{instructions},
             packages     => packages_prompt( $config, @programs ),
             tools        => $tools->{note},
+            scratch      => prompt( scratch => dir => $tools->{scratch} ),
             history      => context( $config, $gh, $item ),
             context      => Mojo::JSON::encode_json( { threads => $address{pending}, comments => $address{comments} } ),
         ),
         tools    => change_tools( $config, [ declared_rules( $job, $gh, $tools->{checkouts} ) ], @programs ),
-        add_dirs => $tools->{add_dirs},
+        add_dirs => [ $tools->{scratch}, @{ $tools->{add_dirs} } ],
         schema   => {
             type       => 'object',
             required   => [qw{summary blocked replies}],
             properties => {
-                summary => { type => 'string' },
-                blocked => { type => 'string' },
-                replies => { type => 'array', items => { type => 'object', required => [qw{id body}], properties => { id => { type => 'integer' }, body => { type => 'string' } } } },
-                comment => { type => 'string' },
+                summary     => { type => 'string' },
+                blocked     => { type => 'string' },
+                replies     => { type => 'array', items => { type => 'object', required => [qw{id body}], properties => { id => { type => 'integer' }, body => { type => 'string' } } } },
+                comment     => { type => 'string' },
+                description => { type => 'string' },
             },
         },
     ) // return;

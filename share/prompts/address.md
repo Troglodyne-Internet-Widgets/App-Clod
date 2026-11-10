@@ -33,10 +33,22 @@ one as well, with `--force-with-lease`.
 
 {{tools}}
 
+{{scratch}}
+
 Answer with `summary`, and `replies`: one entry per thread `id`, with the
 `body` to post as the reply in that thread. If `comments` is not empty, also
 answer with `comment`: one reply to all of them, to post as a comment on the
 pull request.
+
+The description of the pull request is the first entry of the conversation
+below. If your change makes it wrong, also answer with `description`: a new
+description in Markdown that says what the pull request changes and why. The
+hub puts it in place of the part of the description above the line that
+begins with `For`, and keeps that line and the rest. Leave `description` out
+when the description is still right.
+
+You cannot act on GitHub: `gh` and the API are refused. The hub posts your
+replies, your comment and your description.
 
 Also answer with `blocked`. Leave `blocked` empty when you finished your work,
 even if some calls were refused along the way. If a refused call kept you from
