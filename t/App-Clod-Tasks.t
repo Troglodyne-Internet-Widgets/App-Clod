@@ -852,7 +852,7 @@ subtest sort_review => sub {
     is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Lookup by name.'],                                  'and the plain comments in one comment' );
     is( $asked->{result}{next},                             undef,                                                'and with nothing left, no job comes after' );
     my $run  = record_of("$tmp/sort-record");
-    my @read = ( qw{Read Grep Glob}, ( map { "Bash(git $_:*)" } qw{log grep show diff} ), @App::Clod::Config::READ_COMMANDS );
+    my @read = ( qw{Read Grep Glob}, ( map { "Bash(git $_:*)" } qw{log grep show diff blame status ls-files rev-parse} ), 'Bash(git reflog)', 'Bash(git reflog show:*)', @App::Clod::Config::READ_COMMANDS );
     is( $run->{flags}{'--allowedTools'}, [ join q{,}, List::Util::uniq( map { App::Clod::Claude::rtk_too($_) } @read ) ], 'the run has the read tools alone' );
     like( $run->{prompt}, qr/What\ does\ this\ line\ do\?/, 'and gets the threads' );
     is( git( q{--git-dir}, $bare, qw{rev-parse clod/2-sort} ), $head, 'and the branch is as it was' );

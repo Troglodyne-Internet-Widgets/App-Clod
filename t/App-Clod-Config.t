@@ -97,15 +97,19 @@ subtest 'the tools of a run that changes a spoke' => sub {
         ok( $allowed{"Bash($program:*)"} && $allowed{"Bash(rtk $program:*)"}, "claude may run $program, also through rtk" );
     }
     ok( $allowed{'Bash(chmod:*)'}, 'claude may make a file executable' );
-    for my $program (qw{cat head tail wc ls grep}) {
+    for my $program (qw{cat head tail wc ls grep cut tr cmp diff stat jq}) {
         ok( $allowed{"Bash($program:*)"}, "claude may run the read-only command $program, which a pipe or a list of commands also needs" );
     }
-    ok( $allowed{'Bash(rtk read:*)'} && $allowed{'Bash(rtk ls:*)'} && $allowed{'Bash(rtk wc:*)'}, 'and what rtk makes of cat, head, tail, ls and wc' );
+    ok( $allowed{'Bash(rtk read:*)'} && $allowed{'Bash(rtk ls:*)'} && $allowed{'Bash(rtk wc:*)'} && $allowed{'Bash(rtk diff:*)'} && $allowed{'Bash(rtk jq:*)'} && $allowed{'Bash(rtk stat:*)'}, 'and what rtk makes of cat, head, tail, ls, wc, diff, jq and stat' );
     my %read = map { $_ => 1 } @{ $config->{claude}{read_tools} };
-    ok( ( List::Util::all { $read{"Bash($_:*)"} } qw{cat head tail wc ls grep} ), 'a run that only reads may run the read-only commands too' );
-    ok( !$read{'Bash(chmod:*)'},                                                  'but not chmod, which changes a file' );
-    ok( !$read{'Bash(perltidy:*)'},                                               'and a run that only reads may not, because perltidy rewrites files' );
-    ok( !( grep { $read{"Bash($_:*)"} } qw{strace gdb} ),                         q{nor may it trace or debug, because strace and gdb each run a program of their choosing} );
+    ok( ( List::Util::all { $read{"Bash($_:*)"} } qw{cat head tail wc ls grep cut tr cmp diff stat jq} ),       'a run that only reads may run the read-only commands too' );
+    ok( ( List::Util::all { $read{"Bash(git $_:*)"} } qw{log grep show diff blame status ls-files rev-parse} ), 'and read the history and the state of the repository' );
+    ok( $read{'Bash(git reflog)'} && $read{'Bash(git reflog show:*)'},                                          'including the reflog' );
+    ok( !$read{'Bash(git reflog:*)'},                                                                           'but not git reflog with any arguments, because git reflog expire and git reflog delete remove entries' );
+    ok( !( grep { $read{"Bash($_:*)"} } qw{sort uniq sed awk find} ),                                           'nor a command that can write a file' );
+    ok( !$read{'Bash(chmod:*)'},                                                                                'but not chmod, which changes a file' );
+    ok( !$read{'Bash(perltidy:*)'},                                                                             'and a run that only reads may not, because perltidy rewrites files' );
+    ok( !( grep { $read{"Bash($_:*)"} } qw{strace gdb} ),                                                       q{nor may it trace or debug, because strace and gdb each run a program of their choosing} );
 };
 
 subtest create_repos => sub {

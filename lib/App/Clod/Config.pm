@@ -17,7 +17,7 @@ my $LOGIN = { type => 'string', pattern => '\A[\w.-]+\z' };
 my $TEXT  = { type => 'string' };
 
 # The read-only commands, which allowed_tools and read_tools both allow.
-our @READ_COMMANDS = map { "Bash($_:*)" } qw{cat head tail wc ls grep};
+our @READ_COMMANDS = map { "Bash($_:*)" } qw{cat head tail wc ls grep cut tr cmp diff stat jq};
 
 my sub list_of ( $item, %more )       { return { type => 'array',   items                => $item, default => [], %more } }
 my sub section ( $properties, %more ) { return { type => 'object',  additionalProperties => 0, default => {}, properties => $properties, %more } }
@@ -57,7 +57,7 @@ our %SCHEMA = (
                 run_as        => { type => 'string', nullable => 1, default => undef, pattern => '\A[a-z_][a-z0-9_-]*\z' },
                 timeout       => seconds(3600),
                 allowed_tools => list_of( $TEXT, default => [ qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*) Bash(perlcritic:*) Bash(perltidy:*) Bash(make:*) Bash(strace:*) Bash(gdb:*) Bash(nytprofhtml:*) Bash(nytprofmerge:*) Bash(clod-cpm:*) Bash(chmod:*)}, @READ_COMMANDS ] ),
-                read_tools    => list_of( $TEXT, default => [ qw{Read Grep Glob}, 'Bash(git log:*)', 'Bash(git grep:*)', 'Bash(git show:*)', 'Bash(git diff:*)', @READ_COMMANDS ] ),
+                read_tools    => list_of( $TEXT, default => [ qw{Read Grep Glob}, ( map { "Bash(git $_:*)" } qw{log grep show diff blame status ls-files rev-parse} ), 'Bash(git reflog)', 'Bash(git reflog show:*)', @READ_COMMANDS ] ),
                 extra_tools   => list_of($TEXT),
             }
         ),
@@ -233,18 +233,25 @@ programs that a spoke is built and checked with: C<Read>, C<Edit>, C<Write>,
 C<Grep> and C<Glob>, and C<git>, C<prove>, C<perl>, C<dzil>, C<podchecker>,
 C<perlcritic>, C<perltidy>, C<make>, C<strace>, C<gdb>, C<nytprofhtml>,
 C<nytprofmerge>, C<clod-cpm> and C<chmod>, and the read-only commands
-C<cat>, C<head>, C<tail>, C<wc>, C<ls> and C<grep>.  So a run can criticize and tidy the whole
+C<cat>, C<head>, C<tail>, C<wc>, C<ls>, C<grep>, C<cut>, C<tr>, C<cmp>,
+C<diff>, C<stat> and C<jq>.  So a run can criticize and tidy the whole
 tree, and not only what the hooks of a commit see.  It can trace or debug a program that a spoke
 integrates with.  It can profile with C<perl -d:NYTProf> and read the profile,
 and install a module into C<agent_own_lib>.  It can make a file that it adds
 executable.  The default C<read_tools> are C<Read>, C<Grep> and C<Glob>, C<git
-log>, C<git grep>, C<git show> and C<git diff>, and the same read-only
-commands.
+log>, C<git grep>, C<git show>, C<git diff>, C<git blame>, C<git status>,
+C<git ls-files> and C<git rev-parse>, C<git reflog> alone or as C<git reflog
+show>, and the same read-only commands.  A run that only reads does not get
+C<git reflog> with any arguments, because C<git reflog expire> and C<git
+reflog delete> remove entries.  Neither default has C<sort>, C<uniq>,
+C<sed>, C<awk> or C<find>, because each of them can write a file: C<sort -o>, C<uniq> with a second file, C<sed -i>, a redirection in
+C<awk>, and C<find -delete>.
 
 Claude Code can allow a read-only command such as C<tail> without a rule.  But
 the rtk hook rewrites the command before the check: it makes C<rtk ls -l> of
-C<ls -l>, and C<rtk read> of C<cat>, C<head> and C<tail>, and no read-only
-command of Claude Code has that name.  Claude Code checks each
+C<ls -l>, and C<rtk read> of C<cat>, C<head> and C<tail>.  It does the same
+to C<wc>, C<diff>, C<jq>, C<stat>, C<git status> and C<git log>.  No read-only
+command of Claude Code has such a name.  Claude Code checks each
 command of a pipe or a list on its own, so C<prove t/x.t 2E<gt>&1 | tail -6>
 needs C<tail> to be allowed as well as C<prove>.  So the read-only commands get
 a rule, and L<App::Clod::Claude/rtk_too> adds the rule for what rtk makes of
