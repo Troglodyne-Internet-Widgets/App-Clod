@@ -154,6 +154,19 @@ $r->get('/repos/:o/:n')->to(
     }
 );
 
+# The GraphQL search for the open pull requests of an author, $state{page} of
+# them a page, with the index of the next one as the cursor.
+sub search_pulls ($c) {
+    my $vars = $c->req->json->{variables};
+    my ($login) = $vars->{q} =~ m{author:(\S+)};
+    return $c->render( json => { errors => [ { message => 'API rate limit exceeded' } ] } ) if $state{upstream_fail}{$login};
+    my @all   = @{ $state{upstream}{$login} // [] };
+    my $from  = $vars->{after} // 0;
+    my $to    = List::Util::min( $from + ( $state{page} // 100 ), scalar @all ) - 1;
+    my $count = $state{upstream_count}{$login} // scalar @all;
+    return $c->render( json => { data => { search => { issueCount => $count, pageInfo => { hasNextPage => $to < $#all ? Mojo::JSON::true : Mojo::JSON::false, endCursor => $to + 1 }, nodes => [ @all[ $from .. $to ] ] } } } );
+}
+
 # Making a repository puts it on disk, with the README that auto_init writes.
 $r->post('/orgs/:o/repos')->to(
     cb => sub ($c) {
@@ -175,6 +188,7 @@ $r->post('/repos/:o/:n/issues')->to(
 $r->post('/graphql')->to(
     cb => sub ($c) {
         push @calls, [ 'graphql', path_of($c), $c->req->json ];
+        return search_pulls($c)                                                                         if $c->req->json->{query} =~ m{search\(};
         return $c->render( json => { errors => [ { message => 'Pull request is in clean status' } ] } ) if $state{refuse_graphql};
         $c->render( json => { data => {} } );
     }
@@ -2001,6 +2015,86 @@ subtest spoke_sweep => sub {
     my $unknown = run_job('spoke_sweep');
     is( $unknown->{result}{dropped}, {}, 'and a 404 with no verdict before leaves the repository a spoke' );
     $config->{spokes} = $configured;
+    %state = ();
+    $minion->reset( { all => 1 } );
+};
+
+subtest upstream_sweep => sub {
+    %state = ();
+    @calls = ();
+    $minion->reset( { all => 1 } );
+    my $config = $app->clod_config;
+    my %saved  = map { $_ => $config->{$_} } qw{authorized_users spokes spoke_orgs};
+    $config->{authorized_users} = [qw{trusted other}];
+    $config->{spokes}           = [ @SPOKES, 'Spoke-Owner/tool' ];
+    $config->{spoke_orgs}       = ['Spoke-Org'];
+    my $pr = sub ( $repo, $number, %more ) {
+        my ($owner) = split m{/}, $repo;
+        return {
+            url            => "https://test.test/$repo/pull/$number",
+            number         => $number,
+            title          => "Change $number",
+            isDraft        => Mojo::JSON::false,
+            updatedAt      => "2026-01-0${number}T00:00:00Z",
+            mergeable      => 'MERGEABLE',
+            reviewDecision => 'REVIEW_REQUIRED',
+            repository     => { nameWithOwner => $repo, owner => { login => $owner } },
+            author         => { login         => 'trusted' },
+            commits        => { nodes         => [ { commit => { statusCheckRollup => { state => 'SUCCESS' } } } ] },
+            %more,
+        };
+    };
+    $state{upstream}{trusted} = [
+        $pr->( 'Upstream/one',     1 ),
+        $pr->( 'Upstream/two',     2, mergeable => 'CONFLICTING' ),
+        $pr->( 'Upstream/three',   3, mergeable => 'UNKNOWN' ),
+        $pr->( 'test-org/mine',    4 ),
+        $pr->( 'spoke-owner/x',    5 ),
+        $pr->( 'Spoke-Org/y',      6 ),
+        $pr->( 'Upstream/nothing', 7, commits => { nodes => [ { commit => { statusCheckRollup => undef } } ] }, reviewDecision => undef ),
+    ];
+    $state{upstream}{other} = [ $pr->( 'Elsewhere/lib', 8, author => { login => 'other' } ) ];
+    $state{page} = 2;
+
+    my $swept = run_job('upstream_sweep')->{result};
+    is( [ map { $_->{number} } @{ $swept->{pulls} } ], [ 2, 8, 7, 3, 1 ], 'the pull requests outside owners, spoke_orgs and the owners of spokes, compared without case, the conflicting ones first, then the newest' );
+    is( $swept->{errors},                              {},                'and nothing failed' );
+    ok( $swept->{checked_at}, 'with the time of the check' );
+    is(
+        $swept->{pulls}[0],
+        { url => 'https://test.test/Upstream/two/pull/2', repo => 'Upstream/two', number => 2, title => 'Change 2', author => 'trusted', login => 'trusted', draft => 0, updated_at => '2026-01-02T00:00:00Z', mergeable => 'CONFLICTING', review => 'REVIEW_REQUIRED', ci => 'SUCCESS' },
+        'each with its merge state, review decision and the checks of its last commit'
+    );
+    my ($nothing) = grep { $_->{number} == 7 } @{ $swept->{pulls} };
+    is( [ @{$nothing}{qw{review ci}} ], [ undef, undef ], 'a pull request with no review decision and no checks has neither' );
+    my @searches = map { $_->[2]{variables}{q} } @{ calls_of('graphql') };
+    is( [ List::Util::uniq(@searches) ],         [ 'is:pr is:open author:trusted', 'is:pr is:open author:other' ], 'one search for each authorized user' );
+    is( scalar( grep { m{trusted} } @searches ), 4,                                                                'which reads every page' );
+
+    @calls                                  = ();
+    $state{upstream}{trusted}[2]{mergeable} = 'MERGEABLE';
+    $state{upstream}{trusted}[0]{mergeable} = 'UNKNOWN';
+    my $again = run_job('upstream_sweep')->{result};
+    my %merge = map { $_->{number} => $_->{mergeable} } @{ $again->{pulls} };
+    is( $merge{1}, 'MERGEABLE', 'UNKNOWN keeps the state that the sweep before recorded for the same pull request' );
+    is( $merge{3}, 'MERGEABLE', 'and a state that GitHub has computed since replaces it' );
+
+    $state{upstream_fail}{other} = 1;
+    $state{upstream}{trusted}[1]{mergeable} = 'MERGEABLE';
+    my $failed = run_job('upstream_sweep')->{result};
+    like( $failed->{errors}, { other => qr/API\ rate\ limit\ exceeded/ }, 'a user whose search fails is recorded by login' );
+    is( [ sort keys %{ $failed->{errors} } ], ['other'], 'and only that user' );
+    %merge = map { $_->{number} => $_->{mergeable} } @{ $failed->{pulls} };
+    is( $merge{2}, 'MERGEABLE', 'the other users are still swept' );
+    ok( exists $merge{8}, 'and the pull requests that the sweep before found for the user who failed stay' );
+
+    $state{upstream_count}{trusted} = 1001;
+    my $over = run_job('upstream_sweep')->{result};
+    like( $over->{errors}{trusted}, qr/finds\ more\ than\ 1000\ pull\ requests/, 'a search that finds more than GitHub returns is an error, not a short list' );
+    ok( App::Clod::Tasks::last_result( $minion, 'upstream_sweep' ), 'the last result is there for the dashboard' );
+
+    @{$config}{ keys %saved } = values %saved;
+    delete $config->{spoke_orgs} if !defined $saved{spoke_orgs};
     %state = ();
     $minion->reset( { all => 1 } );
 };

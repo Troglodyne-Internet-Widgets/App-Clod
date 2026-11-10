@@ -455,6 +455,41 @@ sub search_issues ( $self, $query ) {
     return $items;
 }
 
+=method open_pulls_by
+
+C<($login)>.  The open pull requests that C<$login> wrote, in any
+repository that the token can see, from a search through L</graphql>.  Each
+is a C<PullRequest> node with C<url>, C<number>, C<title>, C<isDraft>,
+C<updatedAt>, C<mergeable>, C<reviewDecision>, C<repository> with
+C<nameWithOwner> and C<owner>'s C<login>, C<author>'s C<login>, and the
+C<statusCheckRollup> of its last commit.  It reads every page of 100.  Like
+L</search_issues>, it dies when the search finds more than C<$SEARCH_MAX>,
+because GitHub returns no more than that, and the list would be short.
+
+=cut
+
+my $OPEN_PULLS = <<~'GRAPHQL';
+    query($q: String!, $after: String) { search(query: $q, type: ISSUE, first: 100, after: $after) { issueCount pageInfo { hasNextPage endCursor } nodes { ... on PullRequest {
+      url number title isDraft updatedAt mergeable reviewDecision
+      repository { nameWithOwner owner { login } }
+      author { login }
+      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } } } }
+    GRAPHQL
+
+sub open_pulls_by ( $self, $login ) {
+    no autovivification;
+    my $q = "is:pr is:open author:$login";
+    my ( @pulls, $after );
+    while (1) {
+        my $search = $self->graphql( $OPEN_PULLS, q => $q, after => $after )->{search};
+        die "GitHub search '$q' finds more than $SEARCH_MAX pull requests, which it does not return\n" if $search->{issueCount} > $SEARCH_MAX;
+        push @pulls, @{ $search->{nodes} };
+        last if !$search->{pageInfo}{hasNextPage};
+        $after = $search->{pageInfo}{endCursor};
+    }
+    return \@pulls;
+}
+
 =method tree
 
 C<($repo, $ref)>.  The recursive tree as a hash of path to entry.

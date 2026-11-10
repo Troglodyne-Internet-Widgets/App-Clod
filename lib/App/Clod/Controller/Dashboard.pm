@@ -67,6 +67,9 @@ waits for review.  Then the item has C<link>, a C<{url, label}>, to the pull
 request, and no button.  A spoke whose declaration of system packages is not
 valid is an item, as a scan that failed is.  A pull request whose branch
 needs system packages that the host lacks is an item of L</waiting_items>.
+When a pull request of the last L<App::Clod::Tasks/upstream_sweep> conflicts
+with its base, one item counts them, with a C<link> to F<#upstream>, the
+Upstream tab.
 A failed job that somebody ignored is not an item.
 
 =cut
@@ -136,6 +139,10 @@ sub action_items ( $self, $budget, $outages = [] ) {
 
     my $activity = App::Clod::Tasks::last_result( $minion, 'activity_sweep' ) // {};
     push @actions, { level => 'warning', text => "The counts of issues and pull requests leave out the spokes of $_, because their search failed: $activity->{errors}{$_}" } for sort keys %{ $activity->{errors} // {} };
+
+    my $upstream  = App::Clod::Tasks::last_result( $minion, 'upstream_sweep' ) // {};
+    my $conflicts = grep { ( $_->{mergeable} // q{} ) eq 'CONFLICTING' } @{ $upstream->{pulls} // [] };
+    push @actions, { level => 'warning', text => ( $conflicts == 1 ? '1 upstream PR conflicts with its base, and needs' : "$conflicts upstream PRs conflict with their base, and need" ) . ' a rebase:', link => { url => '#upstream', label => 'Upstream' } } if $conflicts;
 
     push @actions, { level => 'warning', text => 'Claude work is paused until the quota resets' . ( $budget->{paused_until} ? q{ at } . gmtime( $budget->{paused_until} ) . ' UTC' : q{} ) . q{.} } if $budget->{paused};
 
@@ -622,12 +629,25 @@ sub harness ($self) {
     return $self->render( json => $result // { repos => {}, checks => [] } );
 }
 
+=method upstream
+
+The result of the last L<App::Clod::Tasks/upstream_sweep>: the open pull
+requests of the authorized users in repositories that are not ours.  Before
+the first sweep, no pull request, no error, and no C<checked_at>.
+
+=cut
+
+sub upstream ($self) {
+    my $result = App::Clod::Tasks::last_result( $self->minion, 'upstream_sweep' );
+    return $self->render( json => $result // { pulls => [], errors => {} } );
+}
+
 1;
 
 =head1 DESCRIPTION
 
 The controller behind F</> and F</api>.  Everything it shows comes from Minion:
 the jobs of the items, and the results of the last C<harness_scan>, C<self_check>,
-C<assigned_sweep>, C<activity_sweep> and C<inbox_poll>.
+C<assigned_sweep>, C<activity_sweep>, C<upstream_sweep> and C<inbox_poll>.
 
 =cut

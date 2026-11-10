@@ -1,6 +1,12 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Add an Upstream tab to the health page.  It lists the open pull
+      requests that the authorized users wrote in repositories that are not
+      ours, with their merge state, review decision and checks.  The ones
+      that conflict with their base come first, marked as needing a rebase.
+      A new task, upstream_sweep, searches for them every fifteen minutes.
+      The Overview tab counts the ones that conflict.
     - Allow the read-only commands `cat`, `head`, `tail`, `wc`, `ls` and
       `grep` by rule, in every run, and `chmod` in a run that changes a
       spoke.  The rtk hook rewrites `ls -l` to `rtk ls -l`, and `cat`,
