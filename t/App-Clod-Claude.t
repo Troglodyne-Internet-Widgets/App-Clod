@@ -45,6 +45,13 @@ subtest command => sub {
         [ 'Read', 'Bash(prove:*)', 'Bash(rtk prove:*)', 'Bash(*/bin/provision *)', 'Bash(rtk */bin/provision *)', 'Bash(rtk git:*)' ],
         'each Bash rule also allows the command that rtk makes of it, and other rules stay as they are'
     );
+    is(
+        [ map { App::Clod::Claude::rtk_too($_) } 'Bash(cat:*)', 'Bash(tail -n:*)', 'Bash(catalog:*)' ],
+        [ 'Bash(cat:*)', 'Bash(rtk read:*)', 'Bash(tail -n:*)', 'Bash(rtk read -n:*)', 'Bash(catalog:*)', 'Bash(rtk catalog:*)' ],
+        'rtk reads a file for cat, head and tail, so their rules allow rtk read, and a longer name is no such command'
+    );
+    my $reads = App::Clod::Claude->new( bin => 'test-claude', allowed_tools => [ 'Bash(head:*)', 'Bash(tail:*)' ] )->command;
+    is( $reads->[-1], 'Bash(head:*),Bash(rtk read:*),Bash(tail:*)', 'two rules that rtk reads alike give its rule once' );
 };
 
 # The hook of the settings of a run, run as claude runs it, on a request to

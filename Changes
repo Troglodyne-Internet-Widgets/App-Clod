@@ -1,6 +1,19 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Allow the read-only commands `cat`, `head`, `tail`, `wc`, `ls` and
+      `grep` by rule, in every run, and `chmod` in a run that changes a
+      spoke.  The rtk hook rewrites `ls -l` to `rtk ls -l`, and `cat`,
+      `head` and `tail` to `rtk read`, so Claude Code no longer took them
+      for read-only commands, and a pipe into `tail` or `head` was refused
+      with them.  The rule for `cat`, `head` or `tail` also allows
+      `rtk read`.
+    - Give a run that changes a spoke an empty scratch directory, added to
+      its session and named in its prompt.  Claude Code refuses a redirect
+      to `/tmp`, which is outside the directories of the session.
+    - Let the answer to a review give a new `description` of the pull
+      request.  The run cannot edit it on GitHub, and the hub now puts it
+      in place of the summary, and keeps the lines that the hub wrote.
     - Install what a spoke needs into `agent_own_lib` before the commit of
       `harness_fix`, and commit with that lib on `PERL5LIB`.  The commit
       runs the hooks of the spoke, and their tests failed to compile when

@@ -251,6 +251,11 @@ sub record_of ($file) {
 
 my %item = ( repo => 'Test-Org/one', number => 7, kind => 'fix', is_pr => 0, title => 'Fix the thing!', requester => 'trusted' );
 
+# The scratch directory of the run of a job, from the info of the job.
+sub scratch_of ($info) {
+    return $tmp->child( 'workspace', 'work', $info->{id}, $App::Clod::Tasks::SCRATCH )->to_abs->to_string;
+}
+
 subtest inbox_poll => sub {
     %state = ();
     @calls = ();
@@ -786,6 +791,42 @@ subtest spoke_address => sub {
     is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Renamed it throughout.'], 'and answers it with a comment' );
     delete @state{qw{issue_comments reviews}};
 
+    # The description of a pull request that the hub opened: the summary of the
+    # run, then what the hub wrote.
+    my $hub = "\n\nFor file://$remote/Test-Org/one/issues/7\n\nFollows https://test.test/pull/3";
+    my $ask = { id => 42, user => { login => 'trusted' }, body => 'Say so in the description.', state => 'COMMENTED', submitted_at => '2026-11-01T12:00:00Z' };
+    @state{qw{issue_comments reviews}} = ( [], [$ask] );
+    $state{pull}                       = { %{ $state{pull} }, body => "Old summary.$hub" };
+    @calls                             = ();
+    answer( { summary => 'Said so.', replies => [], comment => 'Said so.', description => 'New summary.' } );
+    $fake{FAKE_CLAUDE_RECORD} = "$tmp/address-record";
+    my $described = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } );
+    is( $described->{state},                                        'finished',                                                             'an answer with a description finishes' ) or diag Mojo::Util::dumper $described->{result};
+    is( [ map { [ $_->@[ 1, 2 ] ] } @{ calls_of('update_pull') } ], [ [ '/repos/Test-Org/one/pulls/11', { body => "New summary.$hub" } ] ], 'and replaces the summary in the description of the pull request, and keeps what the hub wrote below it' );
+    my $address = record_of("$tmp/address-record");
+    is( $address->{flags}{'--add-dir'}, [ scratch_of($described) ], 'the run gets a scratch directory' );
+    my $scratch = scratch_of($described);
+    like( $address->{prompt}, qr/use\ the\ directory\ \Q$scratch\E\./, 'and its prompt names it' );
+
+    $state{pull} = { %{ $state{pull} }, body => 'Written by a person.' };
+    @calls = ();
+    run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } );
+    is( [ map { $_->[2]{body} } @{ calls_of('update_pull') } ], ['New summary.'], 'a description with no line of the hub is replaced whole' );
+
+    @calls = ();
+    answer( { summary => 'Said so.', replies => [], comment => 'Said so.', description => q{} } );
+    run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } );
+    is( calls_of('update_pull'), [], 'an empty description leaves the description as it is' );
+
+    @calls = ();
+    answer( { summary => 'Said so.', replies => [], comment => 'Said so.', description => 'New summary.' } );
+    $state{refuse_update_pull} = 1;
+    my $unchanged = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } );
+    is( $unchanged->{state}, 'finished', 'a description that GitHub refuses does not fail the job' );
+    ok( ( grep { $_->{message} =~ m/could\ not\ change\ the\ description/ } @{ $unchanged->{notes}{log} } ), 'and its log says why' ) or diag Mojo::Util::dumper $unchanged->{notes}{log};
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Said so.'], 'and the comment is posted all the same' );
+    delete @state{qw{issue_comments reviews refuse_update_pull}};
+
     $state{pull} = { %{ $state{pull} }, user => { login => 'someone' } };
     is( run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } )->{state}, 'failed', 'a pull request that is not the bot\'s own is refused' );
     $minion->reset( { all => 1 } );
@@ -811,8 +852,8 @@ subtest sort_review => sub {
     is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Lookup by name.'],                                  'and the plain comments in one comment' );
     is( $asked->{result}{next},                             undef,                                                'and with nothing left, no job comes after' );
     my $run  = record_of("$tmp/sort-record");
-    my @read = ( qw{Read Grep Glob}, map { "Bash(git $_:*)" } qw{log grep show diff} );
-    is( $run->{flags}{'--allowedTools'}, [ join q{,}, map { App::Clod::Claude::rtk_too($_) } @read ], 'the run has the read tools alone' );
+    my @read = ( qw{Read Grep Glob}, ( map { "Bash(git $_:*)" } qw{log grep show diff blame status ls-files rev-parse} ), 'Bash(git reflog)', 'Bash(git reflog show:*)', @App::Clod::Config::READ_COMMANDS );
+    is( $run->{flags}{'--allowedTools'}, [ join q{,}, List::Util::uniq( map { App::Clod::Claude::rtk_too($_) } @read ) ], 'the run has the read tools alone' );
     like( $run->{prompt}, qr/What\ does\ this\ line\ do\?/, 'and gets the threads' );
     is( git( q{--git-dir}, $bare, qw{rev-parse clod/2-sort} ), $head, 'and the branch is as it was' );
 
@@ -900,9 +941,11 @@ subtest 'tool spokes and the spoke prompt' => sub {
     my $dir  = $tmp->child( 'workspace', 'work', $fix->{id}, 'Test-Org', 'two' )->to_string;
     is( $fix->{state},                            'finished',                             'a fix with a tool spoke finishes' ) or diag Mojo::Util::dumper $fix->{result};
     is( $told->{flags}{'--append-system-prompt'}, ["Test on a guest.\n\nFix with care."], 'a spoke run is told the spoke prompt, then the system prompt of its task' );
-    is( $told->{flags}{'--add-dir'},              [$dir],                                 'it gets a worktree of the tool spoke of its own' );
+    my $scratch = scratch_of($fix);
+    is( $told->{flags}{'--add-dir'}, [ $scratch, $dir ], 'it gets a worktree of the tool spoke of its own, after its scratch directory' );
     like( $told->{prompt}, qr/-\ Test-Org\/two\ in\ \Q$dir\E,\ at\ main\n/, 'and its prompt says where, at which branch' );
-    is( $head_of->(), { $dir => $main }, 'with no earlier job in the tool spoke, the worktree is at its default branch' );
+    like( $told->{prompt}, qr/use\ the\ directory\ \Q$scratch\E\./,         'and where to write what it does not commit' );
+    is( $head_of->(), { $scratch => 0, $dir => $main }, 'with no earlier job in the tool spoke, the worktree is at its default branch, and the scratch directory is there and empty' );
     like( $told->{flags}{'--allowedTools'}[0], qr/,Bash\(bin\/provision:\*\),Bash\(rtk\ bin\/provision:\*\)\z/, 'and the extra tools are allowed, after the configured ones, with the rule for what rtk makes of each' );
     ok( !-e $tmp->child( 'workspace', 'work', $fix->{id} ), 'every worktree of the run is gone afterwards' );
     is( [ grep { m{/work/} } split /\n/, git( '--git-dir', $tools, 'worktree', 'list' ) ], [], 'and the bare clone of the tool spoke has no worktree left' );
@@ -923,15 +966,15 @@ subtest 'tool spokes and the spoke prompt' => sub {
     @fake{qw{FAKE_CLAUDE_RECORD FAKE_CLAUDE_HEADS}} = ( $record_file, $heads );
     my $after = run_id( $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ], { parents => [$between] } ) );
     my $later = $tmp->child( 'workspace', 'work', $after->{id}, 'Test-Org', 'two' )->to_string;
-    is( $after->{state}, 'finished',            'a fix after an earlier spoke that changed nothing finishes' ) or diag Mojo::Util::dumper $after->{result};
-    is( $head_of->(),    { $later => $recipe }, 'a tool worktree is at the branch of the nearest earlier job that changed the tool spoke' );
+    is( $after->{state}, 'finished',                                     'a fix after an earlier spoke that changed nothing finishes' ) or diag Mojo::Util::dumper $after->{result};
+    is( $head_of->(),    { scratch_of($after) => 0, $later => $recipe }, 'a tool worktree is at the branch of the nearest earlier job that changed the tool spoke' );
     like( record_of($record_file)->{prompt}, qr/at\ clod\/1-recipe\n/, 'and the prompt names that branch' );
 
     answer( { title => 't', summary => 's' } );
     @fake{qw{FAKE_CLAUDE_RECORD FAKE_CLAUDE_EXIT}} = ( $record_file, 1 );
     my $failed = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
-    is( $failed->{state},                              'failed',                                                                            'a run that fails fails the job' );
-    is( record_of($record_file)->{flags}{'--add-dir'}, [ $tmp->child( 'workspace', 'work', $failed->{id}, 'Test-Org', 'two' )->to_string ], 'after it had a tool worktree' );
+    is( $failed->{state},                              'failed',                                                                                                 'a run that fails fails the job' );
+    is( record_of($record_file)->{flags}{'--add-dir'}, [ scratch_of($failed), $tmp->child( 'workspace', 'work', $failed->{id}, 'Test-Org', 'two' )->to_string ], 'after it had a tool worktree' );
     ok( !-e $tmp->child( 'workspace', 'work', $failed->{id} ), 'which is gone after the failure too' );
 
     answer( { title => 't', summary => 's' }, commit => 1 );
@@ -943,8 +986,8 @@ subtest 'tool spokes and the spoke prompt' => sub {
 
     answer( { title => 't', summary => 's' } );
     $fake{FAKE_CLAUDE_RECORD} = $record_file;
-    run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
-    is( record_of($record_file)->{flags}{'--add-dir'}, undef, 'a run in the tool spoke itself gets no second copy of it' );
+    my $own = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( record_of($record_file)->{flags}{'--add-dir'}, [ scratch_of($own) ], 'a run in the tool spoke itself gets no second copy of it, only its scratch directory' );
 
     answer( { event => 'COMMENT', body => 'Fine.', comments => [] } );
     $fake{FAKE_CLAUDE_RECORD} = $record_file;
