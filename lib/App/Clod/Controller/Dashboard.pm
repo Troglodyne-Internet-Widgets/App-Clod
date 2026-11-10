@@ -62,7 +62,7 @@ a button can settle has C<buttons>, each a C<{label, act}> and sometimes a
 C<body>: the dashboard posts C<body> to F</act/E<lt>actE<gt>>.  A button with
 C<confirm> opens a dialog first, see L</waiting_items>.  A failed job
 has Retry and Ignore, and a spoke that fails harness checks has Fix, unless a
-L<App::Clod::Tasks/harness_fix> of it waits or runs, or its pull request
+fix of it waits or runs, as L</harness_job> finds it, or its pull request
 waits for review.  Then the item has C<link>, a C<{url, label}>, to the pull
 request, and no button.  A spoke whose declaration of system packages is not
 valid is an item, as a scan that failed is.  A pull request whose branch
@@ -99,7 +99,7 @@ sub action_items ( $self, $budget, $outages = [] ) {
             my @failing = grep { $_->{status} eq 'fail' } @{ $harness->{repos}{$repo}{checks} };
             next if !@failing;
             my $text  = "$repo fails " . scalar(@failing) . ' harness check(s): ' . join( q{, }, map { $_->{check} } @failing ) . q{.};
-            my $fixer = pending_job( $minion, 'harness_fix', $repo );
+            my $fixer = harness_job( $minion, $repo );
             my $pull  = !$fixer && harness_pull( $minion, $repo, $harness );
             push @actions,
                 $fixer ? { level => 'warning', job => $fixer, text => "$text A harness fix of it is queued." }
@@ -296,6 +296,19 @@ sub pending_job ( $minion, $task, $repo = undef, $note = 'repo' ) {
     return;
 }
 
+=func harness_job
+
+C<($minion, $repo)>.  The id of a job that brings C<$repo> to the harness
+standards and waits or runs: a L<App::Clod::Tasks/harness_fix>, or the claude
+run that it queued for what the update left for a person, which has the note
+C<harness>.  Undef when there is none.
+
+=cut
+
+sub harness_job ( $minion, $repo ) {
+    return pending_job( $minion, 'harness_fix', $repo ) // pending_job( $minion, 'spoke_fix', $repo, 'harness' ) // pending_job( $minion, 'spoke_address', $repo, 'harness' );
+}
+
 =func waiting_items
 
 C<($minion)>.  An action item for each pull request whose branch needs system
@@ -472,7 +485,8 @@ sub failed_job ($self) {
 Queues a L<App::Clod::Tasks/harness_fix> of the C<repo> of the JSON body, with
 its failing checks from the last harness scan, and C<by>, the
 L<App::Clod/viewer> who pressed the button.  A spoke that fails no check is
-a 404.  If one waits or runs already, it queues no second one, and says which.
+a 404.  If a fix waits or runs already, as L</harness_job> finds it, it
+queues no second one, and says which.
 
 =cut
 
@@ -482,7 +496,7 @@ sub harness_fix ($self) {
     my $scan    = App::Clod::Tasks::last_result( $minion, 'harness_scan' ) // {};
     my @failing = map { { check => $_->{check}, detail => $_->{detail} } } grep { $_->{status} eq 'fail' } @{ ( $scan->{repos}{$repo} // {} )->{checks} // [] };
     return $self->render( json => { error => "$repo fails no harness check" }, status => 404 ) if !@failing;
-    my $id = pending_job( $minion, 'harness_fix', $repo ) // $minion->enqueue( harness_fix => [ { repo => $repo, checks => \@failing, by => $self->viewer } ], { notes => { repo => $repo } } );
+    my $id = harness_job( $minion, $repo ) // $minion->enqueue( harness_fix => [ { repo => $repo, checks => \@failing, by => $self->viewer } ], { notes => { repo => $repo } } );
     return $self->render( json => { queued => $id } );
 }
 

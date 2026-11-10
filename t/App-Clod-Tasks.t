@@ -1380,6 +1380,8 @@ subtest harness_fix => sub {
     $spoke->unmock_all;
     delete $app->clod_config->{agent_own_lib};
 
+    # The update of the standards above leaves something for a person each time.
+    $minion->reset( { all => 1 } );
     my $harness = Test::MockModule->new('App::Clod::Harness');
     $harness->redefine( update => sub (@) { return [ { check => 'ClaudeMd', changes => [], manual => ['Say what the repository is for.'] } ] } );
     @calls = ();
@@ -1388,6 +1390,88 @@ subtest harness_fix => sub {
     my $said = calls_of('comment')->[0][2]{body};
     like( $said, qr/changes\ no\ file/,      'and says on the issue that nothing changed' );
     like( $said, qr/`ClaudeMd`:\ Say\ what/, 'and what is left for a person' );
+
+    # What the prompts and the comments of a harness fix say, in parts that the tests below put together.
+    my $claude_does = qr/A\ claude\ run\ of\ the\ bot\ now\ works/;
+    my $no_verify   = qr/Never\ use\ `--no-verify`/;
+    my $make_it     = qr/`PerlCritic`:\ Make\ the\ code/;
+    my $fix_code    = qr/Fix\ the\ code\ that\ perlcritic/;
+    my $off         = qr/`\[-Name\]` .* reason/s;
+    my $hook_said   = qr/Test::Policy:\ the\ code\ breaks\ it/;
+    like( $said, $claude_does, 'and that a claude run does it' );
+    my $fixer = $minion->job( $nothing->{result}{next}{id} )->info;
+    like( $fixer, { task => 'spoke_fix', notes => { repo => 'Test-Org/two', harness => 'Test-Org/two', origin => 'Test-Org/two#1' } }, 'a spoke_fix of the issue, as there is no pull request to work on' );
+    like( $fixer->{args}[0], { repo => 'Test-Org/two', title => 'Meet the harness standards', item => { repo => 'Test-Org/two', number => 1, kind => 'fix', requester => 'trusted' }, instructions => qr/changed\ no\ file .* `ClaudeMd`:\ Say\ what .* $no_verify/s }, 'which is told what is left, and to keep to the hooks' );
+    ok( !exists $fixer->{args}[0]{patch}, 'and gets no patch, as nothing changed' );
+
+    # A change with nothing left for a person needs no claude run.
+    $harness->redefine( update => sub ( $tree, @ ) { Mojo::File->new( $tree, 'README.md' )->spew("# A spoke\n"); return [ { check => 'Readme', changes => [ { action => 'write', path => 'README.md' } ], manual => [] } ] } );
+    @calls = ();
+    my $done = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( [ $done->{state}, $done->{result}{next} ], [ 'finished', undef ], 'with nothing left for a person, a harness fix queues no claude run' ) or diag Mojo::Util::dumper $done->{result};
+    like( calls_of('pull')->[0][2]{body}, qr/Nothing\ is\ left\ for\ a\ person\.\n\nCloses/, 'and its pull request names none' );
+    is( $minion->jobs( { tasks => [qw{spoke_fix spoke_address}] } )->total, 1, 'so the one claude run is the one for the update that changed nothing' );
+
+    # Something left for a person after the commit goes to a claude run on the pull request.
+    my $policy = "[Test::Policy]\n";
+    $harness->redefine(
+        update => sub ( $tree, @ ) {
+            Mojo::File->new( $tree, '.perlcriticrc' )->spew($policy);
+            return [ { check => 'PerlCritic', changes => [ { action => 'write', path => '.perlcriticrc' } ], manual => ['Make the code pass the new policies.'] } ];
+        }
+    );
+    @calls = ();
+    my $left = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( $left->{state}, 'finished', 'a harness fix that leaves something for a person finishes' ) or diag Mojo::Util::dumper $left->{result};
+    my $opened = calls_of('pull')->[0][2];
+    like( $opened->{body}, qr/$make_it .* $claude_does .* Closes\ \#1/s, 'its pull request says that a claude run does what is left' );
+    my $addresser = $minion->job( $left->{result}{next}{id} )->info;
+    like( $addresser, { task => 'spoke_address', notes => { repo => 'Test-Org/one', origin => "Test-Org/one#$left->{result}{pr}" } }, 'which is a spoke_address of that pull request' );
+    like(
+        $addresser->{args}[0],
+        { repo => 'Test-Org/one', resume => 1, item => { repo => 'Test-Org/one', number => $left->{result}{pr}, is_pr => 1, kind => 'address_review', requester => 'trusted' }, instructions => qr/committed\ what\ it\ changed .* $make_it .* $fix_code .* $off/s },
+        'that runs with nothing to answer, and is told what is left, and what it means'
+    );
+
+    my $bare_one = $remote->child('Test-Org/one.git')->to_string;
+    @calls                 = ();
+    $state{pull}           = { user => { login => $BOT }, number => $left->{result}{pr}, node_id => 'PR_harness', head => { ref => $left->{result}{branch}, sha => git( '--git-dir', $bare_one, 'rev-parse', $left->{result}{branch} ), repo => { full_name => 'Test-Org/one' } }, base => { ref => 'main' }, html_url => $left->{result}{pr_url} };
+    $state{issue_comments} = [];
+    answer( { summary => 'Fixed the code that the new policy flags.', blocked => q{}, replies => [] }, commit => 1, file => [ 'fixed', "yes\n" ] );
+    my $addressed = run_id( $left->{result}{next}{id} );
+    is( $addressed->{state},                                                                    'finished',                                    'the claude run finishes' ) or diag Mojo::Util::dumper $addressed->{result};
+    is( eval { git( '--git-dir', $bare_one, 'show', "$left->{result}{branch}:fixed" ) } // q{}, 'yes',                                         'and pushes its fix to the branch of the pull request' );
+    is( [ map { $_->[2]{body} } @{ calls_of('comment') } ],                                     ['Fixed the code that the new policy flags.'], 'and says there what it did' );
+    delete @state{qw{pull issue_comments}};
+
+    # Hooks that refuse the commit of the update hand it, uncommitted, to a claude run.
+    my $hooks = $tmp->child(qw{workspace mirrors Test-Org one.git hooks})->make_path;
+    $hooks->child('pre-commit')->spew("#!/bin/sh\ntest -e fixed && exit 0\necho 'Test::Policy: the code breaks it' >&2\nexit 1\n");
+    chmod 0755, $hooks->child('pre-commit') or die $!;
+    @calls = ();
+    my $hooked = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( $hooked->{state},                                'finished',                         'a harness fix whose commit the hooks refuse finishes' ) or diag Mojo::Util::dumper $hooked->{result};
+    is( $hooked->{result}{refused},                      "Test::Policy: the code breaks it", 'with what the hook said' );
+    is( [ calls_of('pull'), $hooked->{result}{branch} ], [ [], undef ],                      'and opens no pull request, and pushes nothing' );
+    like( calls_of('comment')->[0][2]{body}, qr/refused\ the\ commit .* $hook_said .* claude\ run/s, 'and says on the issue what the hook said, and who takes it on' );
+    my $taker = $minion->job( $hooked->{result}{next}{id} )->info;
+    like( $taker, { task => 'spoke_fix', notes => { repo => 'Test-Org/one', harness => 'Test-Org/one' } }, 'a spoke_fix of the issue takes it on' );
+    like(
+        $taker->{args}[0],
+        { title => 'Meet the harness standards', patch => qr/\+\[Test::Policy\]/, instructions => qr/staged\ in\ this\ worktree .* $hook_said .* $make_it .* $no_verify/s },
+        'with the staged changes as a patch, and what the hook said'
+    );
+
+    @calls = ();
+    answer( { title => 'A title of the run', summary => 'Made the code pass the new policy.', blocked => q{} }, commit => 1, file => [ 'fixed', "yes\n" ] );
+    my $taken = run_id( $hooked->{result}{next}{id} );
+    is( $taken->{state}, 'finished', 'that run finishes' ) or diag Mojo::Util::dumper $taken->{result};
+
+    # A git that dies here would leave the hook that refuses for the subtests after this one.
+    is( eval { git( '--git-dir', $bare_one, 'show', ( $taken->{result}{branch} // 'none' ) . ':.perlcriticrc' ) } // q{}, '[Test::Policy]',             'and commits the update, through the hooks, with its fix' );
+    is( calls_of('pull')->[0][2]{title},                                                                                  'Meet the harness standards', 'and its pull request has the title of a harness fix, so a second press finds it' );
+    $hooks->child('pre-commit')->remove;
+    $harness->unmock_all;
     $minion->reset( { all => 1 } );
 };
 

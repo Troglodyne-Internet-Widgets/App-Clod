@@ -346,8 +346,9 @@ stays failed in F</minion>.
 
 =item * Fix, on a spoke that fails harness checks, queues
 L<App::Clod::Tasks/harness_fix>.  That job runs the update of the standards
-on a new branch, with no claude run, and opens a pull request for what it
-changed, with an issue that it closes.
+on a new branch, and opens a pull request for what it changed, with an issue
+that it closes.  What the update leaves for a person, such as code that a new
+critic policy flags, goes to a claude run.
 
 =item * Update, when the bot is out of date, queues
 L<App::Clod::Tasks/self_update>.  The bot is out of date when its checkout is
