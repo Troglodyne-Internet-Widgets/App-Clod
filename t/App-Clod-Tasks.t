@@ -1362,13 +1362,13 @@ subtest harness_fix => sub {
             return $self->$git(@args);
         }
     );
-    $app->clod_config->{agent_own_lib} = '/bogus/own-lib';
+    @{ $app->clod_config }{qw{agent_lib agent_own_lib}} = qw{/bogus/agent-lib /bogus/own-lib};
     my $bot_lib = $ENV{PERL5LIB} // q{};
     @calls = ();
     my $installed = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
     is( $installed->{state}, 'finished', 'a fix in a spoke that needs modules finishes' ) or diag Mojo::Util::dumper $installed->{result};
     like( \@asked, [ [ '/bogus/own-lib', qr{/Test-Org/one\z} ] ], 'after it installs what the spoke needs into the own lib of the agent' );
-    is( \@committed_with, [ join q{:}, grep { $_ ne q{} } $bot_lib, '/bogus/own-lib/lib/perl5' ], 'and commits with that lib after the lib of the bot, so the hooks of the spoke find them' );
+    is( \@committed_with, [ join q{:}, grep { $_ ne q{} } $bot_lib, '/bogus/agent-lib/lib/perl5', '/bogus/own-lib/lib/perl5' ], 'and commits with the lib of the agent and then that lib after the lib of the bot, so the hooks of the spoke find the policies and the modules' );
     like( $installed->{notes}{log}, [ { message => qr/installed\ Plack::MIME\ into\ the\ own\ lib/ } ], 'and notes what it installed' );
 
     ( @asked, @committed_with ) = ();
@@ -1378,7 +1378,7 @@ subtest harness_fix => sub {
     like( $failed->{notes}{log}, [ { message => qr/could\ not\ install\ .*cpm:\ no\ such\ module/ } ], 'and the job notes why' );
     $deps->unmock_all;
     $spoke->unmock_all;
-    delete $app->clod_config->{agent_own_lib};
+    delete @{ $app->clod_config }{qw{agent_lib agent_own_lib}};
 
     # The update of the standards above leaves something for a person each time.
     $minion->reset( { all => 1 } );

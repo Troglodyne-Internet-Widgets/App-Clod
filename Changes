@@ -1,6 +1,12 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Commit the update of `harness_fix` with `agent_lib` on `PERL5LIB`
+      and `PATH`, after the libs of the worker and before
+      `agent_own_lib`.  The hooks of a spoke ran perlcritic without the
+      lib that holds the policies of the standards, so a commit that
+      staged Perl failed on a policy that was not installed rather than
+      on the code.
     - Require Dist::Conformance 0.004.  The flavor of the standards now names
       its check RefusedIniKeys, which 0.003 does not have, so with 0.003 the
       harness scan and the harness update stopped for every spoke.

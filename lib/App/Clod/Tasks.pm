@@ -2618,22 +2618,26 @@ my $LEFT_TO_CLAUDE = 'A claude run of the bot now works on what is left for a pe
 
 C<($job, $config, $tree)>.  Installs what the spoke in C<$tree> needs into
 C<agent_own_lib>, as L<App::Clod::Deps/install_needed> does, and returns the
-C<PERL5LIB> and C<PATH> that the hooks of the spoke need, with that lib after
-those of the worker.  So a commit of the bot runs the tests of a spoke whose
-modules the bot does not have.  The job notes what it installed, and an
-install that fails, and then the hooks run with what there is.  With no
-C<agent_own_lib>, it installs nothing and returns nothing.
+C<PERL5LIB> and C<PATH> that the hooks of the spoke need: those of the worker,
+then C<agent_lib>, then C<agent_own_lib>.  So a commit of the bot runs the
+tests of a spoke whose modules the bot does not have, and its perlcritic finds
+the policies that the standards name, as in a claude run.  The job notes what
+it installed, and an install that fails, and then the hooks run with what
+there is.  With neither lib, it installs nothing and returns nothing.
 
 =cut
 
 sub prerequisites_env ( $job, $config, $tree ) {
-    my $own       = $config->{agent_own_lib} // return;
-    my @installed = eval { App::Clod::Deps::install_needed( $own, $tree ) };
-    log_note( $job, 'could not install the prerequisites of the spoke into the own lib of the agent: ' . ( split m{\n}, $@ )[0] ) if $@;
-    log_note( $job, "installed @installed into the own lib of the agent" )                                                        if @installed;
+    my @libs = grep { defined } @$config{qw{agent_lib agent_own_lib}};
+    return if !@libs;
+    if ( defined( my $own = $config->{agent_own_lib} ) ) {
+        my @installed = eval { App::Clod::Deps::install_needed( $own, $tree ) };
+        log_note( $job, 'could not install the prerequisites of the spoke into the own lib of the agent: ' . ( split m{\n}, $@ )[0] ) if $@;
+        log_note( $job, "installed @installed into the own lib of the agent" )                                                        if @installed;
+    }
     return (
-        PERL5LIB => join( q{:}, grep { $_ ne q{} } $ENV{PERL5LIB} // q{}, "$own/lib/perl5" ),
-        PATH     => join( q{:}, grep { $_ ne q{} } $ENV{PATH}     // q{}, "$own/bin" ),
+        PERL5LIB => join( q{:}, grep { $_ ne q{} } $ENV{PERL5LIB} // q{}, map { "$_/lib/perl5" } @libs ),
+        PATH     => join( q{:}, grep { $_ ne q{} } $ENV{PATH}     // q{}, map { "$_/bin" } @libs ),
     );
 }
 
