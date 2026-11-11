@@ -1552,6 +1552,31 @@ subtest harness_fix => sub {
     like( $many->{result}{critic}, [qr/`lib\/F10\.pm`,\ and\ 2\ more\z/], 'a policy that many files break names the first ten, and how many more' ) or diag Mojo::Util::dumper $many->{result};
     $harness->unmock('new_violations');
 
+    # A new tidy profile: the update tidies every Perl file with it, in its own commit.
+    $seed_lib->child('Messy.pm')->spew(qq{package Messy;\nmy \$y=1+2;\n1;\n});
+    git( q{-C}, "$seed", qw{add .} );
+    git( q{-C}, "$seed", @as_t,            qw{commit --quiet -m}, 'Untidy code' );
+    git( q{-C}, "$seed", qw{push --quiet}, $bare_one,             'main' );
+    my $tidy_update = sub ($rc) {
+        return sub ( $tree, @ ) {
+            Mojo::File->new( $tree, '.perltidyrc' )->spew($rc);
+            return [ { check => 'ToolConfiguration', changes => [ { action => 'create', path => '.perltidyrc' } ], manual => [] } ];
+        };
+    };
+    $harness->redefine( update => $tidy_update->("-l=100\n") );
+    @calls = ();
+    my $tidy = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( [ $tidy->{state}, $tidy->{result}{tidied} ],                                   [ 'finished', ['lib/Messy.pm'] ],      'a harness fix that writes a tidy profile tidies the Perl files that it changes, and names only those' ) or diag Mojo::Util::dumper $tidy->{result};
+    is( git( '--git-dir', $bare_one, 'show', "$tidy->{result}{branch}:lib/Messy.pm" ), "package Messy;\nmy \$y = 1 + 2;\n1;", 'and commits them tidied, with the profile' );
+    my $tidied = qr/perltidy:\ tidy,\ with\ the\ new\ `\.perltidyrc`,/;
+    like( calls_of('pull')->[0][2]{body}, qr/$tidied\ `lib\/Messy\.pm`/, 'which its pull request says' );
+    is( $tidy->{result}{next}, undef, 'and that alone needs no claude run' );
+
+    $harness->redefine( update => $tidy_update->("--no-such-perltidy-option\n") );
+    my $untidy = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( [ $untidy->{state}, $untidy->{result}{tidied} ], [ 'finished', undef ], 'a tidy profile that perltidy cannot run with still lets the fix finish' ) or diag Mojo::Util::dumper $untidy->{result};
+    like( $untidy->{notes}{log}, [ { message => qr/could\ not\ run\ perltidy\ with\ the\ new\ \.perltidyrc/ } ], 'and the job notes why' );
+
     git( q{-C}, "$seed", qw{rm --quiet -r lib .perlcriticrc} );
     git( q{-C}, "$seed", @as_t,            qw{commit --quiet -m}, 'No profile and no code' );
     git( q{-C}, "$seed", qw{push --quiet}, $bare_one,             'main' );

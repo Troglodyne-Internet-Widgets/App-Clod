@@ -150,6 +150,27 @@ subtest new_violations => sub {
     like( dies { App::Clod::Harness::new_violations( $tree, '.perlcriticrc', undef ) }, qr/perlcritic/, 'a profile that perlcritic cannot run dies' );
 };
 
+subtest tidy => sub {
+    my $tmp  = File::Temp->newdir;
+    my $tree = Mojo::File->new( $tmp->dirname )->child('spoke')->make_path;
+    $tree->child('.perltidyrc')->spew("-l=100\n");
+    is( [ App::Clod::Harness::tidy( $tree, '.perltidyrc' ) ], [], 'a checkout with no Perl has nothing to tidy, and runs no perltidy' );
+
+    my ( $lib, $t ) = map { $tree->child($_)->make_path } qw{lib t};
+    $lib->child('Messy.pm')->spew(qq{package Messy;\nmy \$x=1+2;\n1;\n});
+    $lib->child('Tidy.pm')->spew(qq{package Tidy;\nmy \$x = 1;\n1;\n});
+    $t->child('messy.t')->spew(qq{my \$y=3;\n});
+    $tree->child('README.md')->spew(qq{my \$z=4;\n});
+    is( [ App::Clod::Harness::tidy( $tree, '.perltidyrc' ) ], [ 'lib/Messy.pm', 't/messy.t' ],           'it names the Perl files that it changed, and not one that was tidy already' );
+    is( $lib->child('Messy.pm')->slurp,                       qq{package Messy;\nmy \$x = 1 + 2;\n1;\n}, 'which it tidied in place, with the profile' );
+    is( $tree->child('README.md')->slurp,                     qq{my \$z=4;\n},                           'and leaves what is not Perl alone' );
+    is( [ map { $_->basename } $lib->list->each ],            [qw{Messy.pm Tidy.pm}],                    'and leaves no backup behind' );
+
+    $tree->child('.perltidyrc')->spew("--no-such-perltidy-option\n");
+    $lib->child('Messy.pm')->spew(qq{my \$x=1;\n});
+    like( dies { App::Clod::Harness::tidy( $tree, '.perltidyrc' ) }, qr/perltidy/, 'a profile that perltidy cannot run dies' );
+};
+
 subtest marketplace_check => sub {
     my $plugin = '{"version":"0.11.0"}';
     my $behind = App::Clod::Harness::marketplace_check( $plugin, '{"plugins":[{"name":"test-plugin","version":"0.10.0"}]}', 'test-plugin' );

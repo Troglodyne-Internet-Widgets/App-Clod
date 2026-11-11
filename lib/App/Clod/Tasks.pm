@@ -2589,6 +2589,10 @@ on nothing and let the commit through, and nothing says so until a later
 commit touches that code.  So before the commit, L</critic_flagged> runs
 perlcritic over the code with the new profile and with the old one, and each
 policy that only the new one finds broken, with the files that break it, is
+When the update writes a F<.perltidyrc>, L</tidied> tidies every Perl file with
+it, and the commit holds those files too, in the result as C<tidied>.  So the
+first later commit that touches one of them holds its change and no reformat.
+
 left for a person too, and in the result as C<critic>.  One claude run gets
 both:
 
@@ -2718,10 +2722,16 @@ sub harness_fix ( $job, $config, $args ) {
                 my %next = @manual ? harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE }, $todo, 'It changed no file.' ) : ();
                 return $job->finish( { %done, no_change => 1, %next } );
             }
-            my $what   = join "\n", 'The update of the harness standards, run by the bot.', q{}, @changes;
-            my %env    = prerequisites_env( $job, $config, $tree );
-            my @commit = ( q{-C}, "$tree", qw{commit --quiet -m}, "$HARNESS_TITLE\n\n$what" );
+            my %env = prerequisites_env( $job, $config, $tree );
             local @ENV{ keys %env } = values %env;
+            my ( $tidy_profile, @tidied ) = tidied( $job, $tree, $results );
+            if (@tidied) {
+                $spoke->git( q{-C}, "$tree", qw{add -A} );
+                push @changes, "- perltidy: tidy, with the new `$tidy_profile`, " . files_named(@tidied);
+                $done{tidied} = \@tidied;
+            }
+            my $what    = join "\n", 'The update of the harness standards, run by the bot.', q{}, @changes;
+            my @commit  = ( q{-C}, "$tree", qw{commit --quiet -m}, "$HARNESS_TITLE\n\n$what" );
             my @flagged = critic_flagged( $job, $spoke, $tree, $results );
             $done{critic} = \@flagged if @flagged;
             my @todo = ( @manual, @flagged );
@@ -2790,12 +2800,50 @@ sub critic_flagged ( $job, $spoke, $tree, $results ) {
         log_note( $job, "could not run perlcritic with the new $profile: " . ( split m{\n}, $@ )[0] );
         return;
     }
-    return map {
-        my @files = @{ $new->{$_} };
-        my @shown = map { "`$_`" } @files[ 0 .. List::Util::min( $#files, $CRITIC_FILES - 1 ) ];
-        my $more  = @files > @shown ? ', and ' . ( @files - @shown ) . ' more' : q{};
-        "- `CriticProfile`: with the new `$profile`, perlcritic finds `$_` broken in " . join( ', ', @shown ) . $more;
-    } sort keys %$new;
+    return map { "- `CriticProfile`: with the new `$profile`, perlcritic finds `$_` broken in " . files_named( @{ $new->{$_} } ) } sort keys %$new;
+}
+
+=func files_named
+
+C<(@files)>.  The files, each quoted as code and joined by commas, for a line of
+a comment or a pull request of L</harness_fix>.  Past C<$CRITIC_FILES> of
+them, it says how many more there are.
+
+=cut
+
+sub files_named (@files) {
+    my @shown = map { "`$_`" } @files[ 0 .. List::Util::min( $#files, $CRITIC_FILES - 1 ) ];
+    my $more  = @files > @shown ? ', and ' . ( @files - @shown ) . ' more' : q{};
+    return join( ', ', @shown ) . $more;
+}
+
+=func tidied
+
+C<($job, $tree, $results)>, with C<$results> what
+L<App::Clod::Harness/update> returned for the checkout C<$tree>.  When the
+update wrote a F<.perltidyrc>, as a change of any check, the path of that
+profile, then the Perl files that L<App::Clod::Harness/tidy> changed with it.
+Nothing when the update did not write one.  A new tidy profile leaves every
+file that it does not like for the first commit that touches the file, which
+then holds a reformat around its change.  So the update tidies them all at
+once.  It runs perltidy with the C<PATH> of the caller, which L</harness_fix>
+sets from L</prerequisites_env>, as for the hooks.  When perltidy fails, the
+job notes why, and there is nothing.
+
+=cut
+
+sub tidied ( $job, $tree, $results ) {
+    my ($profile) = grep { Mojo::File->new($_)->basename eq '.perltidyrc' } map {
+        map { $_->{path} }
+          @{ $_->{changes} }
+    } @$results;
+    return if !defined $profile;
+    my @tidied = eval { App::Clod::Harness::tidy( $tree, $profile ) };
+    if ($@) {
+        log_note( $job, "could not run perltidy with the new $profile: " . ( split m{\n}, $@ )[0] );
+        return;
+    }
+    return @tidied ? ( $profile, @tidied ) : ();
 }
 
 =func harness_run

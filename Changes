@@ -1,6 +1,10 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - When the update of `harness_fix` writes a `.perltidyrc`, it tidies every
+      Perl file of the spoke with it, in the same commit.  A file that the
+      new profile did not like used to wait for the first commit that
+      touched it, which then held a reformat around its change.
     - Let `harness_fix` find what a change of the critic profile breaks.
       An update that appends policies to `.perlcriticrc` and stages no
       Perl file got through the hooks of the spoke, which ran perlcritic
