@@ -15,6 +15,10 @@ Revision history for App-Clod
       lib that holds the policies of the standards, so a commit that
       staged Perl failed on a policy that was not installed rather than
       on the code.
+    - `harness_fix` takes the open harness issue of the bot, if there is one,
+      and comments on it with the checks that fail now.  It used to file a
+      new issue on every press of Fix, so a pull request that was closed
+      without a merge left its issue open beside the new one.
     - Require Dist::Conformance 0.004.  The flavor of the standards now names
       its check RefusedIniKeys, which 0.003 does not have, so with 0.003 the
       harness scan and the harness update stopped for every spoke.

@@ -1337,6 +1337,23 @@ subtest harness_fix => sub {
     is( [ @{ calls_of('issue') }, @{ calls_of('pull') } ], [],                                                                                  'and files nothing' );
     delete $state{open_pulls};
 
+    # The pull request of an earlier fix was closed without a merge, which leaves its issue open.
+    @calls                         = ();
+    $state{issue_queries}          = [];
+    $state{issues}{'Test-Org/two'} = [
+        { number => 12, title => 'Meet the harness standards', user => { login => 'someone' }, html_url => 'https://test.test/issues/12' },
+        { number => 13, title => 'Meet the harness standards', user => { login => $BOT },      html_url => 'https://test.test/pull/13', pull_request => {} },
+        { number => 11, title => 'Meet the harness standards', user => { login => $BOT },      html_url => 'https://test.test/issues/11' },
+    ];
+    my $reused = run_job( harness_fix => $args );
+    is( $reused->{state},                                              'finished',                    'with the issue of an earlier fix open, a fix finishes' ) or diag Mojo::Util::dumper $reused->{result};
+    is( calls_of('issue'),                                             [],                            'and files no second issue' );
+    is( $reused->{result}{issue_url},                                  'https://test.test/issues/11', 'but takes the open issue of the bot, and not that of another user or a pull request' );
+    is( [ map { @$_{qw{creator state}} } @{ $state{issue_queries} } ], [ $BOT, 'open' ],              'which it asks GitHub for by its creator' );
+    like( calls_of('comment')->[0], [ 'comment', qr{/issues/11/comments\z}, { body => qr/`GitHooks`:\ there\ is\ no\ git-hooks\/pre-commit/ } ], 'says on it what fails now' );
+    like( calls_of('pull')->[0][2]{body}, qr/Closes\ \#11/, 'and its pull request closes that issue' );
+    delete $state{issues};
+
     # The login of the dashboard need not be one of GitHub, nor authorized.
     $app->clod_config->{authorized_users} = [qw{trusted other}];
     is( [ App::Clod::Tasks::reviewers( $app->clod_config, 'other' ) ],           ['other'],           'a pull request goes to an authorized user who asked' );

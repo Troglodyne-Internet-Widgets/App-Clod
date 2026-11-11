@@ -2616,7 +2616,10 @@ the commit goes through, there is no run.
 
 If the bot already has such a pull request open, the job does nothing, so a
 second press of the button cannot make a second one.  The issue is in the
-notes of the job, so a retry does not file it again.
+notes of the job, so a retry does not file it again.  If the bot already has
+such an issue open, for example because its pull request was closed without a
+merge, the job takes that issue and comments on it with the checks that fail
+now, and files no second one.
 
 =cut
 
@@ -2662,6 +2665,18 @@ sub open_harness_pull ( $config, $gh, $repo ) {
     return $open;
 }
 
+=func open_harness_issue
+
+C<($config, $gh, $repo)>.  The open issue of the bot in C<$repo> that a
+L</harness_fix> filed, or undef.
+
+=cut
+
+sub open_harness_issue ( $config, $gh, $repo ) {
+    my ($open) = grep { $_->{title} eq $HARNESS_TITLE && ( $_->{user}{login} // q{} ) eq $config->{bot} } @{ $gh->open_issues_by( $repo, $config->{bot} ) };
+    return $open;
+}
+
 sub harness_fix ( $job, $config, $args ) {
     my $repo = $args->{repo};
     my $gh   = github($config);
@@ -2670,7 +2685,9 @@ sub harness_fix ( $job, $config, $args ) {
 
     my @failing = map { "- `$_->{check}`: " . ( $_->{detail} // q{} ) } @{ $args->{checks} // [] };
     my $issue   = $job->info->{notes}{issue} // do {
-        my $made = $gh->create_issue( $repo, { title => $HARNESS_TITLE, body => join( "\n", 'The harness scan finds that this repository fails these checks:', q{}, @failing, q{}, 'Asked for on the dashboard of the bot.' ), assignees => [ reviewers( $config, $args->{by} ) ] } );
+        my $found = open_harness_issue( $config, $gh, $repo );
+        $gh->comment( $repo, $found->{number}, join( "\n", 'Asked for again on the dashboard of the bot.  The harness scan now finds that this repository fails these checks:', q{}, @failing ) ) if $found;
+        my $made = $found // $gh->create_issue( $repo, { title => $HARNESS_TITLE, body => join( "\n", 'The harness scan finds that this repository fails these checks:', q{}, @failing, q{}, 'Asked for on the dashboard of the bot.' ), assignees => [ reviewers( $config, $args->{by} ) ] } );
         my %made = ( number => $made->{number}, url => $made->{html_url} );
         $job->note( issue => \%made );
         \%made;
