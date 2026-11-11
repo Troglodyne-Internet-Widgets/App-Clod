@@ -183,6 +183,30 @@ sub violations ( $tree, @args ) {
     return split m{\n}, App::Clod::Deps::run( { dir => "$tree", exits => [ 0, 2 ] }, @PERLCRITIC, '--quiet', '--verbose', '%p\t%f\t%l\t%c\n', @args );
 }
 
+=func tidy
+
+C<($tree, $profile)>, a checkout and the path of its tidy profile.  Runs
+C<@PERLTIDY> with that profile over the Perl files of the directories of
+C<@SOURCES> of the checkout, as L</new_violations> finds them, and rewrites
+each in place.  Returns the files that it changed, relative to the checkout
+and sorted.  It finds perltidy on the C<PATH> of the caller.  Dies as
+L<App::Clod::Deps/run> does when perltidy fails.
+
+=cut
+
+our @PERLTIDY = ('perltidy');
+
+sub tidy ( $tree, $profile ) {
+    my @files = map { Mojo::File->new($_)->to_rel("$tree")->to_string } Perl::Critic::Utils::all_perl_files( grep { -d } map { "$tree/$_" } @SOURCES );
+    return if !@files;
+    my %before = map { $_ => Mojo::File->new("$tree/$_")->slurp } @files;
+
+    # -bext=/ keeps no backup once a file is written.
+    App::Clod::Deps::run( { dir => "$tree", exits => [ 0, 2 ] }, @PERLTIDY, "--profile=$profile", '-b', '-bext=/', @files );
+    my @changed = sort grep { Mojo::File->new("$tree/$_")->slurp ne $before{$_} } @files;
+    return @changed;
+}
+
 =func critic_profiles
 
 C<($settings, %options)>, as L</standards> takes them.  The texts of the critic
