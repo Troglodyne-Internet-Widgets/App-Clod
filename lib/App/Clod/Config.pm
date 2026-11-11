@@ -384,9 +384,10 @@ standards, Perl::Tidy, Devel::NYTProf, and Dist::Zilla::App::Command::podchecker
 for C<dzil podchecker>.  Default none.  With one, every
 claude run gets it first on C<PERL5LIB> and its F<bin> first on C<PATH>, so
 perlcritic in a spoke, and in its hooks, finds the policies that the
-standards name.  C<clod deps install> fills it, and the dashboard installs
-what it lacks and upgrades what has a newer release, with no sudo and no
-provision.
+standards name.  L<App::Clod::Tasks/harness_fix> commits with it on
+C<PERL5LIB> and C<PATH> too, after those of the worker.  C<clod deps install>
+fills it, and the dashboard installs what it lacks and upgrades what has a
+newer release, with no sudo and no provision.
 
 The service user owns it, and the account of C<run_as> must be able to read
 it and not to change it.  The clod recipe of trog-provisioner makes it so,

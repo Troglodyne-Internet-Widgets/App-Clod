@@ -3,16 +3,27 @@ package App::Clod::Harness;
 # ABSTRACT: Whether a spoke conforms to its standards, and whether the marketplace pins the plugin
 
 use 5.040;
+no autovivification;
 use warnings FATAL => 'all';
 use re '/aasx';
 
+use Mojo::File();
 use Mojo::JSON();
+use Perl::Critic::Utils();
 use version ();
+
+use App::Clod::Deps();
 
 use Dist::Conformance();
 use Dist::Conformance::Config();
 use Dist::Conformance::Snapshot::Directory();
 use Dist::Conformance::Snapshot::Tree();
+
+# perlcritic, found on the PATH, and the directories of a spoke that it reads.
+# A program and not Perl::Critic, because the policies are in the libs of the
+# agent, which the worker must not load over the modules that it runs on.
+our @PERLCRITIC = ('perlcritic');
+our @SOURCES    = qw{lib bin script t};
 
 =func default_config
 
@@ -126,6 +137,50 @@ sub update ( $tree, $settings, %options ) {
     my $conformance = conformance( Dist::Conformance::Snapshot::Directory->new( root => "$tree" ), $settings, %options );
     $conformance->root("$tree");
     return $conformance->update;
+}
+
+=func new_violations
+
+C<($tree, $profile, $old)>: a checkout, the path in it of the critic profile
+that the update changed, and the text of that profile before the update, or
+undef when there was none.  What perlcritic, with the profile, reports in the
+Perl files of the directories of C<@SOURCES> of the checkout, and did not
+report there with the old one, or with none at all when C<$old> is undef.
+Only the profile differs between the two runs, so a violation that the code
+had already is in both, and only what the change of the profile brings
+remains.  A hash reference from the name of each policy, as perlcritic names
+it, to the files that break it, sorted.
+
+It runs C<@PERLCRITIC> in C<$tree>, as a hook of the spoke runs it, so it
+finds the policies on the C<PERL5LIB> of the caller, and the paths in a
+profile are of the checkout.  Dies as L<App::Clod::Deps/run> does when
+perlcritic fails, for example over a policy that is not installed.
+
+=cut
+
+sub new_violations ( $tree, $profile, $old ) {
+    my @files = map { Mojo::File->new($_)->to_rel("$tree")->to_string } Perl::Critic::Utils::all_perl_files( grep { -d } map { "$tree/$_" } @SOURCES );
+    return {} if !@files;
+    my $before = defined $old ? Mojo::File::tempfile()->spew($old) : undef;
+    my %before = map { $_ => 1 } violations( $tree, ( defined $before ? ( '--profile', "$before" ) : '--noprofile' ), @files );
+    my %by;
+    for my $violation ( grep { !$before{$_} } violations( $tree, '--profile', $profile, @files ) ) {
+        my ( $policy, $file ) = split m{\t}, $violation;
+        $by{$policy}{$file} = 1;
+    }
+    return { map { $_ => [ sort keys %{ $by{$_} } ] } keys %by };
+}
+
+=func violations
+
+C<($tree, @args)>.  Each violation that C<@PERLCRITIC> with C<@args> reports
+in C<$tree>, as a line of the policy, the file, the line and the column,
+separated by tabs.
+
+=cut
+
+sub violations ( $tree, @args ) {
+    return split m{\n}, App::Clod::Deps::run( { dir => "$tree", exits => [ 0, 2 ] }, @PERLCRITIC, '--quiet', '--verbose', '%p\t%f\t%l\t%c\n', @args );
 }
 
 =func critic_profiles

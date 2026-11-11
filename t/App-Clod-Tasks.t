@@ -1379,13 +1379,13 @@ subtest harness_fix => sub {
             return $self->$git(@args);
         }
     );
-    $app->clod_config->{agent_own_lib} = '/bogus/own-lib';
+    @{ $app->clod_config }{qw{agent_lib agent_own_lib}} = qw{/bogus/agent-lib /bogus/own-lib};
     my $bot_lib = $ENV{PERL5LIB} // q{};
     @calls = ();
     my $installed = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
     is( $installed->{state}, 'finished', 'a fix in a spoke that needs modules finishes' ) or diag Mojo::Util::dumper $installed->{result};
     like( \@asked, [ [ '/bogus/own-lib', qr{/Test-Org/one\z} ] ], 'after it installs what the spoke needs into the own lib of the agent' );
-    is( \@committed_with, [ join q{:}, grep { $_ ne q{} } $bot_lib, '/bogus/own-lib/lib/perl5' ], 'and commits with that lib after the lib of the bot, so the hooks of the spoke find them' );
+    is( \@committed_with, [ join q{:}, grep { $_ ne q{} } $bot_lib, '/bogus/agent-lib/lib/perl5', '/bogus/own-lib/lib/perl5' ], 'and commits with the lib of the agent and then that lib after the lib of the bot, so the hooks of the spoke find the policies and the modules' );
     like( $installed->{notes}{log}, [ { message => qr/installed\ Plack::MIME\ into\ the\ own\ lib/ } ], 'and notes what it installed' );
 
     ( @asked, @committed_with ) = ();
@@ -1395,7 +1395,7 @@ subtest harness_fix => sub {
     like( $failed->{notes}{log}, [ { message => qr/could\ not\ install\ .*cpm:\ no\ such\ module/ } ], 'and the job notes why' );
     $deps->unmock_all;
     $spoke->unmock_all;
-    delete $app->clod_config->{agent_own_lib};
+    delete @{ $app->clod_config }{qw{agent_lib agent_own_lib}};
 
     # The update of the standards above leaves something for a person each time.
     $minion->reset( { all => 1 } );
@@ -1422,12 +1422,15 @@ subtest harness_fix => sub {
     ok( !exists $fixer->{args}[0]{patch}, 'and gets no patch, as nothing changed' );
 
     # A change with nothing left for a person needs no claude run.
-    $harness->redefine( update => sub ( $tree, @ ) { Mojo::File->new( $tree, 'README.md' )->spew("# A spoke\n"); return [ { check => 'Readme', changes => [ { action => 'write', path => 'README.md' } ], manual => [] } ] } );
+    my $swept = 0;
+    $harness->redefine( new_violations => sub (@args) { $swept++;                                                        return $harness->original('new_violations')->(@args) } );
+    $harness->redefine( update         => sub ( $tree, @ ) { Mojo::File->new( $tree, 'README.md' )->spew("# A spoke\n"); return [ { check => 'Readme', changes => [ { action => 'write', path => 'README.md' } ], manual => [] } ] } );
     @calls = ();
     my $done = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
     is( [ $done->{state}, $done->{result}{next} ], [ 'finished', undef ], 'with nothing left for a person, a harness fix queues no claude run' ) or diag Mojo::Util::dumper $done->{result};
     like( calls_of('pull')->[0][2]{body}, qr/Nothing\ is\ left\ for\ a\ person\.\n\nCloses/, 'and its pull request names none' );
     is( $minion->jobs( { tasks => [qw{spoke_fix spoke_address}] } )->total, 1, 'so the one claude run is the one for the update that changed nothing' );
+    is( $swept,                                                             0, 'and with no change of the critic profile, it runs no perlcritic' );
 
     # Something left for a person after the commit goes to a claude run on the pull request.
     my $policy = "[Test::Policy]\n";
@@ -1488,6 +1491,70 @@ subtest harness_fix => sub {
     is( eval { git( '--git-dir', $bare_one, 'show', ( $taken->{result}{branch} // 'none' ) . ':.perlcriticrc' ) } // q{}, '[Test::Policy]',             'and commits the update, through the hooks, with its fix' );
     is( calls_of('pull')->[0][2]{title},                                                                                  'Meet the harness standards', 'and its pull request has the title of a harness fix, so a second press finds it' );
     $hooks->child('pre-commit')->remove;
+
+    # A change of the critic profile that the code breaks goes to a claude run,
+    # though the hooks let the commit through.  The default branch has a
+    # profile, with a policy that the code breaks already.
+    my $seed = $tmp->child(qw{seed Test-Org one});
+    my @as_t = qw{-c user.name=t -c user.email=t@test.test};
+
+    # Both of severity 2, so perlcritic with no profile reports neither.
+    my $magic   = 'ValuesAndExpressions::ProhibitMagicNumbers';
+    my $postfix = 'ControlStructures::ProhibitPostfixControls';
+    my $profile = sub (@policies) {
+        return join q{}, "severity = 1\nonly = 1\n", map { "[$_]\n" } @policies;
+    };
+    git( q{-C}, "$seed", qw{pull --quiet --ff-only}, $bare_one, 'main' );
+    my $seed_lib = $seed->child('lib')->make_path;
+    $seed_lib->child('Spoke.pm')->spew(qq{package Spoke;\nmy \$x = 42;\nprint 'yes' if \$x;\n1;\n});
+    $seed->child('.perlcriticrc')->spew( $profile->($magic) );
+    git( q{-C}, "$seed", qw{add .} );
+    git( q{-C}, "$seed", @as_t,            qw{commit --quiet -m}, 'A profile and code' );
+    git( q{-C}, "$seed", qw{push --quiet}, $bare_one,             'main' );
+    my $critic_update = sub (@policies) {
+        return sub ( $tree, @ ) {
+            Mojo::File->new( $tree, '.perlcriticrc' )->spew( $profile->(@policies) );
+            return [ { check => 'CriticProfile', changes => [ { action => 'append', path => '.perlcriticrc' } ], manual => [] } ];
+        };
+    };
+    $harness->redefine( update => $critic_update->( $magic, $postfix ) );
+    @calls = ();
+    my $critic = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( $critic->{state}, 'finished', 'a harness fix that changes the critic profile finishes' ) or diag Mojo::Util::dumper $critic->{result};
+    my $with   = qr/`CriticProfile`:\ with\ the\ new\ `\.perlcriticrc`,/;
+    my $finds  = qr/perlcritic\ finds\ `\Q$postfix\E`\ broken/;
+    my $broken = qr/$with\ $finds\ in\ `lib\/Spoke\.pm`/;
+    like( $critic->{result}{critic}, [$broken], 'and names each policy that the new profile finds broken, with the files' );
+    is( [ grep { m/\Q$magic\E/ } @{ $critic->{result}{critic} } ], [], 'but not one that the code broke under the old profile' );
+    like( calls_of('pull')->[0][2]{body}, qr/Left\ for\ a\ person: .* $broken .* $claude_does/s, 'and its pull request says that a claude run does it' );
+    my $critic_run = $minion->job( $critic->{result}{next}{id} )->info;
+    like( $critic_run, { task => 'spoke_address', args => [ { resume => 1, item => { number => $critic->{result}{pr}, is_pr => 1 }, instructions => qr/$broken .* perlcritic\ --profile/s } ] }, 'a spoke_address of that pull request is told what perlcritic finds' );
+    is( $swept, 1, 'after one perlcritic run of each profile' );
+
+    $harness->redefine( update => $critic_update->( $magic, 'ControlStructures::ProhibitUnlessBlocks' ) );
+    @calls = ();
+    my $clean = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( [ $clean->{state}, @{ $clean->{result} }{qw{next critic}} ], [ 'finished', undef, undef ], 'a change of the profile that the code breaks no more than before queues no claude run' ) or diag Mojo::Util::dumper $clean->{result};
+    like( calls_of('pull')->[0][2]{body}, qr/Nothing\ is\ left\ for\ a\ person\./, 'and its pull request leaves nothing' );
+
+    $harness->redefine( update => $critic_update->('Test::NoSuchPolicy') );
+    my $unrun = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( [ $unrun->{state}, $unrun->{result}{next} ], [ 'finished', undef ], 'a profile that perlcritic cannot run with still lets the fix finish' ) or diag Mojo::Util::dumper $unrun->{result};
+    like( $unrun->{notes}{log}, [ { message => qr/could\ not\ run\ perlcritic\ with\ the\ new\ \.perlcriticrc/ } ], 'and the job notes why' );
+
+    $harness->redefine( update => $critic_update->( $magic, $postfix ) );
+    $harness->redefine(
+        new_violations => sub (@) {
+            return { 'Test::Many' => [ map { "lib/F$_.pm" } 1 .. 12 ] };
+        }
+    );
+    my $many = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    like( $many->{result}{critic}, [qr/`lib\/F10\.pm`,\ and\ 2\ more\z/], 'a policy that many files break names the first ten, and how many more' ) or diag Mojo::Util::dumper $many->{result};
+    $harness->unmock('new_violations');
+
+    git( q{-C}, "$seed", qw{rm --quiet -r lib .perlcriticrc} );
+    git( q{-C}, "$seed", @as_t,            qw{commit --quiet -m}, 'No profile and no code' );
+    git( q{-C}, "$seed", qw{push --quiet}, $bare_one,             'main' );
     $harness->unmock_all;
     $minion->reset( { all => 1 } );
 };

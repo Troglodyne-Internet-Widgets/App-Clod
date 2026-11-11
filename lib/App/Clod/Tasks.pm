@@ -2581,7 +2581,16 @@ person.  If the update changes nothing, it says so on the issue.
 The update itself needs no claude run.  What it leaves for a person, its
 C<manual> results, are mostly critic and tidy standards that the code does
 not meet yet, and a claude run does them, with instructions from
-F<share/prompts/harness.md>, which L</harness_run> queues:
+F<share/prompts/harness.md>, which L</harness_run> queues.
+
+The update can also change the critic profile of the spoke and add a policy
+that the code breaks.  When it stages no Perl file, the hooks run perlcritic
+on nothing and let the commit through, and nothing says so until a later
+commit touches that code.  So before the commit, L</critic_flagged> runs
+perlcritic over the code with the new profile and with the old one, and each
+policy that only the new one finds broken, with the files that break it, is
+left for a person too, and in the result as C<critic>.  One claude run gets
+both:
 
 =over 4
 
@@ -2621,22 +2630,26 @@ my $LEFT_TO_CLAUDE = 'A claude run of the bot now works on what is left for a pe
 
 C<($job, $config, $tree)>.  Installs what the spoke in C<$tree> needs into
 C<agent_own_lib>, as L<App::Clod::Deps/install_needed> does, and returns the
-C<PERL5LIB> and C<PATH> that the hooks of the spoke need, with that lib after
-those of the worker.  So a commit of the bot runs the tests of a spoke whose
-modules the bot does not have.  The job notes what it installed, and an
-install that fails, and then the hooks run with what there is.  With no
-C<agent_own_lib>, it installs nothing and returns nothing.
+C<PERL5LIB> and C<PATH> that the hooks of the spoke need: those of the worker,
+then C<agent_lib>, then C<agent_own_lib>.  So a commit of the bot runs the
+tests of a spoke whose modules the bot does not have, and its perlcritic finds
+the policies that the standards name, as in a claude run.  The job notes what
+it installed, and an install that fails, and then the hooks run with what
+there is.  With neither lib, it installs nothing and returns nothing.
 
 =cut
 
 sub prerequisites_env ( $job, $config, $tree ) {
-    my $own       = $config->{agent_own_lib} // return;
-    my @installed = eval { App::Clod::Deps::install_needed( $own, $tree ) };
-    log_note( $job, 'could not install the prerequisites of the spoke into the own lib of the agent: ' . ( split m{\n}, $@ )[0] ) if $@;
-    log_note( $job, "installed @installed into the own lib of the agent" )                                                        if @installed;
+    my @libs = grep { defined } @$config{qw{agent_lib agent_own_lib}};
+    return if !@libs;
+    if ( defined( my $own = $config->{agent_own_lib} ) ) {
+        my @installed = eval { App::Clod::Deps::install_needed( $own, $tree ) };
+        log_note( $job, 'could not install the prerequisites of the spoke into the own lib of the agent: ' . ( split m{\n}, $@ )[0] ) if $@;
+        log_note( $job, "installed @installed into the own lib of the agent" )                                                        if @installed;
+    }
     return (
-        PERL5LIB => join( q{:}, grep { $_ ne q{} } $ENV{PERL5LIB} // q{}, "$own/lib/perl5" ),
-        PATH     => join( q{:}, grep { $_ ne q{} } $ENV{PATH}     // q{}, "$own/bin" ),
+        PERL5LIB => join( q{:}, grep { $_ ne q{} } $ENV{PERL5LIB} // q{}, map { "$_/lib/perl5" } @libs ),
+        PATH     => join( q{:}, grep { $_ ne q{} } $ENV{PATH}     // q{}, map { "$_/bin" } @libs ),
     );
 }
 
@@ -2696,13 +2709,12 @@ sub harness_fix ( $job, $config, $args ) {
                 my $check = $_->{check};
                 map { "- `$check`: $_" } @{ $_->{manual} }
             } @$results;
-            my $todo = join "\n", @manual;
-            my $left = @manual ? join( "\n", 'Left for a person:', q{}, $todo ) : 'Nothing is left for a person.';
 
             $spoke->git( q{-C}, "$tree", qw{add -A} );
             my %done = ( repo => $repo, issue_url => $issue->{url}, changes => \@changes, manual => \@manual );
             if ( $spoke->git( q{-C}, "$tree", qw{status --porcelain} ) eq q{} ) {
-                $gh->comment( $repo, $issue->{number}, join "\n\n", 'The update of the harness changes no file here.', $left, @manual ? $LEFT_TO_CLAUDE : () );
+                my $todo = join "\n", @manual;
+                $gh->comment( $repo, $issue->{number}, join "\n\n", 'The update of the harness changes no file here.', harness_left(@manual), @manual ? $LEFT_TO_CLAUDE : () );
                 my %next = @manual ? harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE }, $todo, 'It changed no file.' ) : ();
                 return $job->finish( { %done, no_change => 1, %next } );
             }
@@ -2710,24 +2722,80 @@ sub harness_fix ( $job, $config, $args ) {
             my %env    = prerequisites_env( $job, $config, $tree );
             my @commit = ( q{-C}, "$tree", qw{commit --quiet -m}, "$HARNESS_TITLE\n\n$what" );
             local @ENV{ keys %env } = values %env;
+            my @flagged = critic_flagged( $job, $spoke, $tree, $results );
+            $done{critic} = \@flagged if @flagged;
+            my @todo = ( @manual, @flagged );
+            my $todo = join "\n", @todo;
+            my $left = harness_left(@todo);
+
             if ( !eval { $spoke->git(@commit); 1 } ) {
                 my $said  = "git @commit: ";
                 my $hook  = substr( $@, index( $@, $said ) == 0 ? length $said : 0 ) =~ s{\s+\z}{}r;
                 my $patch = $spoke->git( q{-C}, "$tree", qw{diff --cached --binary} );
                 log_note( $job, 'the hooks of the spoke refused the commit of the update' );
                 $gh->comment( $repo, $issue->{number}, join "\n\n", "The hooks of this repository refused the commit of the update of the harness:\n\n```\n$hook\n```", $left, 'A claude run of the bot takes the update on, makes the code pass the hooks, and opens a pull request.' );
-                my %next = harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE, patch => "$patch\n" }, @manual ? $todo : 'Nothing more than what the hook refused.', prompt( 'harness-refused', hook => $hook ) );
+                my %next = harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE, patch => "$patch\n" }, @todo ? $todo : 'Nothing more than what the hook refused.', prompt( 'harness-refused', hook => $hook ) );
                 return $job->finish( { %done, refused => $hook, %next } );
             }
             $spoke->push_branch( $tree, $branch );
-            my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, @manual ? $LEFT_TO_CLAUDE : (), "Closes #$issue->{number}" ) } );
+            my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, @todo ? $LEFT_TO_CLAUDE : (), "Closes #$issue->{number}" ) } );
             log_note( $job, "opened $pull->{html_url}" );
             assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $args->{by} ) );
             my %pr   = ( branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url} );
-            my %next = @manual ? harness_run( $job, { %$issue_item, number => $pull->{number}, is_pr => 1, kind => 'address_review' }, spoke_address => { resume => 1 }, $todo, 'It committed what it changed on this branch.' ) : ();
+            my %next = @todo ? harness_run( $job, { %$issue_item, number => $pull->{number}, is_pr => 1, kind => 'address_review' }, spoke_address => { resume => 1 }, $todo, 'It committed what it changed on this branch.' ) : ();
             return $job->finish( { %done, %pr, %next } );
         }
     );
+}
+
+=func harness_left
+
+C<(@left)>, the lines of what is left for a person.  The paragraph of a comment
+or a pull request of L</harness_fix> that lists them, or says that nothing is
+left.
+
+=cut
+
+sub harness_left (@left) {
+    return @left ? join( "\n", 'Left for a person:', q{}, @left ) : 'Nothing is left for a person.';
+}
+
+=func critic_flagged
+
+C<($job, $spoke, $tree, $results)>, with C<$results> what
+L<App::Clod::Harness/update> returned for the checkout C<$tree>.  When the
+update changed the critic profile of the spoke, the file of a change of the
+check C<CriticProfile>, a line for what is left for a person for each policy
+that the code breaks with the new profile and did not break with the one of
+C<HEAD>, as L<App::Clod::Harness/new_violations> finds it, with the files
+that break it, at most C<$CRITIC_FILES> of them.  Nothing when the update did
+not change the profile, or the code breaks nothing new.  It runs perlcritic
+with the C<PERL5LIB> and C<PATH> of the caller, which L</harness_fix> sets
+from L</prerequisites_env>, as for the hooks.  When perlcritic fails, the job
+notes why, and there is nothing.
+
+=cut
+
+my $CRITIC_FILES = 10;
+
+sub critic_flagged ( $job, $spoke, $tree, $results ) {
+    my ($profile) = map {
+        map { $_->{path} }
+          @{ $_->{changes} }
+    } grep { $_->{check} eq 'CriticProfile' } @$results;
+    return if !defined $profile;
+    my $old = eval { $spoke->git( q{-C}, "$tree", 'show', "HEAD:$profile" ) };
+    my $new = eval { App::Clod::Harness::new_violations( $tree, $profile, $old ) };
+    if ( !$new ) {
+        log_note( $job, "could not run perlcritic with the new $profile: " . ( split m{\n}, $@ )[0] );
+        return;
+    }
+    return map {
+        my @files = @{ $new->{$_} };
+        my @shown = map { "`$_`" } @files[ 0 .. List::Util::min( $#files, $CRITIC_FILES - 1 ) ];
+        my $more  = @files > @shown ? ', and ' . ( @files - @shown ) . ' more' : q{};
+        "- `CriticProfile`: with the new `$profile`, perlcritic finds `$_` broken in " . join( ', ', @shown ) . $more;
+    } sort keys %$new;
 }
 
 =func harness_run
