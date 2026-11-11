@@ -11,5 +11,6 @@ runtime:
     EV: '4.0'
     # "no autovivification" in the modules; Variables::RequireNoAutovivification asks for it.
     autovivification: '0.18'
-    # Dist::Conformance::Check::SystemPackages arrived in 0.003.
-    Dist::Conformance: '0.003'
+    # The flavor of the standards names Dist::Conformance::Check::RefusedIniKeys,
+    # which arrived in 0.004, beside the update of CriticProfile that appends.
+    Dist::Conformance: '0.004'

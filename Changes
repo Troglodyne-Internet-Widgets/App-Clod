@@ -1,6 +1,9 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Require Dist::Conformance 0.004.  The flavor of the standards now names
+      its check RefusedIniKeys, which 0.003 does not have, so with 0.003 the
+      harness scan and the harness update stopped for every spoke.
     - Give what `harness_fix` leaves for a person to a claude run.  Those
       items are mostly critic and tidy standards that the code does not
       meet yet, such as a policy that the update added.  After the pull
