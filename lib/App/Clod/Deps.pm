@@ -9,6 +9,7 @@ use re '/aasx';
 use Config              ();
 use Config::Tiny        ();
 use IPC::Run            ();
+use List::Util          ();
 use Mojo::File          ();
 use Module::Metadata    ();
 use Mutex::Flock        ();
@@ -191,6 +192,12 @@ Seconds.  A command that runs longer is killed, and fails.
 True to take its standard error into what it printed, so the result, and the
 error it dies with, have both, in the order that it printed them.
 
+=item exits
+
+The exit statuses that are success, a list reference.  Default C<[0]>.  So a
+command whose status says what it found, such as perlcritic, which exits 2
+when it reports a violation, is not taken for one that failed.
+
 =back
 
 =cut
@@ -209,7 +216,9 @@ sub run ( $how, @cmd ) {
       : ();
     my @out  = $how->{merge}   ? ( '>&', \$out )                          : ( '>', \$out, '2>', \$err );
     my @time = $how->{timeout} ? ( IPC::Run::timeout( $how->{timeout} ) ) : ();
-    my $ok   = eval { IPC::Run::run( \@cmd, @init, '<', \undef, @out, @time ) };
+    my $ran  = eval { IPC::Run::run( \@cmd, @init, '<', \undef, @out, @time ); 1 };
+    my $exit = $? >> 8;
+    my $ok   = $ran && List::Util::any { $_ == $exit } @{ $how->{exits} // [0] };
     my $said = $how->{merge} ? $out : $err;
     die "@cmd: " . ( $said ne q{} ? $said : $@ || 'failed' ) . "\n" if !$ok;
     return $out;

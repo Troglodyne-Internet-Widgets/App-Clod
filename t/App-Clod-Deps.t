@@ -155,7 +155,9 @@ subtest run => sub {
     local $ENV{CLOD_TEST_ENV} = 'inherited';
     is( App::Clod::Deps::run( { merge => 1 }, @say, 0 ), "out inherited\nerr\n", 'with merge, the output has its standard error too' );
     like( dies { App::Clod::Deps::run( { merge => 1 }, @say, 3 ) }, qr{:\ out\ inherited\nerr\n}, 'and so does the error when it fails' );
-    is( App::Clod::Deps::run( { env => { PATH => $ENV{PATH} } }, @say, 0 ), "out \n", 'with env, it runs with that environment, and no other' );
+    is( App::Clod::Deps::run( { env   => { PATH => $ENV{PATH} } }, @say, 0 ), "out \n",          'with env, it runs with that environment, and no other' );
+    is( App::Clod::Deps::run( { exits => [ 0, 2 ] },               @say, 2 ), "out inherited\n", 'with exits, a status among them is success' );
+    like( dies { App::Clod::Deps::run( { exits => [ 0, 2 ] }, @say, 1 ) }, qr{\ 1:\ err\n}, 'and one that is not still fails' );
     like( dies { App::Clod::Deps::run( { timeout => 1 }, '/bin/sh', '-c', 'sleep 10' ) }, qr{sleep\ 10:\ .*timeout}i, 'and a command that runs longer than the timeout fails' );
 };
 

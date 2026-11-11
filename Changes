@@ -1,6 +1,14 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Let `harness_fix` find what a change of the critic profile breaks.
+      An update that appends policies to `.perlcriticrc` and stages no
+      Perl file got through the hooks of the spoke, which ran perlcritic
+      on nothing, and nothing was left for a person, so no claude run was
+      queued, and the next commit that touched the code was refused.  Now
+      the job runs perlcritic over the code of the spoke with the new
+      profile and with the old one, and each policy that only the new one
+      finds broken, with the files, goes to the claude run of what is left.
     - Commit the update of `harness_fix` with `agent_lib` on `PERL5LIB`
       and `PATH`, after the libs of the worker and before
       `agent_own_lib`.  The hooks of a spoke ran perlcritic without the

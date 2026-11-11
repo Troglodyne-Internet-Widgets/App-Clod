@@ -32,6 +32,11 @@ sub tree (%files) {
 
 sub snapshot (%files) { return App::Clod::Harness::snapshot( tree(%files) ) }
 
+# A critic profile that turns on @policies and no other.
+sub profile (@policies) {
+    return join q{}, "severity = 1\nonly = 1\n", map { "[$_]\n" } @policies;
+}
+
 sub by_check ($result) {
     return { map { $_->{check} => $_ } @{ $result->{checks} } };
 }
@@ -121,6 +126,28 @@ subtest critic_profiles => sub {
     my @profiles = App::Clod::Harness::critic_profiles( \%settings );
     is( scalar @profiles, 1, 'the standards have one critic profile' );
     like( $profiles[0], qr/^\[ProhibitPipeOpen\]$/m, 'and it is the one of their templates' );
+};
+
+subtest new_violations => sub {
+    my $tmp  = File::Temp->newdir;
+    my $tree = Mojo::File->new( $tmp->dirname )->child('spoke')->make_path;
+    is( App::Clod::Harness::new_violations( $tree, '.perlcriticrc', undef ), {}, 'a checkout with no Perl has no violations, and runs no perlcritic' );
+
+    # Policies of Perl::Critic itself, which every perlcritic has.
+    my $bareword = 'InputOutput::ProhibitBarewordFileHandles';
+    my $magic    = 'ValuesAndExpressions::ProhibitMagicNumbers';
+    my $unless   = 'ControlStructures::ProhibitUnlessBlocks';
+    my ( $lib, $t ) = map { $tree->child($_)->make_path } qw{lib t};
+    $lib->child('Spoke.pm')->spew(qq{package Spoke;\nopen FH, '<', 'x';\nmy \$x = 42;\n1;\n});
+    $t->child('spoke.t')->spew(qq{my \$y = 42;\n});
+    $tree->child('README.md')->spew(qq{my \$z = 42;\n});
+    $tree->child('.perlcriticrc')->spew( profile( $bareword, $magic ) );
+
+    is( App::Clod::Harness::new_violations( $tree, '.perlcriticrc', profile($bareword) ),                    { $magic => [ 'lib/Spoke.pm', 't/spoke.t' ] }, 'a policy that the profile adds counts in each Perl file that breaks it, and one that it had already does not' );
+    is( App::Clod::Harness::new_violations( $tree, '.perlcriticrc', profile( $bareword, $magic, $unless ) ), {},                                            'with no policy that the code breaks more than before, there are none' );
+    is( App::Clod::Harness::new_violations( $tree, '.perlcriticrc', undef ),                                 { $magic => [ 'lib/Spoke.pm', 't/spoke.t' ] }, 'with no profile before, perlcritic with none, at its default severity, is what the code had' );
+    $tree->child('.perlcriticrc')->spew( profile('Test::NoSuchPolicy') );
+    like( dies { App::Clod::Harness::new_violations( $tree, '.perlcriticrc', undef ) }, qr/perlcritic/, 'a profile that perlcritic cannot run dies' );
 };
 
 subtest marketplace_check => sub {
