@@ -438,6 +438,17 @@ sub assigned_issues ( $self, $repo, $login ) {
     return $self->paginate( "/repos/$repo/issues", query => { assignee => $login, state => 'open' } );
 }
 
+=method open_issues_by
+
+C<($repo, $login)>.  The open issues that C<$login> opened, without the pull
+requests that the same list of GitHub holds.
+
+=cut
+
+sub open_issues_by ( $self, $repo, $login ) {
+    return [ grep { !$_->{pull_request} } @{ $self->paginate( "/repos/$repo/issues", query => { creator => $login, state => 'open' } ) } ];
+}
+
 =method search_issues
 
 C<($query)>.  The issues and pull requests that the search C<$query> finds,
