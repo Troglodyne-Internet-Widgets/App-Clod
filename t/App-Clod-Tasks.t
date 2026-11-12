@@ -103,7 +103,9 @@ $r->post('/repos/:o/:n/pulls')->to(
 $r->get('/repos/:o/:n/contents/*file')->to(
     cb => sub ($c) {
         push @{ $state{refs}{ $c->param('file') } }, $c->param('ref');
-        my $f = $state{files}{ $c->param('file') };
+        my $repo = $c->param('o') . q{/} . $c->param('n');
+        return $c->render( json => { message => 'API rate limit exceeded' }, status => 403 ) if $state{files_fail}{$repo};
+        my $f = ( $state{repo_files}{$repo} // {} )->{ $c->param('file') } // $state{files}{ $c->param('file') };
         defined $f ? $c->render( text => $f ) : $c->render( json => {}, status => 404 );
     }
 );
@@ -193,6 +195,26 @@ $r->post('/graphql')->to(
         $c->render( json => { data => {} } );
     }
 );
+
+# A comparison of a tag with the default branch: the commits after the tag that
+# $state{after_tag} lists for the repository, or 404 for a tag that it does not.
+$r->get('/repos/:o/:n/compare/*range')->to(
+    cb => sub ($c) {
+        my ( $base, $head ) = split m{\.\.\.}, $c->param('range');
+        my $after = $state{after_tag}{ $c->param('o') . q{/} . $c->param('n') }{$base};
+        return $c->render( json => { message => 'Not Found' }, status => 404 ) if !$after || $head ne 'main';
+        $c->render( json => { ahead_by => scalar @$after, commits => [ map { { sha => "sha-$_", html_url => "https://test.test/commit/$_", commit => { message => "$_\n\nThe body." } } } @$after ] } );
+    }
+);
+
+# MetaCPAN, under /metacpan: the versions in $state{cpan} for each distribution.
+$r->get('/metacpan/release/versions/:dist')->to(
+    cb => sub ($c) {
+        my $dist = $c->param('dist');
+        return $c->render( json => { message => 'Internal Server Error' }, status => 500 ) if $state{cpan_fail}{$dist};
+        $c->render( json => { releases => [ map { { version => $_ } } @{ $state{cpan}{$dist} // [] } ] } );
+    }
+);
 $r->get('/comment')->to( cb => sub ($c) { $c->render( json => { user => { login => $state{commenter} } } ) } );
 
 my $fake_ua = Mojo::UserAgent->new;
@@ -200,6 +222,8 @@ $fake_ua->server->app($fake);
 my $api    = $fake_ua->server->url->to_string =~ s{/\z}{}r;
 my $github = Test::MockModule->new('App::Clod::GitHub');
 $github->redefine( new => sub ( $class, %args ) { $github->original("new")->( $class, %args, api => $api, token => "test-token", ua => $fake_ua ) } );
+my $metacpan = Test::MockModule->new('App::Clod::MetaCPAN');
+$metacpan->redefine( new => sub ( $class, %args ) { $metacpan->original("new")->( $class, %args, api => "$api/metacpan", ua => $fake_ua ) } );
 
 my $conf = $tmp->child('clod.conf');
 $conf->spew(
@@ -2288,6 +2312,76 @@ subtest upstream_sweep => sub {
 
     @{$config}{ keys %saved } = values %saved;
     delete $config->{spoke_orgs} if !defined $saved{spoke_orgs};
+    %state = ();
+    $minion->reset( { all => 1 } );
+};
+
+subtest release_sweep => sub {
+    %state = ();
+    $minion->reset( { all => 1 } );
+    my $config = $app->clod_config;
+    my $saved  = $config->{spokes};
+    my %dist   = (
+        'Test-Org/new'      => 'New-Dist',
+        'Test-Org/bumped'   => 'Bumped-Dist',
+        'Test-Org/ahead'    => 'Ahead-Dist',
+        'Test-Org/current'  => 'Current-Dist',
+        'Test-Org/untagged' => 'Untagged-Dist',
+        'Test-Org/vtagged'  => 'Vtagged-Dist',
+        'Test-Org/broken'   => 'Broken-Dist',
+    );
+    $config->{spokes}                                         = [ sort( 'Test-Org/no-dist', 'Test-Org/unversioned', keys %dist ) ];
+    $state{repo_files}{$_}{'dist.ini'}                        = "name    = $dist{$_}\nversion = 0.006\n\n[\@Basic]\n" for keys %dist;
+    $state{repo_files}{'Test-Org/unversioned'}{'dist.ini'}    = "name = Unversioned-Dist\n\n[NextVersion]\n";
+    $state{cpan}{'Bumped-Dist'}                               = [qw{0.005 0.004}];
+    $state{cpan}{$_}                                          = [qw{0.006 0.005}] for qw{Ahead-Dist Current-Dist Untagged-Dist Vtagged-Dist Broken-Dist};
+    $state{after_tag}{'Test-Org/ahead'}{'refs/tags/0.006'}    = [qw{first second}];
+    $state{after_tag}{'Test-Org/current'}{'refs/tags/0.006'}  = [];
+    $state{after_tag}{'Test-Org/vtagged'}{'refs/tags/v0.006'} = ['third'];
+    $state{after_tag}{'Test-Org/broken'}{'refs/tags/0.006'}   = ['fourth'];
+
+    my $swept = run_job('release_sweep')->{result};
+    my %by    = map { $_->{repo} => $_ } @{ $swept->{dists} };
+    is( [ sort keys %by ], [ map { "Test-Org/$_" } qw{ahead broken bumped new untagged unversioned vtagged} ], 'every spoke with a dist.ini whose work is not all on CPAN, and no spoke without one' );
+    is( $swept->{errors},  {},                                                                                 'and nothing failed' );
+    ok( $swept->{checked_at}, 'with the time of the check' );
+    is( $by{'Test-Org/new'}, { repo => 'Test-Org/new', name => 'New-Dist', version => '0.006', state => 'never_released' }, 'a distribution with no release on CPAN was never released' );
+    is( $by{'Test-Org/bumped'}, { repo => 'Test-Org/bumped', name => 'Bumped-Dist', version => '0.006', state => 'not_uploaded', latest => '0.005' }, 'a version that CPAN lacks, of a distribution that it has, was bumped and not uploaded' );
+    is(
+        $by{'Test-Org/ahead'},
+        {
+            repo     => 'Test-Org/ahead',
+            name     => 'Ahead-Dist',
+            version  => '0.006',
+            state    => 'unreleased_commits',
+            tag      => '0.006',
+            ahead_by => 2,
+            commits  => [ { sha => 'sha-first', subject => 'first', url => 'https://test.test/commit/first' }, { sha => 'sha-second', subject => 'second', url => 'https://test.test/commit/second' } ],
+        },
+        'a released version with commits after its tag on the default branch lists those commits, by the first line of their message'
+    );
+    is( $by{'Test-Org/vtagged'}{tag},                                    'v0.006',                                                                                        'a tag with a v in front of the version is the tag of that version too' );
+    is( [ map { $_->{subject} } @{ $by{'Test-Org/vtagged'}{commits} } ], ['third'],                                                                                       'and its commits are counted after it' );
+    is( $by{'Test-Org/untagged'},                                        { repo => 'Test-Org/untagged', name => 'Untagged-Dist', version => '0.006', state => 'no_tag' }, 'a released version without a tag cannot be compared, and says so' );
+    is( $by{'Test-Org/unversioned'},                                     { repo => 'Test-Org/unversioned', name => 'Unversioned-Dist', state => 'no_version' },           'a dist.ini that sets no version cannot be compared either, and says so' );
+    is( $swept->{checked},                                               8,                                                                                               'it counts the spokes with a dist.ini, also the ones that are up to date' );
+    is( $state{refs}{'dist.ini'},                                        [ (undef) x 9 ],                                                                                 'it reads the dist.ini of the default branch of each spoke' );
+
+    $state{cpan_fail}{'Broken-Dist'}                   = 1;
+    $state{files_fail}{'Test-Org/current'}             = 1;
+    $state{repo_files}{'Test-Org/no-dist'}{'dist.ini'} = "version = 0.001\n";
+    delete $state{cpan}{'Bumped-Dist'};
+    my $failed = run_job('release_sweep')->{result};
+    %by = map { $_->{repo} => $_ } @{ $failed->{dists} };
+    like( $failed->{errors}, { 'Test-Org/broken' => qr/MetaCPAN\ GET\ \S+:\ 500/, 'Test-Org/current' => qr/GitHub\ GET\ \S+:\ 403/ }, 'a spoke whose check fails at MetaCPAN or at GitHub is an error under its name' );
+    is( $failed->{errors}{'Test-Org/no-dist'}, "The dist.ini of Test-Org/no-dist names no distribution\n", 'and so is a dist.ini that names no distribution' );
+    is( [ sort keys %{ $failed->{errors} } ],  [qw{Test-Org/broken Test-Org/current Test-Org/no-dist}],    'and only those spokes' );
+    is( $by{'Test-Org/bumped'}{state},         'never_released',                                           'the others are still checked' );
+    is( $by{'Test-Org/broken'}{ahead_by},      1,                                                          'and what the sweep before found for a spoke whose check failed stays, so that one failed request does not hide it' );
+    ok( !$by{'Test-Org/current'}, 'a spoke that the sweep before found up to date stays without an item' );
+
+    ok( App::Clod::Tasks::last_result( $minion, 'release_sweep' ), 'the last result is there for the dashboard' );
+    $config->{spokes} = $saved;
     %state = ();
     $minion->reset( { all => 1 } );
 };

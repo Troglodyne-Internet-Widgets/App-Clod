@@ -69,7 +69,10 @@ valid is an item, as a scan that failed is.  A pull request whose branch
 needs system packages that the host lacks is an item of L</waiting_items>.
 When a pull request of the last L<App::Clod::Tasks/upstream_sweep> conflicts
 with its base, one item counts them, with a C<link> to F<#upstream>, the
-Upstream tab.
+Upstream tab.  When the last L<App::Clod::Tasks/release_sweep> found
+distributions whose work is not all on CPAN, one item counts them, with a
+C<link> to F<#releases>, the Releases tab, and each spoke whose check failed
+is an item.
 A failed job that somebody ignored is not an item.
 
 =cut
@@ -143,6 +146,11 @@ sub action_items ( $self, $budget, $outages = [] ) {
     my $upstream  = App::Clod::Tasks::last_result( $minion, 'upstream_sweep' ) // {};
     my $conflicts = grep { ( $_->{mergeable} // q{} ) eq 'CONFLICTING' } @{ $upstream->{pulls} // [] };
     push @actions, { level => 'warning', text => ( $conflicts == 1 ? '1 upstream PR conflicts with its base, and needs' : "$conflicts upstream PRs conflict with their base, and need" ) . ' a rebase:', link => { url => '#upstream', label => 'Upstream' } } if $conflicts;
+
+    my $releases = App::Clod::Tasks::last_result( $minion, 'release_sweep' ) // {};
+    my $due      = @{ $releases->{dists} // [] };
+    push @actions, { level => 'info', text => ( $due == 1 ? '1 distribution has' : "$due distributions have" ) . ' work that is not on CPAN:', link => { url => '#releases', label => 'Releases' } } if $due;
+    push @actions, { level => 'warning', text => "The release check of $_ failed, so the Releases tab keeps what the sweep before found for it: $releases->{errors}{$_}" } for sort keys %{ $releases->{errors} // {} };
 
     push @actions, { level => 'warning', text => 'Claude work is paused until the quota resets' . ( $budget->{paused_until} ? q{ at } . gmtime( $budget->{paused_until} ) . ' UTC' : q{} ) . q{.} } if $budget->{paused};
 
@@ -656,12 +664,26 @@ sub upstream ($self) {
     return $self->render( json => $result // { pulls => [], errors => {} } );
 }
 
+=method releases
+
+The result of the last L<App::Clod::Tasks/release_sweep>: the distributions
+among the spokes whose work is not all on CPAN.  Before the first sweep, no
+distribution, no error, and no C<checked_at>.
+
+=cut
+
+sub releases ($self) {
+    my $result = App::Clod::Tasks::last_result( $self->minion, 'release_sweep' );
+    return $self->render( json => $result // { dists => [], errors => {} } );
+}
+
 1;
 
 =head1 DESCRIPTION
 
 The controller behind F</> and F</api>.  Everything it shows comes from Minion:
 the jobs of the items, and the results of the last C<harness_scan>, C<self_check>,
-C<assigned_sweep>, C<activity_sweep>, C<upstream_sweep> and C<inbox_poll>.
+C<assigned_sweep>, C<activity_sweep>, C<upstream_sweep>, C<release_sweep> and
+C<inbox_poll>.
 
 =cut

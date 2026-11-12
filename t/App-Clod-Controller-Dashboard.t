@@ -26,7 +26,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep upstream_sweep spoke_fix spoke_address triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep upstream_sweep release_sweep spoke_fix spoke_address triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -418,6 +418,33 @@ subtest upstream => sub {
 
     $t->get_ok('/')->status_is(200);
     $t->element_exists( '[data-bs-toggle="tab"][data-bs-target="#upstream"]', 'the page has the Upstream tab' )->element_exists( 'section#upstream #upstream-pulls', 'with its table' );
+};
+
+subtest releases => sub {
+    $t->get_ok('/api/releases')->status_is(200)->json_is( '' => { dists => [], errors => {} }, 'before the first sweep, no distribution and no error' );
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/CPAN|release\ check/), 'and no action item' );
+
+    job( release_sweep => { checked_at => 1, checked => 2, dists => [], errors => {} } );
+    $minion->perform_jobs;
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/CPAN|release\ check/), 'a sweep that found every distribution on CPAN is no action item' );
+
+    my %dist  = ( repo => 'Test-Org/one', name => 'Test-One', version => '0.002', state => 'never_released' );
+    my $sweep = { checked_at => 2, checked => 3, dists => [ \%dist, +{ %dist, repo => 'Test-Org/two', name => 'Test-Two', state => 'no_tag' } ], errors => { 'Test-Org/three' => 'MetaCPAN GET /release/versions/Test-Three: 500 Internal Server Error' } };
+    job( release_sweep => $sweep );
+    $minion->perform_jobs;
+    $t->get_ok('/api/releases')->status_is(200)->json_is( '' => $sweep, 'the endpoint serves the last sweep as it is, with its errors' );
+    $t->get_ok('/api/overview')->status_is(200);
+    is( action_about(qr/not\ on\ CPAN/), { level => 'info', text => '2 distributions have work that is not on CPAN:', link => { url => '#releases', label => 'Releases' } }, 'the distributions are one item that counts them, with a link to the Releases tab' );
+    is(
+        action_about(qr/release\ check/),
+        { level => 'warning', text => 'The release check of Test-Org/three failed, so the Releases tab keeps what the sweep before found for it: MetaCPAN GET /release/versions/Test-Three: 500 Internal Server Error' },
+        'and a spoke whose check failed is a warning'
+    );
+
+    $t->get_ok('/')->status_is(200);
+    $t->element_exists( '[data-bs-toggle="tab"][data-bs-target="#releases"]', 'the page has the Releases tab' )->element_exists( 'section#releases #releases-dists', 'with its table' );
 };
 
 subtest harness => sub {

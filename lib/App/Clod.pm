@@ -93,6 +93,7 @@ sub startup ($self) {
     $authed->get('/api/work')->to('dashboard#work');
     $authed->get('/api/harness')->to('dashboard#harness');
     $authed->get('/api/upstream')->to('dashboard#upstream');
+    $authed->get('/api/releases')->to('dashboard#releases');
 
     my $act = $authed->under(
         '/act' => sub ($c) {
@@ -332,8 +333,8 @@ each organization of C<spoke_orgs>.
 Jobs by state, the Claude Code quota used in the five-hour and seven-day
 windows, and the action items: an outage, a marketplace pin older than the
 plugin, failed jobs, harness checks that fail, token scopes that are missing,
-an inbox that waits because no repository is a spoke, and upstream pull
-requests that conflict.
+an inbox that waits because no repository is a spoke, upstream pull
+requests that conflict, and distributions whose work is not on CPAN.
 
 Some action items have a button, which settles them from the page:
 
@@ -412,6 +413,16 @@ spoke.  The ones that conflict with their base come first, marked as needing a
 rebase, and the Overview tab counts them.  It also shows when the sweep last
 ran, and the users whose search failed.  See
 L<App::Clod::Tasks/upstream_sweep>.
+
+=item Releases
+
+The Perl distributions among the spokes whose work is not all on CPAN: a
+distribution that was never released, a version that was raised and not
+uploaded, and a released version with commits after its tag, which it lists.
+A released version without a tag, or a F<dist.ini> that sets no version, is
+listed too, because the sweep cannot tell.  The Overview tab counts them.  It
+also shows when the sweep last ran, and the spokes whose check failed.  See
+L<App::Clod::Tasks/release_sweep>.
 
 =back
 

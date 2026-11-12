@@ -1,6 +1,15 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Add a Releases tab to the health page.  It lists the Perl
+      distributions among the spokes whose work is not on CPAN: a
+      distribution that was never released, a version that was raised and
+      not uploaded, and a released version with commits after its tag.  It
+      lists those commits.  A released version without a tag is listed too,
+      because the sweep cannot tell.  A new task, release_sweep, reads the
+      dist.ini of each spoke, asks MetaCPAN for the version, and compares
+      the tag with the default branch every hour.  The Overview tab counts
+      the distributions, and names each spoke whose check failed.
     - When the update of `harness_fix` writes a `.perltidyrc`, it tidies every
       Perl file of the spoke with it, in the same commit.  A file that the
       new profile did not like used to wait for the first commit that

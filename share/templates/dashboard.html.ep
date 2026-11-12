@@ -38,6 +38,7 @@
       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#work" type="button">Work</button></li>
       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#harness" type="button">Harness</button></li>
       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#upstream" type="button">Upstream</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#releases" type="button">Releases</button></li>
     </ul>
 
     <div class="tab-content">
@@ -99,6 +100,19 @@
             <table class="table table-hover align-middle mb-0">
               <thead><tr><th>Pull request</th><th>Title</th><th>Author</th><th>Merge</th><th>Review</th><th>CI</th><th>Updated</th></tr></thead>
               <tbody id="upstream-pulls"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-pane fade" id="releases">
+        <div class="card">
+          <div class="card-header"><i class="bi bi-box-seam"></i> Distributions among the spokes whose work is not on CPAN <small class="text-body-secondary" id="releases-checked"></small></div>
+          <ul class="list-group list-group-flush" id="releases-errors"></ul>
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead><tr><th>Repository</th><th>Distribution</th><th>Version</th><th>State</th><th>Commits after the tag</th></tr></thead>
+              <tbody id="releases-dists"></tbody>
             </table>
           </div>
         </div>
@@ -307,9 +321,31 @@
         || '<tr><td colspan="7" class="text-body-secondary">No open pull requests upstream.</td></tr>';
     }
 
+    const releaseState = {
+      never_released: d => badge('never released', 'primary'),
+      not_uploaded: d => `${badge('not uploaded', 'warning')} <span class="small">CPAN has ${esc(d.latest)}</span>`,
+      unreleased_commits: d => badge(`${d.ahead_by} commit(s) after ${d.tag}`, 'warning'),
+      no_tag: d => `${badge('no tag', 'secondary')} <span class="small">so the sweep cannot tell</span>`,
+      no_version: d => `${badge('no version', 'secondary')} <span class="small">dist.ini sets none, so the sweep cannot tell</span>`,
+    };
+
+    async function releases() {
+      const d = await (await fetch(`${base}/api/releases`)).json();
+      document.getElementById('releases-checked').textContent = d.checked_at ? `as of ${when(d.checked_at)}, of ${d.checked} distribution(s)` : 'no sweep yet';
+      document.getElementById('releases-errors').innerHTML = Object.entries(d.errors || {}).map(([repo, e]) =>
+        `<li class="list-group-item list-group-item-danger small">The check of ${esc(repo)} failed, so the list keeps what the sweep before found for it: ${esc(e)}</li>`).join('');
+      document.getElementById('releases-dists').innerHTML = (d.dists || []).map(r => `<tr>
+        <td class="text-nowrap">${esc(r.repo)}</td>
+        <td>${r.state === 'never_released' ? esc(r.name) : `<a href="https://metacpan.org/dist/${encodeURIComponent(r.name)}">${esc(r.name)}</a>`}</td>
+        <td>${esc(r.version || '')}</td>
+        <td>${releaseState[r.state] ? releaseState[r.state](r) : esc(r.state)}</td>
+        <td class="small">${(r.commits || []).map(c => `<div class="summary"><a href="${esc(c.url)}"><code>${esc((c.sha || '').slice(0, 7))}</code></a> ${esc(c.subject)}</div>`).join('')}</td></tr>`).join('')
+        || '<tr><td colspan="5" class="text-body-secondary">Every distribution is on CPAN.</td></tr>';
+    }
+
     async function refresh() {
       try {
-        await Promise.all([overview(), work(), harness(), upstream()]);
+        await Promise.all([overview(), work(), harness(), upstream(), releases()]);
         document.getElementById('updated').textContent = `updated ${new Date().toLocaleTimeString()}`;
       } catch (e) {
         document.getElementById('updated').textContent = `refresh failed: ${e}`;

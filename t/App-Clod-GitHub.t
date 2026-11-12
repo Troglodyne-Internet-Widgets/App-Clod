@@ -45,6 +45,12 @@ post '/graphql' => sub ($c) {
     return $c->render( json => { errors => [ { message => 'Could not resolve to a node' }, { message => 'and one more' } ] } ) if $c->req->json->{variables}{id} eq 'PR_gone';
     return $c->render( json => { data   => { pullRequest => { isDraft => Mojo::JSON::true } } } );
 };
+get '/repos/Test-Org/one/compare/*range' => sub ($c) {
+    my $url = $c->req->url;
+    $seen{range} = $url->path->to_string;
+    return $c->render( json => { message  => 'Not Found' }, status => 404 ) if $c->param('range') =~ m{refs/tags/9\.999};
+    return $c->render( json => { ahead_by => 1, commits => [ { sha => 'abc' } ] } );
+};
 get '/repos/Test-Org/one' => sub ($c) { return $c->render( json => { message => 'Bad credentials' }, status => 401 ) };
 
 # Answers each request with the next status of its queue, and then with 200.
@@ -80,6 +86,12 @@ subtest tree => sub {
     my $tree = $gh->tree( 'Test-Org/one', 'main' );
     is( [ sort keys %$tree ], [ 'a', 'b/c' ], 'the tree is keyed by path' );
     is( $tree->{'b/c'}{sha},  'sha-c',        'and keeps each blob SHA' );
+};
+
+subtest compare => sub {
+    is( $gh->compare(qw{Test-Org/one refs/tags/0.006 feature/x}), { ahead_by => 1, commits => [ { sha => 'abc' } ] },              'a comparison comes back as GitHub answers it' );
+    is( $seen{range},                                             '/repos/Test-Org/one/compare/refs%2Ftags%2F0.006...feature%2Fx', 'with each ref escaped, so that a slash in it does not split the range' );
+    is( $gh->compare(qw{Test-Org/one refs/tags/9.999 main}),      undef,                                                           'a ref that is not there is undef, not an error' );
 };
 
 subtest search_issues => sub {

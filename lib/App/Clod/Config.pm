@@ -219,7 +219,7 @@ Default 60.
 
 =item http_timeout
 
-Seconds for each GitHub request.  Default 30.
+Seconds for each request to GitHub or MetaCPAN.  Default 30.
 
 =item retention_days
 
