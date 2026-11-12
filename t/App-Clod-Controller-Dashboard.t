@@ -26,7 +26,7 @@ $t->ua->on( start => sub ( $ua, $tx ) { $tx->req->headers->header( 'X-Test-User'
 my $minion = $t->app->minion;
 
 # Each task finishes, or fails, with the result it is given, in place of its real work.
-for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep upstream_sweep release_sweep spoke_fix spoke_address triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
+for my $task (qw{harness_scan inbox_poll assigned_sweep activity_sweep spoke_sweep upstream_sweep release_sweep loc_sweep spoke_fix spoke_address triage reply create_repo file_issues harness_fix self_check self_update plugin_update deps_upgrade packages_install}) {
     $minion->add_task( $task => sub ( $job, @args ) { my $r = $job->info->{notes}{result}; $job->info->{notes}{fail} ? $job->fail($r) : $job->finish($r) } );
 }
 
@@ -445,6 +445,31 @@ subtest releases => sub {
 
     $t->get_ok('/')->status_is(200);
     $t->element_exists( '[data-bs-toggle="tab"][data-bs-target="#releases"]', 'the page has the Releases tab' )->element_exists( 'section#releases #releases-dists', 'with its table' );
+};
+
+subtest loc => sub {
+    $t->get_ok('/api/loc')->status_is(200)->json_is( '' => { repos => {}, errors => {}, history => {} }, 'before the first sweep, no repository, no error and no history' );
+    $t->get_ok('/api/overview')->status_is(200);
+    ok( !action_about(qr/line\ count/), 'and no action item' );
+
+    my $sweep = {
+        checked_at => 2,
+        repos      => { 'Test-Org/one' => { sloc => 10, lloc => 5, files => 1, languages => [ { language => 'Perl', sloc => 10, lloc => 5, filecount => 1 } ], cocomo => { sloc => { cost => 2 }, lloc => { cost => 1 } }, commit => 'abc', url => 'https://test.test/tree/abc' } },
+        errors     => { 'Test-Org/two' => "loccount -j -c /bogus: lstat /bogus: no such file or directory\n" },
+        history    => { 'Test-Org/one' => [ { day => '2026-11-11', sloc => 9, lloc => 4, files => 1, sloc_cost => 2, lloc_cost => 1 } ] },
+    };
+    job( loc_sweep => $sweep );
+    $minion->perform_jobs;
+    $t->get_ok('/api/loc')->status_is(200)->json_is( '' => $sweep, 'the endpoint serves the last sweep as it is, with its errors and its history' );
+    $t->get_ok('/api/overview')->status_is(200);
+    is(
+        action_about(qr/line\ count/),
+        { level => 'warning', text => "The line count of Test-Org/two failed, so the Code tab keeps what the sweep before counted for it: loccount -j -c /bogus: lstat /bogus: no such file or directory\n" },
+        'a spoke whose count failed is a warning'
+    );
+
+    $t->get_ok('/')->status_is(200);
+    $t->element_exists( '[data-bs-toggle="tab"][data-bs-target="#code"]', 'the page has the Code tab' )->element_exists( 'section#code #loc-repos', 'with the table of the spokes' )->element_exists( 'section#code #loc-languages', 'and of the languages' );
 };
 
 subtest harness => sub {

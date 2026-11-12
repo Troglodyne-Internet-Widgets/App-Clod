@@ -1,0 +1,24 @@
+#!/usr/bin/env perl
+use 5.040;
+use warnings FATAL => 'all';
+use re '/aasx';
+
+# Stands in for loccount.  It prints the file that FAKE_LOCCOUNT_OUTPUT names,
+# and appends its arguments to the file that FAKE_LOCCOUNT_RECORD names, a
+# line each, NUL between them.  With FAKE_LOCCOUNT_FAIL set, it prints that
+# text on its error output instead, and exits 1, as loccount does on a path
+# that it cannot read.  FAKE_LOCCOUNT_FAIL_ONLY limits that to the count of
+# the directory that it names.
+use Mojo::File ();
+
+if ( my $record = $ENV{FAKE_LOCCOUNT_RECORD} ) {
+    open my $fh, '>>', $record or die "$record: $!";
+    print {$fh} join( "\0", @ARGV ), "\n";
+    close $fh or die "$record: $!";
+}
+my $only = $ENV{FAKE_LOCCOUNT_FAIL_ONLY};
+if ( ( my $fail = $ENV{FAKE_LOCCOUNT_FAIL} ) && ( !defined $only || $only eq $ARGV[-1] ) ) {
+    warn "$fail\n";
+    exit 1;
+}
+print Mojo::File->new( $ENV{FAKE_LOCCOUNT_OUTPUT} )->slurp;

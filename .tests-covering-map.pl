@@ -67,6 +67,8 @@ return sub {
     return qw{t/App-Clod.t t/App-Clod-Controller-Dashboard.t}             if $path =~ m{\Ashare/templates/}sx;
     return qw{t/App-Clod-Deps.t t/App-Clod-Claude.t t/clod-skill-edits.t} if $path =~ m{\Ashare/agent-bin/}sx;
     return qw{t/App-Clod-Claude.t t/App-Clod-Tasks.t}                     if $path eq q{t/bin/fake-claude};
+    return qw{t/App-Clod-Loccount.t t/App-Clod-Tasks.t}                   if $path eq q{t/bin/fake-loccount};
+    return qw{t/App-Clod-Loccount.t t/App-Clod-Tasks.t}                   if $path =~ m{\At/data/loccount-}sx;
     return qw{t/App-Clod-Harness.t t/App-Clod-Tasks.t}                    if $path =~ m{\At/data/standards/}sx;
     return 't/App-Clod-Claude.t'                                          if $path =~ m{\At/data/}sx;
     return qw{t/App-Clod-Claude.t t/App-Clod-Packages.t}                  if $path eq q{t/bin/sudo-dir/sudo};

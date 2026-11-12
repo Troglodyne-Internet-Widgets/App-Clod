@@ -1,0 +1,26 @@
+{"language":"all", "sloc":7158, "lloc":4738, "filecount":73}
+{"language":"Perl", "sloc":6468, "lloc":4738, "filecount":39}
+{"language":"Markdown", "sloc":390, "lloc":0, "filecount":20}
+{"language":"INI", "sloc":127, "lloc":0, "filecount":2}
+{"language":"sh", "sloc":102, "lloc":0, "filecount":3}
+{"language":"YAML", "sloc":36, "lloc":0, "filecount":3}
+{"language":"JSONL", "sloc":18, "lloc":0, "filecount":5}
+{"language":"License", "sloc":17, "lloc":0, "filecount":1}
+
+Total Physical Source Lines of Code (SLOC)                = 7158
+ (COCOMO I model, Person-Months = 2.40 * (KSLOC**1.05))
+Development Effort Estimate, Person-Years (Person-Months) = 1.58 (18.96)
+Schedule Estimate, Years (Months)                         = 0.64 (7.65)
+ (COCOMO model, Months = 2.50 * (person-months**0.38))
+Estimated Average Number of Developers (Effort/Schedule)  = 2.48
+Total Estimated Cost to Develop                           = $492851
+ (average salary = $130000/year, overhead = 2.40).
+
+Total Logical Source Lines of Code (LLOC)                 = 4738
+ (COCOMO II model, Person-Months = 3.20 * (KLOC**1.05))
+Development Effort Estimate, Person-Years (Person-Months) = 1.37 (16.39)
+Schedule Estimate, Years (Months)                         = 0.60 (7.24)
+ (COCOMO model, Months = 2.50 * (person-months**0.38))
+Estimated Average Number of Developers (Effort/Schedule)  = 2.26
+Total Estimated Cost to Develop                           = $426086
+ (average salary = $130000/year, overhead = 2.40).

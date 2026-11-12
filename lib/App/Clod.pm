@@ -94,6 +94,7 @@ sub startup ($self) {
     $authed->get('/api/harness')->to('dashboard#harness');
     $authed->get('/api/upstream')->to('dashboard#upstream');
     $authed->get('/api/releases')->to('dashboard#releases');
+    $authed->get('/api/loc')->to('dashboard#loc');
 
     my $act = $authed->under(
         '/act' => sub ($c) {
@@ -334,7 +335,8 @@ Jobs by state, the Claude Code quota used in the five-hour and seven-day
 windows, and the action items: an outage, a marketplace pin older than the
 plugin, failed jobs, harness checks that fail, token scopes that are missing,
 an inbox that waits because no repository is a spoke, upstream pull
-requests that conflict, and distributions whose work is not on CPAN.
+requests that conflict, distributions whose work is not on CPAN, and spokes
+whose line count failed.
 
 Some action items have a button, which settles them from the page:
 
@@ -423,6 +425,15 @@ A released version without a tag, or a F<dist.ini> that sets no version, is
 listed too, because the sweep cannot tell.  The Overview tab counts them.  It
 also shows when the sweep last ran, and the spokes whose check failed.  See
 L<App::Clod::Tasks/release_sweep>.
+
+=item Code
+
+How big each spoke is, as loccount counts it: the physical and the logical
+source lines, the files, the languages, and the COCOMO II estimate of what it
+would cost to write, with a line of how the lines changed over the days that
+the sweep kept.  The whole of the spokes is the first row.  It also shows when
+the sweep last ran, and the spokes whose count failed.  See
+L<App::Clod::Tasks/loc_sweep>.
 
 =back
 

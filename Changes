@@ -1,6 +1,16 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Add a Code tab to the health page.  It shows the size of each spoke,
+      as loccount by Eric S. Raymond counts it: the physical and the logical
+      source lines, the files, the lines of each language, and the COCOMO II
+      estimate of the cost to write it.  A line for each spoke, and one for
+      all of them, shows how the lines changed by day.  A new task,
+      loc_sweep, counts the reference worktree of each spoke every hour.  It
+      keeps one point a day for each spoke, for history_days of the new
+      loccount section of clod.conf, 730 by default.  The Overview tab names
+      each spoke whose count failed.  loccount must be on the PATH of the
+      bot, or loccount.bin must name it.
     - Add a Releases tab to the health page.  It lists the Perl
       distributions among the spokes whose work is not on CPAN: a
       distribution that was never released, a version that was raised and

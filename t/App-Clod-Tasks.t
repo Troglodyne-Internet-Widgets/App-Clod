@@ -14,6 +14,7 @@ use Mojo::File       ();
 use Mojo::JSON       ();
 use Mojo::UserAgent  ();
 use Mojolicious      ();
+use POSIX            ();
 use Test::MockModule ();
 use Time::HiRes      qw{time};
 
@@ -2382,6 +2383,62 @@ subtest release_sweep => sub {
 
     ok( App::Clod::Tasks::last_result( $minion, 'release_sweep' ), 'the last result is there for the dashboard' );
     $config->{spokes} = $saved;
+    %state = ();
+    $minion->reset( { all => 1 } );
+};
+
+subtest loc_sweep => sub {
+    %state = ();
+    $minion->reset( { all => 1 } );
+    my $config = $app->clod_config;
+    my %saved  = ( spokes => $config->{spokes}, loccount => { %{ $config->{loccount} } } );
+    $config->{spokes} = [ @SPOKES, 'Test-Org/fresh' ];
+    $config->{loccount}{bin} = $here->child(qw{bin fake-loccount})->to_string;
+    my $counted = $tmp->child('loccount-args');
+    local $ENV{FAKE_LOCCOUNT_RECORD} = "$counted";
+    local $ENV{FAKE_LOCCOUNT_OUTPUT} = $here->child(qw{data loccount-tree.txt})->to_string;
+    my %ref  = map { $_ => App::Clod::Tasks::spoke( $config, $_ )->refresh_reference('main') } @SPOKES;
+    my %head = map { $_ => git( q{-C}, "$ref{$_}", qw{rev-parse HEAD} ) } @SPOKES;
+    my $day  = sub ($ago) { POSIX::strftime( '%Y-%m-%d', gmtime( time - $ago * 86_400 ) ) };
+    my %now  = ( day => $day->(0), sloc => 7158, lloc => 4738, files => 73, sloc_cost => 492851, lloc_cost => 426086 );
+
+    my $swept = run_job('loc_sweep')->{result};
+    is( [ sort keys %{ $swept->{repos} } ],                  \@SPOKES,                                                        'every spoke with a reference worktree is counted, and a spoke without one yet is not' );
+    is( $swept->{errors},                                    {},                                                              'and that is no error' );
+    is( $swept->{repos}{'Test-Org/one'}{sloc},               7158,                                                            'a count is what loccount says' );
+    is( $swept->{repos}{'Test-Org/one'}{cocomo}{lloc}{cost}, 426086,                                                          'with its estimates' );
+    is( $swept->{repos}{'Test-Org/one'}{commit},             $head{'Test-Org/one'},                                           'and the commit of the reference worktree that it counted' );
+    is( $swept->{repos}{'Test-Org/one'}{url},                "$config->{github_web}/Test-Org/one/tree/$head{'Test-Org/one'}", 'whose tree it links to' );
+    is( [ sort split m{\n}, $counted->slurp ],               [ map { "-j\0-c\0$ref{$_}" } @SPOKES ],                          'loccount counts the reference worktree of each spoke' );
+    is( $swept->{history},                                   { map { $_ => [ \%now ] } @SPOKES },                             'the history of each spoke starts with a point for today' );
+    ok( $swept->{checked_at}, 'with the time of the sweep' );
+
+    # A sweep before this one, whose history is older.
+    my $job = $minion->worker->register->dequeue( 0, { id => $minion->enqueue('loc_sweep') } );
+    $job->finish(
+        {
+            checked_at => 1,
+            repos      => { 'Test-Org/two' => { sloc => 1 }, 'Test-Org/gone' => { sloc => 2 } },
+            errors     => {},
+            history    => {
+                'Test-Org/one'  => [ { day => $day->(730), sloc => 3 }, { day => $day->(729), sloc => 4 }, { day => $day->(0), sloc => 5 } ],
+                'Test-Org/two'  => [ { day => $day->(9),   sloc => 6 } ],
+                'Test-Org/gone' => [ { day => $day->(9),   sloc => 7 } ],
+            },
+        }
+    );
+    $minion->worker->unregister;
+    local $ENV{FAKE_LOCCOUNT_FAIL}      = 'lstat: test failure';
+    local $ENV{FAKE_LOCCOUNT_FAIL_ONLY} = "$ref{'Test-Org/two'}";
+    my $again = run_job('loc_sweep')->{result};
+    is( $again->{history}{'Test-Org/one'}, [ { day => $day->(729), sloc => 4 }, \%now ], 'a point as old as history_days goes, a younger one stays, and the point of today is the one of the last sweep' );
+    like( $again->{errors}, { 'Test-Org/two' => qr{lstat:\ test\ failure} }, 'a spoke whose count fails is an error under its name' );
+    is( $again->{repos}{'Test-Org/two'}, { sloc => 1 }, 'and keeps the count of the sweep before' );
+    is( $again->{history}{'Test-Org/two'}, [ { day => $day->(9), sloc => 6 } ], 'and its history, with no point for today' );
+    ok( !$again->{repos}{'Test-Org/gone'} && !$again->{history}{'Test-Org/gone'}, 'a repository that is no longer a spoke loses its count and its history' );
+
+    ok( App::Clod::Tasks::last_result( $minion, 'loc_sweep' ), 'the last result is there for the dashboard' );
+    @{$config}{ keys %saved } = values %saved;
     %state = ();
     $minion->reset( { all => 1 } );
 };

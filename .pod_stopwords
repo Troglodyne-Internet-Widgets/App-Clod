@@ -55,6 +55,7 @@ CIDR
 CIDRs
 claude
 CLI
+COCOMO
 codename
 CODEOWNERS
 coderef
@@ -130,6 +131,8 @@ LDIF
 libgit
 lifecycle
 LLC
+LLOC
+loccount
 lookups
 loopback
 lowercased
@@ -213,6 +216,7 @@ setgid
 sftp
 SHA
 sha
+SLOC
 SMTP
 SRV
 sshd

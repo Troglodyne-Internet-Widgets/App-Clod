@@ -1,0 +1,19 @@
+{"language":"Perl", "sloc":1, "lloc":1, "filecount":1}
+
+Total Physical Source Lines of Code (SLOC)                = 1
+ (COCOMO I model, Person-Months = 2.40 * (KSLOC**1.05))
+Development Effort Estimate, Person-Years (Person-Months) = 0.00 (0.00)
+Schedule Estimate, Years (Months)                         = 0.02 (0.22)
+ (COCOMO model, Months = 2.50 * (person-months**0.38))
+Estimated Average Number of Developers (Effort/Schedule)  = 0.01
+Total Estimated Cost to Develop                           = $44
+ (average salary = $130000/year, overhead = 2.40).
+
+Total Logical Source Lines of Code (LLOC)                 = 1
+ (COCOMO II model, Person-Months = 3.20 * (KLOC**1.05))
+Development Effort Estimate, Person-Years (Person-Months) = 0.00 (0.00)
+Schedule Estimate, Years (Months)                         = 0.02 (0.25)
+ (COCOMO model, Months = 2.50 * (person-months**0.38))
+Estimated Average Number of Developers (Effort/Schedule)  = 0.01
+Total Estimated Cost to Develop                           = $58
+ (average salary = $130000/year, overhead = 2.40).
