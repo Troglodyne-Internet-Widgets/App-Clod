@@ -72,6 +72,13 @@ our %SCHEMA = (
                 standards          => { type => 'object', nullable  => 1, default => undef },
             }
         ),
+        loccount => section(
+            {
+                bin          => { type => 'string', default => 'loccount' },
+                timeout      => seconds(300),
+                history_days => { type => 'integer', minimum => 1, default => 730 },
+            }
+        ),
         otel            => { type => 'object', additionalProperties => $TEXT, default => {} },
         system_prompts  => section( { map { $_ => $TEXT } @App::Clod::Budget::CLAUDE_TASKS } ),
         spoke_prompt    => { type => 'string',  nullable => 1, default => undef },
@@ -290,6 +297,13 @@ C<source> key of F<.conformance.yml> gives it: C<{ git, ref, path }> or
 C<{ directory, path }>.  Default C<path> F<skills/packaging-perl> of the git
 repository of C<plugin_repo> on C<github_web>.  The configuration dies when
 the two do not make a valid F<.conformance.yml>.
+
+=item loccount
+
+C<bin>, the loccount program, default C<loccount>; C<timeout>, the seconds
+for the count of one spoke, default 300; and C<history_days>, how many days
+of counts the Code tab keeps for its trends, default 730.  See
+L<App::Clod::Tasks/loc_sweep>.
 
 =item system_prompts
 

@@ -21,6 +21,7 @@ use App::Clod::CodeOwners();
 use App::Clod::Deps();
 use App::Clod::GitHub();
 use App::Clod::Harness();
+use App::Clod::Loccount();
 use App::Clod::MetaCPAN();
 use App::Clod::Outage();
 use App::Clod::Packages();
@@ -55,6 +56,7 @@ our %TASKS = (
     spoke_sweep        => \&spoke_sweep,
     upstream_sweep     => \&upstream_sweep,
     release_sweep      => \&release_sweep,
+    loc_sweep          => \&loc_sweep,
     refresh_references => \&refresh_references,
     create_repo        => \&create_repo,
     file_issues        => \&file_issues,
@@ -75,6 +77,7 @@ our %SCHEDULES = (
     spokes   => [ '*/15 * * * *', 'spoke_sweep' ],
     upstream => [ '*/15 * * * *', 'upstream_sweep' ],
     releases => [ '47 * * * *',   'release_sweep' ],
+    loc      => [ '53 * * * *',   'loc_sweep' ],
     self     => [ '7,37 * * * *', 'self_check' ],
 );
 our %SCHEDULED = map { $_->[1] => 1 } values %SCHEDULES;
@@ -140,7 +143,7 @@ sub hold ($job) {
 
 C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>,
 C<harness_scan>, C<assigned_sweep>, C<activity_sweep>, C<spoke_sweep>,
-C<upstream_sweep>, C<release_sweep> and C<self_check>.
+C<upstream_sweep>, C<release_sweep>, C<loc_sweep> and C<self_check>.
 
 =cut
 
@@ -3565,6 +3568,76 @@ sub release_state ( $gh, $cpan, $repo ) {
         return { %dist, state => 'unreleased_commits', tag => $tag, ahead_by => $compare->{ahead_by}, commits => \@commits };
     }
     return { %dist, state => 'no_tag' };
+}
+
+=func loc_sweep
+
+Every hour.  Counts the lines of each spoke with L</loc_count>, so that the
+Code tab shows how big each spoke is, in which languages, what COCOMO
+estimates it would cost to write, and how that changed over time.
+
+Its result has C<checked_at>; C<repos>, a hash of repository to the result
+of L</loc_count>; C<errors>, a hash of repository to error; and C<history>,
+a hash of repository to one point for each day, oldest first.  A point has
+C<day>, as C<YYYY-MM-DD> in UTC, C<sloc>, C<lloc>, C<files>, and
+C<sloc_cost> and C<lloc_cost>, the costs of the COCOMO I and COCOMO II
+estimates.  The last sweep of a day replaces the point of that day.
+
+Minion keeps only the last few results of the sweep, so each sweep carries
+the history of the sweep before forward, and drops the points older than
+C<history_days> of the C<loccount> section of the configuration.  A
+repository that is no longer a spoke loses its history.  If the count of a
+spoke fails, or it has no reference worktree yet, the count and the history
+that the sweep before had for it stay.
+
+=cut
+
+sub loc_sweep ( $job, $config ) {
+    my $minion = $job->minion;
+    my $before = last_result( $minion, 'loc_sweep' ) // {};
+    prune_history( $minion, q{loc_sweep} );
+    my $counter = App::Clod::Loccount->new( bin => $config->{loccount}{bin}, timeout => $config->{loccount}{timeout} );
+    my $today   = POSIX::strftime( '%Y-%m-%d', gmtime );
+    my $oldest  = POSIX::strftime( '%Y-%m-%d', gmtime( time - $config->{loccount}{history_days} * $DAY ) );
+    my ( %repos, %errors, %history );
+    for my $repo ( @{ spokes( $minion, $config ) } ) {
+        my @kept = grep { $_->{day} gt $oldest } @{ $before->{history}{$repo} // [] };
+        my $count;
+        $errors{$repo} = $@ if !eval { $count = loc_count( $config, $counter, $repo ); 1 };
+        if ( !$count ) {
+            $repos{$repo}   = $before->{repos}{$repo} if $before->{repos}{$repo};
+            $history{$repo} = \@kept                  if @kept;
+            next;
+        }
+        $repos{$repo} = $count;
+        my %point = ( day => $today, sloc_cost => $count->{cocomo}{sloc}{cost}, lloc_cost => $count->{cocomo}{lloc}{cost}, map { $_ => $count->{$_} } qw{sloc lloc files} );
+        $history{$repo} = [ ( grep { $_->{day} ne $today } @kept ), \%point ];
+    }
+    return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, history => \%history } );
+}
+
+=func loc_count
+
+C<($config, $counter, $repo)>, where C<$counter> is an L<App::Clod::Loccount>.
+Undef when the spoke has no reference worktree yet.  Else what
+L<App::Clod::Loccount/count> says about the reference worktree, which
+L</refresh_references> keeps at the default branch, and C<commit>, the commit
+that it counted, with C<url>, its tree on C<github_web>.  It holds
+L<App::Clod::Spoke/locked> while it counts, so that a refresh does not move
+the worktree in the middle of the count.  It dies when loccount fails.
+
+=cut
+
+sub loc_count ( $config, $counter, $repo ) {
+    my $spoke = spoke( $config, $repo );
+    return $spoke->locked(
+        sub {
+            my $ref = $spoke->reference;
+            return if !-d $ref;
+            my $commit = $spoke->git( q{-C}, "$ref", qw{rev-parse HEAD} );
+            return { %{ $counter->count("$ref") }, commit => $commit, url => "$config->{github_web}/$repo/tree/$commit" };
+        }
+    );
 }
 
 1;

@@ -39,6 +39,7 @@
       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#harness" type="button">Harness</button></li>
       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#upstream" type="button">Upstream</button></li>
       <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#releases" type="button">Releases</button></li>
+      <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#code" type="button">Code</button></li>
     </ul>
 
     <div class="tab-content">
@@ -113,6 +114,33 @@
             <table class="table table-hover align-middle mb-0">
               <thead><tr><th>Repository</th><th>Distribution</th><th>Version</th><th>State</th><th>Commits after the tag</th></tr></thead>
               <tbody id="releases-dists"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-pane fade" id="code">
+        <div class="row g-3 mb-3" id="loc-cards"></div>
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-graph-up"></i> Source lines of all the spokes, by day <small class="text-body-secondary" id="loc-checked"></small></div>
+          <div class="card-body" id="loc-trend"></div>
+        </div>
+        <div class="card mb-3">
+          <div class="card-header"><i class="bi bi-translate"></i> Languages of all the spokes</div>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+              <thead><tr><th>Language</th><th class="text-end">SLOC</th><th class="text-end">LLOC</th><th class="text-end">Files</th><th>Share of the SLOC</th></tr></thead>
+              <tbody id="loc-languages"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><i class="bi bi-code-square"></i> Spokes, by size</div>
+          <ul class="list-group list-group-flush" id="loc-errors"></ul>
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead><tr><th>Repository</th><th class="text-end">SLOC</th><th class="text-end">LLOC</th><th class="text-end">Files</th><th>Languages</th><th class="text-end text-nowrap">COCOMO II</th><th>SLOC by day</th></tr></thead>
+              <tbody id="loc-repos"></tbody>
             </table>
           </div>
         </div>
@@ -343,9 +371,97 @@
         || '<tr><td colspan="5" class="text-body-secondary">Every distribution is on CPAN.</td></tr>';
     }
 
+    const num = n => Number(n ?? 0).toLocaleString();
+    const LOC_KEYS = ['sloc', 'lloc', 'files', 'sloc_cost', 'lloc_cost'];
+
+    // A line of one key of the points of a history, oldest first, as SVG.  Each
+    // point has a band of the full height that shows its day and value on hover.
+    function trend(points, key, width, height) {
+      if (points.length < 2) return '<span class="small text-body-secondary">one day so far</span>';
+      const values = points.map(p => p[key] ?? 0);
+      const lo = Math.min(...values), span = (Math.max(...values) - lo) || 1;
+      const step = (width - 8) / (points.length - 1);
+      const x = i => 4 + i * step, y = v => height - 4 - (v - lo) * (height - 8) / span;
+      const line = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+      const bands = points.map((p, i) => `<rect x="${(x(i) - step / 2).toFixed(1)}" y="0" width="${step.toFixed(1)}" height="${height}" fill="transparent"><title>${esc(p.day)}: ${num(values[i])}</title></rect>`).join('');
+      return `<svg class="text-primary" width="100%" style="max-width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(key)} from ${esc(points[0].day)} to ${esc(points.at(-1).day)}">
+        <polyline points="${line}" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="${x(values.length - 1).toFixed(1)}" cy="${y(values.at(-1)).toFixed(1)}" r="4" fill="currentColor"/>${bands}</svg>`;
+    }
+
+    // What changed from the first point to the last.
+    function change(points, key) {
+      if (points.length < 2) return '';
+      const d = (points.at(-1)[key] ?? 0) - (points[0][key] ?? 0);
+      return `${d > 0 ? '+' : ''}${num(d)} since ${points[0].day}`;
+    }
+
+    // The history of all the spokes: for each day that any spoke has, the sum of
+    // the last point of each spoke on or before it, so that a day that a spoke
+    // missed does not dip.
+    function locTotals(history) {
+      const series = Object.values(history);
+      const days = [...new Set(series.flat().map(p => p.day))].sort();
+      const at = series.map(() => -1);
+      return days.map(day => {
+        const t = { day };
+        LOC_KEYS.forEach(k => { t[k] = 0; });
+        series.forEach((points, s) => {
+          while (at[s] + 1 < points.length && points[at[s] + 1].day <= day) at[s]++;
+          if (at[s] >= 0) LOC_KEYS.forEach(k => { t[k] += points[at[s]][k] ?? 0; });
+        });
+        return t;
+      });
+    }
+
+    async function loc() {
+      const d = await (await fetch(`${base}/api/loc`)).json();
+      const repos = Object.entries(d.repos || {}).sort(([, a], [, b]) => b.sloc - a.sloc);
+      const history = d.history || {};
+      const total = locTotals(history);
+      const sum = k => repos.reduce((n, [, r]) => n + (r[k] ?? 0), 0);
+      const cost = k => repos.reduce((n, [, r]) => n + (r.cocomo?.[k]?.cost ?? 0), 0);
+      const months = repos.reduce((n, [, r]) => n + (r.cocomo?.lloc?.person_months ?? 0), 0);
+      document.getElementById('loc-checked').textContent = d.checked_at ? `as of ${when(d.checked_at)}, of ${repos.length} spoke(s)` : 'no sweep yet';
+      document.getElementById('loc-cards').innerHTML =
+        card('Physical lines (SLOC)', num(sum('sloc')), change(total, 'sloc') || 'the lines that are not blank or a comment', 'file-earmark-code') +
+        card('Logical lines (LLOC)', num(sum('lloc')), change(total, 'lloc') || 'the statements, in the languages that loccount can parse', 'braces') +
+        card('COCOMO II cost', `$${num(cost('lloc'))}`, `${num(Math.round(months))} person-months, from the LLOC of each spoke`, 'cash-stack') +
+        card('COCOMO I cost', `$${num(cost('sloc'))}`, 'from the SLOC of each spoke', 'cash');
+      const lows = total.map(p => p.sloc);
+      document.getElementById('loc-trend').innerHTML = total.length
+        ? `${trend(total, 'sloc', 900, 120)}<div class="small text-body-secondary">${num(total[0].sloc)} SLOC on ${esc(total[0].day)}, ${num(total.at(-1).sloc)} on ${esc(total.at(-1).day)}.  The line runs from the least, ${num(Math.min(...lows))}, to the most, ${num(Math.max(...lows))}.</div>`
+        : '<span class="text-body-secondary">No sweep yet.</span>';
+
+      const langs = {};
+      repos.forEach(([, r]) => (r.languages || []).forEach(l => {
+        const t = langs[l.language] ??= { sloc: 0, lloc: 0, files: 0 };
+        t.sloc += l.sloc; t.lloc += l.lloc; t.files += l.filecount;
+      }));
+      const all = sum('sloc') || 1;
+      document.getElementById('loc-languages').innerHTML = Object.entries(langs).sort(([, a], [, b]) => b.sloc - a.sloc).map(([name, l]) => `<tr>
+        <td>${esc(name)}</td><td class="text-end">${num(l.sloc)}</td><td class="text-end">${num(l.lloc)}</td><td class="text-end">${num(l.files)}</td>
+        <td><div class="progress" role="progressbar" aria-label="${esc(name)}" aria-valuenow="${Math.round(100 * l.sloc / all)}" aria-valuemin="0" aria-valuemax="100" style="height: .5rem; max-width: 12rem"><div class="progress-bar" style="width: ${(100 * l.sloc / all).toFixed(1)}%"></div></div></td></tr>`).join('')
+        || '<tr><td colspan="5" class="text-body-secondary">No sweep yet.</td></tr>';
+
+      document.getElementById('loc-errors').innerHTML = Object.entries(d.errors || {}).map(([repo, e]) =>
+        `<li class="list-group-item list-group-item-danger small">The count of ${esc(repo)} failed, so the list keeps what the sweep before counted for it: ${esc(e)}</li>`).join('');
+      document.getElementById('loc-repos').innerHTML = repos.map(([repo, r]) => {
+        const points = history[repo] || [];
+        const top = (r.languages || []).slice(0, 3).map(l => `${esc(l.language)} <span class="text-body-secondary">${num(l.sloc)}</span>`).join(', ');
+        const more = (r.languages || []).length > 3 ? ` <span class="text-body-secondary">+${r.languages.length - 3} more</span>` : '';
+        return `<tr>
+        <td class="text-nowrap"><a href="${esc(r.url)}" title="the commit that was counted">${esc(repo)}</a></td>
+        <td class="text-end">${num(r.sloc)}</td><td class="text-end">${num(r.lloc)}</td><td class="text-end">${num(r.files)}</td>
+        <td class="small">${top}${more}</td>
+        <td class="text-end text-nowrap" title="${esc(num(r.cocomo?.lloc?.person_months))} person-months over ${esc(num(r.cocomo?.lloc?.schedule_months))} months">$${num(r.cocomo?.lloc?.cost)}</td>
+        <td class="text-nowrap">${trend(points, 'sloc', 120, 28)} <span class="small text-body-secondary">${esc(change(points, 'sloc'))}</span></td></tr>`;
+      }).join('') || '<tr><td colspan="7" class="text-body-secondary">No sweep yet.</td></tr>';
+    }
+
     async function refresh() {
       try {
-        await Promise.all([overview(), work(), harness(), upstream(), releases()]);
+        await Promise.all([overview(), work(), harness(), upstream(), releases(), loc()]);
         document.getElementById('updated').textContent = `updated ${new Date().toLocaleTimeString()}`;
       } catch (e) {
         document.getElementById('updated').textContent = `refresh failed: ${e}`;

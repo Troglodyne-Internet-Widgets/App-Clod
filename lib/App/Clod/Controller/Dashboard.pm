@@ -72,7 +72,8 @@ with its base, one item counts them, with a C<link> to F<#upstream>, the
 Upstream tab.  When the last L<App::Clod::Tasks/release_sweep> found
 distributions whose work is not all on CPAN, one item counts them, with a
 C<link> to F<#releases>, the Releases tab, and each spoke whose check failed
-is an item.
+is an item.  So is each spoke whose count failed in the last
+L<App::Clod::Tasks/loc_sweep>.
 A failed job that somebody ignored is not an item.
 
 =cut
@@ -151,6 +152,9 @@ sub action_items ( $self, $budget, $outages = [] ) {
     my $due      = @{ $releases->{dists} // [] };
     push @actions, { level => 'info', text => ( $due == 1 ? '1 distribution has' : "$due distributions have" ) . ' work that is not on CPAN:', link => { url => '#releases', label => 'Releases' } } if $due;
     push @actions, { level => 'warning', text => "The release check of $_ failed, so the Releases tab keeps what the sweep before found for it: $releases->{errors}{$_}" } for sort keys %{ $releases->{errors} // {} };
+
+    my $loc = App::Clod::Tasks::last_result( $minion, 'loc_sweep' ) // {};
+    push @actions, { level => 'warning', text => "The line count of $_ failed, so the Code tab keeps what the sweep before counted for it: $loc->{errors}{$_}" } for sort keys %{ $loc->{errors} // {} };
 
     push @actions, { level => 'warning', text => 'Claude work is paused until the quota resets' . ( $budget->{paused_until} ? q{ at } . gmtime( $budget->{paused_until} ) . ' UTC' : q{} ) . q{.} } if $budget->{paused};
 
@@ -677,13 +681,26 @@ sub releases ($self) {
     return $self->render( json => $result // { dists => [], errors => {} } );
 }
 
+=method loc
+
+The result of the last L<App::Clod::Tasks/loc_sweep>: the lines of each
+spoke, and their history.  Before the first sweep, no repository, no error,
+no history, and no C<checked_at>.
+
+=cut
+
+sub loc ($self) {
+    my $result = App::Clod::Tasks::last_result( $self->minion, 'loc_sweep' );
+    return $self->render( json => $result // { repos => {}, errors => {}, history => {} } );
+}
+
 1;
 
 =head1 DESCRIPTION
 
 The controller behind F</> and F</api>.  Everything it shows comes from Minion:
 the jobs of the items, and the results of the last C<harness_scan>, C<self_check>,
-C<assigned_sweep>, C<activity_sweep>, C<upstream_sweep>, C<release_sweep> and
-C<inbox_poll>.
+C<assigned_sweep>, C<activity_sweep>, C<upstream_sweep>, C<release_sweep>,
+C<loc_sweep> and C<inbox_poll>.
 
 =cut
