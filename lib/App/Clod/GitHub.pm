@@ -512,6 +512,22 @@ sub tree ( $self, $repo, $ref ) {
     return { map { $_->{path} => $_ } @{ $tree->{tree} } };
 }
 
+=method compare
+
+C<($repo, $base, $head)>.  The comparison of two refs, as GitHub answers it,
+with C<ahead_by>, the count of the commits of C<$head> that C<$base> lacks,
+and C<commits>, the first 250 of them, oldest first.  Each ref is escaped, so
+that a slash in it, as in C<refs/tags/0.006> or a branch name, does not split
+the range.  Undef when either ref is not there.
+
+=cut
+
+sub compare ( $self, $repo, $base, $head ) {
+    my $res = $self->request( GET => "/repos/$repo/compare/" . Mojo::Util::url_escape($base) . '...' . Mojo::Util::url_escape($head), ok => [404] );
+    return if $res->code == 404;
+    return $res->json;
+}
+
 =method file
 
 C<($repo, $path, $ref)>.  The raw content, or undef when the file is not there.

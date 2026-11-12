@@ -21,11 +21,13 @@ use App::Clod::CodeOwners();
 use App::Clod::Deps();
 use App::Clod::GitHub();
 use App::Clod::Harness();
+use App::Clod::MetaCPAN();
 use App::Clod::Outage();
 use App::Clod::Packages();
 use App::Clod::Spoke();
 use App::Clod::Triage();
 
+use Config::INI::Reader();
 use Dist::Conformance::Check::SystemPackages();
 use JSON::Validator::Schema::Draft7();
 
@@ -52,6 +54,7 @@ our %TASKS = (
     activity_sweep     => \&activity_sweep,
     spoke_sweep        => \&spoke_sweep,
     upstream_sweep     => \&upstream_sweep,
+    release_sweep      => \&release_sweep,
     refresh_references => \&refresh_references,
     create_repo        => \&create_repo,
     file_issues        => \&file_issues,
@@ -71,6 +74,7 @@ our %SCHEDULES = (
     activity => [ '*/15 * * * *', 'activity_sweep' ],
     spokes   => [ '*/15 * * * *', 'spoke_sweep' ],
     upstream => [ '*/15 * * * *', 'upstream_sweep' ],
+    releases => [ '47 * * * *',   'release_sweep' ],
     self     => [ '7,37 * * * *', 'self_check' ],
 );
 our %SCHEDULED = map { $_->[1] => 1 } values %SCHEDULES;
@@ -136,7 +140,7 @@ sub hold ($job) {
 
 C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>,
 C<harness_scan>, C<assigned_sweep>, C<activity_sweep>, C<spoke_sweep>,
-C<upstream_sweep> and C<self_check>.
+C<upstream_sweep>, C<release_sweep> and C<self_check>.
 
 =cut
 
@@ -3458,6 +3462,109 @@ sub upstream_sweep ( $job, $config ) {
     }
     @pulls = sort { ( $a->{mergeable} ne q{CONFLICTING} ) <=> ( $b->{mergeable} ne q{CONFLICTING} ) || -( ( $a->{updated_at} // q{} ) cmp ( $b->{updated_at} // q{} ) ) } @pulls;
     return $job->finish( { checked_at => time, pulls => \@pulls, errors => \%errors } );
+}
+
+=func release_sweep
+
+Every hour.  Finds the Perl distributions among the spokes whose work is not
+all on CPAN, so that the Releases tab shows which of them are due for a
+release.  It asks L</release_state> about each spoke.
+
+Its result has C<checked_at>, C<checked>, the count of the spokes with a
+F<dist.ini>, C<dists>, the result of L</release_state> for each of them that
+is not C<released>, and C<errors>, a hash of repository to error.  If the
+check of a spoke fails, what the sweep before found for that spoke stays, so
+that one failed request does not hide a distribution that is due.
+
+=cut
+
+sub release_sweep ( $job, $config ) {
+    my $minion = $job->minion;
+    my $before = last_result( $minion, 'release_sweep' ) // {};
+    prune_history( $minion, q{release_sweep} );
+    my $gh   = github($config);
+    my $cpan = App::Clod::MetaCPAN->new( timeout => $config->{http_timeout} );
+    my ( @dists, %errors );
+    my $checked = 0;
+    for my $repo ( @{ spokes( $minion, $config ) } ) {
+        my $dist;
+        if ( !eval { $dist = release_state( $gh, $cpan, $repo ); 1 } ) {
+            $errors{$repo} = $@;
+            push @dists, grep { $_->{repo} eq $repo } @{ $before->{dists} // [] };
+            next;
+        }
+        next if !$dist;
+        $checked++;
+        push @dists, $dist if $dist->{state} ne 'released';
+    }
+    return $job->finish( { checked_at => time, checked => $checked, dists => \@dists, errors => \%errors } );
+}
+
+=func release_state
+
+C<($gh, $cpan, $repo)>, an L<App::Clod::GitHub> and an L<App::Clod::MetaCPAN>.
+Undef when the default branch of C<$repo> has no F<dist.ini>.  Else a hash of
+C<repo>, C<name> and C<version>, both from the F<dist.ini>, and C<state>,
+one of:
+
+=over
+
+=item C<no_version>
+
+The F<dist.ini> sets no C<version>, as when a plugin gives it, so there is
+no version to look for.  Then the hash has no C<version>.
+
+=item C<never_released>
+
+MetaCPAN has no release of the distribution.
+
+=item C<not_uploaded>
+
+MetaCPAN has releases of the distribution, but not this version: the version
+was raised and not uploaded.  C<latest> is the newest version on MetaCPAN.
+
+=item C<no_tag>
+
+This version is on MetaCPAN, but the repository has no tag C<$version> or
+C<v$version>, so the sweep cannot tell which commit it released.
+C<[Git::Tag]> writes one or the other, by its C<tag_format>.
+
+=item C<unreleased_commits>
+
+The default branch has commits after the tag of this version.  C<tag> is the
+tag, C<ahead_by> the count of those commits, and C<commits> the first 250 of
+them, oldest first, each a hash of C<sha>, C<subject>, the first line of its
+message, and C<url>.
+
+=item C<released>
+
+The default branch has nothing after the tag of this version.
+
+=back
+
+It dies when a request to GitHub or MetaCPAN fails, or when the F<dist.ini>
+does not parse or names no distribution.
+
+=cut
+
+sub release_state ( $gh, $cpan, $repo ) {
+    my $ini  = $gh->file( $repo, 'dist.ini' )              // return;
+    my $root = Config::INI::Reader->read_string($ini)->{_} // {};
+    my %dist = ( repo => $repo, name => $root->{name} // die "The dist.ini of $repo names no distribution\n" );
+    return { %dist, state => 'no_version' } if !defined $root->{version};
+    my $version  = $dist{version} = $root->{version};
+    my @versions = @{ $cpan->versions( $dist{name} ) };
+    return { %dist, state => 'never_released' } if !@versions;
+    return { %dist, state => 'not_uploaded', latest => $versions[0] } if !List::Util::any { $_ eq $version } @versions;
+    my $branch = default_branch( $gh, $repo );
+
+    for my $tag ( $version, "v$version" ) {
+        my $compare = $gh->compare( $repo, "refs/tags/$tag", $branch ) // next;
+        return { %dist, state => 'released' } if !$compare->{ahead_by};
+        my @commits = map { { sha => $_->{sha}, subject => ( split m{\n}, $_->{commit}{message} // q{} )[0], url => $_->{html_url} } } @{ $compare->{commits} // [] };
+        return { %dist, state => 'unreleased_commits', tag => $tag, ahead_by => $compare->{ahead_by}, commits => \@commits };
+    }
+    return { %dist, state => 'no_tag' };
 }
 
 1;
