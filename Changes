@@ -1,6 +1,9 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - A new key, grafana_url, names a dashboard of the telemetry of the
+      runs.  When it is set, the health page links to it with a Grafana
+      button next to Minion.  It must be an http or https URL.
     - When a run commits but says that something kept it from finishing,
       the pull request or the comment no longer quotes the calls that
       claude refused.  A command can name a host or a path, and a forge

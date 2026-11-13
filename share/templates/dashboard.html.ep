@@ -28,6 +28,9 @@
         <small class="text-body-secondary" id="updated"></small>
         <small class="text-body-secondary font-monospace" id="running" title="the commit that the bot runs"></small>
         <a class="btn btn-sm btn-outline-secondary" href="<%= url_for('/minion') %>"><i class="bi bi-list-task"></i> Minion</a>
+% if ($grafana_url) {
+        <a class="btn btn-sm btn-outline-secondary" id="grafana" href="<%= $grafana_url %>" target="_blank" rel="noopener"><i class="bi bi-graph-up"></i> Grafana</a>
+% }
       </span>
     </div>
   </nav>

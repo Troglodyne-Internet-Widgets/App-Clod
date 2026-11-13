@@ -48,6 +48,7 @@ our %SCHEMA = (
         bot_email        => { type => 'string',  nullable => 1, default => undef },
         github_api       => { type => 'string',  default  => 'https://api.github.com' },
         github_web       => { type => 'string',  default  => 'https://github.com' },
+        grafana_url      => { type => 'string',  nullable => 1, default => undef, pattern => '\Ahttps?://' },
         retention_days   => { type => 'integer', minimum  => 1, default => 30 },
         poll_interval    => { type => 'integer', minimum  => 0, default => 60 },
         http_timeout     => seconds(30),
@@ -456,6 +457,13 @@ archives, refusing a key with another fingerprint, install the packages,
 exit 0 when it did, print what the packager printed, and refuse a name that
 is not a plain package name.  The clod recipe of trog-provisioner makes it, and fills this
 in.
+
+=item grafana_url
+
+A dashboard of the telemetry of the runs, which the health page links to
+next to Minion.  Default none, and then the page has no such link.  It must
+be an C<http> or C<https> URL.  The clod recipe of trog-provisioner sets it to
+the dashboard that its C<grafanaotel> recipe draws, when it sets C<otel>.
 
 =item otel
 
