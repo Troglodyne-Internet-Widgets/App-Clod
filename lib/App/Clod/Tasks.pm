@@ -330,17 +330,17 @@ sub log_note ( $job, $message ) {
 =func system_text
 
 C<($config, $task)>.  The text that the claude runs of the task append to
-their system prompt: C<spoke_prompt> for a spoke task, and with an
-C<agent_own_lib> F<share/prompts/install.md>, which says how to install a
-module, then the C<system_prompts> text of the task, a blank line between
-them.  Undef when there is none.
+their system prompt: F<share/prompts/commands.md>, which every run gets,
+because every run is held to the rules of its tools; C<spoke_prompt> for a
+spoke task, and with an C<agent_own_lib> F<share/prompts/install.md>, which
+says how to install a module; then the C<system_prompts> text of the task.
+A blank line goes between them.
 
 =cut
 
 sub system_text ( $config, $task ) {
     my @spoke = $SPOKE_TASKS{$task} ? ( $config->{spoke_prompt}, $config->{agent_own_lib} ? prompt('install') : undef ) : ();
-    my @parts = grep { ( $_ // q{} ) ne q{} } @spoke, $config->{system_prompts}{$task};
-    return @parts ? join( "\n\n", @parts ) : undef;
+    return join "\n\n", grep { ( $_ // q{} ) ne q{} } prompt('commands'), @spoke, $config->{system_prompts}{$task};
 }
 
 =func packages_prompt

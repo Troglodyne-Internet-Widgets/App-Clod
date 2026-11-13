@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Every claude run now appends share/prompts/commands.md to its system
+      prompt.  It tells the run to write each command out literally: no
+      shell variables, one call per known item instead of a loop, and no
+      cd out of the worktree.  A permission rule cannot match a command
+      that hides its words, so such a call was refused.
     - A new key, grafana_url, names a dashboard of the telemetry of the
       runs.  When it is set, the health page links to it with a Grafana
       button next to Minion.  It must be an http or https URL.
