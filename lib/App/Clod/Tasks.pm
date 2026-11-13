@@ -3353,7 +3353,13 @@ sub activity_sweep ( $job, $config ) {
 =func spoke_sweep
 
 Every fifteen minutes, also when C<spoke_orgs> is empty.  When it is done, it
-queues L</refresh_references>, unless one waits or runs already.  Lists the public
+queues L</refresh_references>, unless one waits or runs already.  Before it
+asks, it runs the repair of Minion, which fails each job whose worker sent no
+heartbeat for C<missing_after>.  A refresh that died with its worker, for
+example on a guest that was destroyed and built again, then holds back new
+refreshes for C<missing_after> and one sweep, 45 minutes by default.  Without this repair,
+the refresh stays active until a worker runs the repair, which it does every few
+hours.  Lists the public
 repositories of each organization of C<spoke_orgs>, without forks and archived
 ones.  Its result has C<started_at>, the time before the first listing, so
 that L</made_repos> can tell whether it saw a repository made since.  If
@@ -3398,6 +3404,7 @@ sub spoke_sweep ( $job, $config ) {
         $by_org{$org} = [ sort map { $_->{full_name} } grep { !$_->{fork} && !$_->{archived} } @$list ];
     }
     $job->finish( { started_at => $started, checked_at => time, by_org => \%by_org, dropped => \%dropped, repos => [ sort map { @$_ } values %by_org ], errors => \%errors } );
+    $minion->repair;
     $minion->enqueue('refresh_references') if !$minion->jobs( { tasks => ['refresh_references'], states => [qw{inactive active}] } )->total;
     return;
 }
@@ -3577,7 +3584,9 @@ Code tab shows how big each spoke is, in which languages, what COCOMO
 estimates it would cost to write, and how that changed over time.
 
 Its result has C<checked_at>; C<repos>, a hash of repository to the result
-of L</loc_count>; C<errors>, a hash of repository to error; and C<history>,
+of L</loc_count>; C<errors>, a hash of repository to error; C<unreferenced>,
+the spokes that have no reference worktree yet, which it could not count, in
+the order of L</spokes>; and C<history>,
 a hash of repository to one point for each day, oldest first.  A point has
 C<day>, as C<YYYY-MM-DD> in UTC, C<sloc>, C<lloc>, C<files>, and
 C<sloc_cost> and C<lloc_cost>, the costs of the COCOMO I and COCOMO II
@@ -3599,12 +3608,15 @@ sub loc_sweep ( $job, $config ) {
     my $counter = App::Clod::Loccount->new( bin => $config->{loccount}{bin}, timeout => $config->{loccount}{timeout} );
     my $today   = POSIX::strftime( '%Y-%m-%d', gmtime );
     my $oldest  = POSIX::strftime( '%Y-%m-%d', gmtime( time - $config->{loccount}{history_days} * $DAY ) );
-    my ( %repos, %errors, %history );
+    my ( %repos, %errors, %history, @unreferenced );
     for my $repo ( @{ spokes( $minion, $config ) } ) {
         my @kept = grep { $_->{day} gt $oldest } @{ $before->{history}{$repo} // [] };
         my $count;
-        $errors{$repo} = $@ if !eval { $count = loc_count( $config, $counter, $repo ); 1 };
-        if ( !$count ) {
+        if ( !eval { $count = loc_count( $config, $counter, $repo ); 1 } ) {
+            $errors{$repo} = $@;
+        }
+        elsif ( !$count ) { push @unreferenced, $repo }
+        if    ( !$count ) {
             $repos{$repo}   = $before->{repos}{$repo} if $before->{repos}{$repo};
             $history{$repo} = \@kept                  if @kept;
             next;
@@ -3613,7 +3625,7 @@ sub loc_sweep ( $job, $config ) {
         my %point = ( day => $today, sloc_cost => $count->{cocomo}{sloc}{cost}, lloc_cost => $count->{cocomo}{lloc}{cost}, map { $_ => $count->{$_} } qw{sloc lloc files} );
         $history{$repo} = [ ( grep { $_->{day} ne $today } @kept ), \%point ];
     }
-    return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, history => \%history } );
+    return $job->finish( { checked_at => time, repos => \%repos, errors => \%errors, unreferenced => \@unreferenced, history => \%history } );
 }
 
 =func loc_count

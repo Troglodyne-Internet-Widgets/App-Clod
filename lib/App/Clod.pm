@@ -432,7 +432,8 @@ How big each spoke is, as loccount counts it: the physical and the logical
 source lines, the files, the languages, and the COCOMO II estimate of what it
 would cost to write, with a line of how the lines changed over the days that
 the sweep kept.  The whole of the spokes is the first row.  It also shows when
-the sweep last ran, and the spokes whose count failed.  See
+the sweep last ran, the spokes whose count failed, and the spokes that have no
+reference worktree yet, which the sweep cannot count.  See
 L<App::Clod::Tasks/loc_sweep>.
 
 =back

@@ -1737,8 +1737,18 @@ subtest 'the references that triage reads' => sub {
     run_job('spoke_sweep');
     is( $minion->jobs( { tasks => ['refresh_references'] } )->total, 1, 'and no second one while one waits' );
 
+    # The worker of the refresh stops sending heartbeats, as when its guest is destroyed.
+    my $gone = $minion->worker->register;
+    $gone->dequeue( 0, { id => $next->{id} } );
+    my $db = $minion->backend->sqlite->db;
+    $db->query( q{update minion_workers set notified = datetime('now', '-1 day') where id = ?}, $gone->id );
+    run_job('spoke_sweep');
+    is( $minion->job( $next->{id} )->info->{state}, 'failed', 'a refresh whose worker went away fails at the next spoke sweep, not at the next repair of a worker' );
+    my $new = $minion->jobs( { tasks => ['refresh_references'], states => ['inactive'] } )->next;
+    ok( $new, 'so that it does not keep the sweep from queueing a new one' ) or return;
+
     @refreshed = ();
-    my $refresh = run_id( $next->{id} );
+    my $refresh = run_id( $new->{id} );
     is( [ $refresh->{result}{refreshed}, [ sort @refreshed ] ], [ 2, \@SPOKES ], 'the refresh refreshes every spoke' );
     $minion->reset( { all => 1 } );
 };
@@ -2405,6 +2415,7 @@ subtest loc_sweep => sub {
     my $swept = run_job('loc_sweep')->{result};
     is( [ sort keys %{ $swept->{repos} } ],                  \@SPOKES,                                                        'every spoke with a reference worktree is counted, and a spoke without one yet is not' );
     is( $swept->{errors},                                    {},                                                              'and that is no error' );
+    is( $swept->{unreferenced},                              ['Test-Org/fresh'],                                              'but the sweep names it, so that the Code tab can say why it has no count' );
     is( $swept->{repos}{'Test-Org/one'}{sloc},               7158,                                                            'a count is what loccount says' );
     is( $swept->{repos}{'Test-Org/one'}{cocomo}{lloc}{cost}, 426086,                                                          'with its estimates' );
     is( $swept->{repos}{'Test-Org/one'}{commit},             $head{'Test-Org/one'},                                           'and the commit of the reference worktree that it counted' );

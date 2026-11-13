@@ -448,15 +448,16 @@ subtest releases => sub {
 };
 
 subtest loc => sub {
-    $t->get_ok('/api/loc')->status_is(200)->json_is( '' => { repos => {}, errors => {}, history => {} }, 'before the first sweep, no repository, no error and no history' );
+    $t->get_ok('/api/loc')->status_is(200)->json_is( '' => { repos => {}, errors => {}, unreferenced => [], history => {} }, 'before the first sweep, no repository, no error, no spoke without a reference and no history' );
     $t->get_ok('/api/overview')->status_is(200);
     ok( !action_about(qr/line\ count/), 'and no action item' );
 
     my $sweep = {
-        checked_at => 2,
-        repos      => { 'Test-Org/one' => { sloc => 10, lloc => 5, files => 1, languages => [ { language => 'Perl', sloc => 10, lloc => 5, filecount => 1 } ], cocomo => { sloc => { cost => 2 }, lloc => { cost => 1 } }, commit => 'abc', url => 'https://test.test/tree/abc' } },
-        errors     => { 'Test-Org/two' => "loccount -j -c /bogus: lstat /bogus: no such file or directory\n" },
-        history    => { 'Test-Org/one' => [ { day => '2026-11-11', sloc => 9, lloc => 4, files => 1, sloc_cost => 2, lloc_cost => 1 } ] },
+        checked_at   => 2,
+        repos        => { 'Test-Org/one' => { sloc => 10, lloc => 5, files => 1, languages => [ { language => 'Perl', sloc => 10, lloc => 5, filecount => 1 } ], cocomo => { sloc => { cost => 2 }, lloc => { cost => 1 } }, commit => 'abc', url => 'https://test.test/tree/abc' } },
+        errors       => { 'Test-Org/two' => "loccount -j -c /bogus: lstat /bogus: no such file or directory\n" },
+        unreferenced => ['Test-Org/three'],
+        history      => { 'Test-Org/one' => [ { day => '2026-11-11', sloc => 9, lloc => 4, files => 1, sloc_cost => 2, lloc_cost => 1 } ] },
     };
     job( loc_sweep => $sweep );
     $minion->perform_jobs;
