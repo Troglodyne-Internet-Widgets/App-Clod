@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Triage no longer writes instructions that let a spoke run stop on its
+      own judgment of what its machine can do.  A run told "if the host cannot
+      build a guest, say so" stopped because a program that the work does not
+      need was missing on its machine.  Triage now names the command of the
+      spoke that decides such a question.
     - Before the spoke sweep queues a refresh of the references, it runs the
       repair of Minion.  A refresh whose worker went away, for example on a
       guest that a reprovision destroyed, stayed active until a worker ran
