@@ -275,7 +275,7 @@ sub needed (@needs) {
 
 C<($minion, $task, $text, \%button, $repo)>.  A warning with C<$text>, and the
 button, a C<{label, act}>, unless a job of C<$task> waits or runs, of C<$repo>
-when it is given, as L</pending_job> finds it.  Then it names that job, and has
+when it is given, as L<App::Clod::Tasks/pending_job> finds it.  Then it names that job, and has
 no button.  The same goes for a L<App::Clod::Tasks/self_check>,
 which the job queues when it finishes, because C<$text> comes from the check
 before it.
@@ -283,29 +283,13 @@ before it.
 =cut
 
 sub button_item ( $minion, $task, $text, $button, $repo = undef ) {
-    if ( my $pending = pending_job( $minion, $task, $repo ) ) {
+    if ( my $pending = App::Clod::Tasks::pending_job( $minion, $task, $repo ) ) {
         return { level => 'warning', job => $pending, text => "$text It is queued." };
     }
-    if ( my $check = pending_job( $minion, 'self_check' ) ) {
+    if ( my $check = App::Clod::Tasks::pending_job( $minion, 'self_check' ) ) {
         return { level => 'warning', job => $check, text => "$text A new check is queued." };
     }
     return { level => 'warning', text => $text, buttons => [$button] };
-}
-
-=func pending_job
-
-C<($minion, $task, $repo, $note)>.  The id of a job of C<$task> that waits or
-runs, or undef.  With C<$repo>, only a job with that value in its notes counts:
-in the note C<$note>, which is C<repo> unless it is given.
-
-=cut
-
-sub pending_job ( $minion, $task, $repo = undef, $note = 'repo' ) {
-    my $jobs = $minion->jobs( { tasks => [$task], states => [qw{inactive active}] } );
-    while ( my $info = $jobs->next ) {
-        return $info->{id} if !defined $repo || ( $info->{notes}{$note} // q{} ) eq $repo;
-    }
-    return;
 }
 
 =func harness_job
@@ -318,7 +302,7 @@ C<harness>.  Undef when there is none.
 =cut
 
 sub harness_job ( $minion, $repo ) {
-    return pending_job( $minion, 'harness_fix', $repo ) // pending_job( $minion, 'spoke_fix', $repo, 'harness' ) // pending_job( $minion, 'spoke_address', $repo, 'harness' );
+    return App::Clod::Tasks::pending_job( $minion, 'harness_fix', $repo ) // App::Clod::Tasks::pending_job( $minion, 'spoke_fix', $repo, 'harness' ) // App::Clod::Tasks::pending_job( $minion, 'spoke_address', $repo, 'harness' );
 }
 
 =func waiting_items
@@ -359,7 +343,7 @@ sub waiting_items ($minion) {
             push @items, { level => 'warning', job => $resumed, text => "$text The packages are installed, and the work resumes." } if $next && $PENDING{ $next->info->{state} };
             next;
         }
-        if ( my $install = pending_job( $minion, 'packages_install', $id, 'resume' ) ) {
+        if ( my $install = App::Clod::Tasks::pending_job( $minion, 'packages_install', $id, 'resume' ) ) {
             push @items, { level => 'warning', job => $install, text => "$text It is queued." };
             next;
         }
@@ -390,7 +374,7 @@ which.
 
 sub self_update ($self) {
     my $minion = $self->minion;
-    return $self->render( json => { queued => pending_job( $minion, 'self_update' ) // $minion->enqueue('self_update') } );
+    return $self->render( json => { queued => App::Clod::Tasks::pending_job( $minion, 'self_update' ) // $minion->enqueue('self_update') } );
 }
 
 =method plugin_update
@@ -402,7 +386,7 @@ which.
 
 sub plugin_update ($self) {
     my $minion = $self->minion;
-    return $self->render( json => { queued => pending_job( $minion, 'plugin_update' ) // $minion->enqueue('plugin_update') } );
+    return $self->render( json => { queued => App::Clod::Tasks::pending_job( $minion, 'plugin_update' ) // $minion->enqueue('plugin_update') } );
 }
 
 =method deps_upgrade
@@ -414,7 +398,7 @@ which.
 
 sub deps_upgrade ($self) {
     my $minion = $self->minion;
-    return $self->render( json => { queued => pending_job( $minion, 'deps_upgrade' ) // $minion->enqueue('deps_upgrade') } );
+    return $self->render( json => { queued => App::Clod::Tasks::pending_job( $minion, 'deps_upgrade' ) // $minion->enqueue('deps_upgrade') } );
 }
 
 =func harness_pull
@@ -539,9 +523,8 @@ sub packages_install ($self) {
     my $check   = App::Clod::Tasks::last_result( $minion, 'self_check' ) // {};
     my $lacks   = ( $check->{system_packages} // {} )->{$repo}           // {};
     my @missing = @{ $lacks->{missing} // [] };
-    return $self->render( json => { error => "$repo misses no system package" }, status => 404 ) if !@missing;
-    my $id = pending_job( $minion, 'packages_install', $repo ) // $minion->enqueue( packages_install => [ { repo => $repo, packages => \@missing, sources => $lacks->{sources} // [] } ], { notes => { repo => $repo } } );
-    return $self->render( json => { queued => $id } );
+    return $self->render( json => { error  => "$repo misses no system package" }, status => 404 ) if !@missing;
+    return $self->render( json => { queued => App::Clod::Tasks::queue_install( $minion, $repo, $lacks ) } );
 }
 
 =method resume_install
@@ -555,7 +538,7 @@ sub resume_install ( $self, $id ) {
     my $minion = $self->minion;
     my $info   = waiting_job( $minion, $id ) // return $self->render( json => { error => 'job ' . ( $id // q{} ) . ' waits for no system package' }, status => 404 );
     my $result = $info->{result};
-    my $queued = pending_job( $minion, 'packages_install', $info->{id}, 'resume' ) // $minion->enqueue(
+    my $queued = App::Clod::Tasks::pending_job( $minion, 'packages_install', $info->{id}, 'resume' ) // $minion->enqueue(
         packages_install => [ { repo => $result->{repo}, packages => $result->{packages}, sources => $result->{sources} // [], resume => $info->{id} } ],
         { notes => { resume => $info->{id}, origin => "$result->{repo}#$result->{pr}" } }
     );
