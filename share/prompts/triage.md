@@ -22,6 +22,13 @@ is this better handled across several spokes than in {{repo}} alone?
 
 For a review, `repos` names {{repo}} first, then any spoke whose code the
 reviewer must read to judge the change.
+Write `instructions` that a spoke run can follow to the end. Do not give the
+run a way to stop on its own judgment of what its machine can do, such as
+"if the host cannot build it, say so". A run takes such a way out at the first
+program that its machine does not have. The work often does not need that
+program. If a step depends on what the machine can do or reach, name the
+command of the spoke that decides it. The CLAUDE.md or the skills of the spoke
+name that command. Tell the run to stop only if that command fails.
 
 {{spoke_briefing}}
 
