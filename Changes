@@ -1,6 +1,13 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Before the spoke sweep queues a refresh of the references, it runs the
+      repair of Minion.  A refresh whose worker went away, for example on a
+      guest that a reprovision destroyed, stayed active until a worker ran
+      the repair on its own, every few hours.  No refresh ran in that time.
+    - The Code tab names the spokes that have no reference worktree yet, and
+      that the sweep therefore could not count.  When the last sweep counted
+      no spoke, the tab says so, and not that no sweep ran.
     - Add a Code tab to the health page.  It shows the size of each spoke,
       as loccount by Eric S. Raymond counts it: the physical and the logical
       source lines, the files, the lines of each language, and the COCOMO II

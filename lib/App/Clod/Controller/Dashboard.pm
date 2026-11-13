@@ -685,13 +685,13 @@ sub releases ($self) {
 
 The result of the last L<App::Clod::Tasks/loc_sweep>: the lines of each
 spoke, and their history.  Before the first sweep, no repository, no error,
-no history, and no C<checked_at>.
+no spoke without a reference worktree, no history, and no C<checked_at>.
 
 =cut
 
 sub loc ($self) {
     my $result = App::Clod::Tasks::last_result( $self->minion, 'loc_sweep' );
-    return $self->render( json => $result // { repos => {}, errors => {}, history => {} } );
+    return $self->render( json => $result // { repos => {}, errors => {}, unreferenced => [], history => {} } );
 }
 
 1;

@@ -423,6 +423,7 @@
       const cost = k => repos.reduce((n, [, r]) => n + (r.cocomo?.[k]?.cost ?? 0), 0);
       const months = repos.reduce((n, [, r]) => n + (r.cocomo?.lloc?.person_months ?? 0), 0);
       document.getElementById('loc-checked').textContent = d.checked_at ? `as of ${when(d.checked_at)}, of ${repos.length} spoke(s)` : 'no sweep yet';
+      const none = d.checked_at ? 'The last sweep counted no spoke.' : 'No sweep yet.';
       document.getElementById('loc-cards').innerHTML =
         card('Physical lines (SLOC)', num(sum('sloc')), change(total, 'sloc') || 'the lines that are not blank or a comment', 'file-earmark-code') +
         card('Logical lines (LLOC)', num(sum('lloc')), change(total, 'lloc') || 'the statements, in the languages that loccount can parse', 'braces') +
@@ -431,7 +432,7 @@
       const lows = total.map(p => p.sloc);
       document.getElementById('loc-trend').innerHTML = total.length
         ? `${trend(total, 'sloc', 900, 120)}<div class="small text-body-secondary">${num(total[0].sloc)} SLOC on ${esc(total[0].day)}, ${num(total.at(-1).sloc)} on ${esc(total.at(-1).day)}.  The line runs from the least, ${num(Math.min(...lows))}, to the most, ${num(Math.max(...lows))}.</div>`
-        : '<span class="text-body-secondary">No sweep yet.</span>';
+        : `<span class="text-body-secondary">${none}</span>`;
 
       const langs = {};
       repos.forEach(([, r]) => (r.languages || []).forEach(l => {
@@ -442,10 +443,11 @@
       document.getElementById('loc-languages').innerHTML = Object.entries(langs).sort(([, a], [, b]) => b.sloc - a.sloc).map(([name, l]) => `<tr>
         <td>${esc(name)}</td><td class="text-end">${num(l.sloc)}</td><td class="text-end">${num(l.lloc)}</td><td class="text-end">${num(l.files)}</td>
         <td><div class="progress" role="progressbar" aria-label="${esc(name)}" aria-valuenow="${Math.round(100 * l.sloc / all)}" aria-valuemin="0" aria-valuemax="100" style="height: .5rem; max-width: 12rem"><div class="progress-bar" style="width: ${(100 * l.sloc / all).toFixed(1)}%"></div></div></td></tr>`).join('')
-        || '<tr><td colspan="5" class="text-body-secondary">No sweep yet.</td></tr>';
+        || `<tr><td colspan="5" class="text-body-secondary">${none}</td></tr>`;
 
       document.getElementById('loc-errors').innerHTML = Object.entries(d.errors || {}).map(([repo, e]) =>
-        `<li class="list-group-item list-group-item-danger small">The count of ${esc(repo)} failed, so the list keeps what the sweep before counted for it: ${esc(e)}</li>`).join('');
+        `<li class="list-group-item list-group-item-danger small">The count of ${esc(repo)} failed, so the list keeps what the sweep before counted for it: ${esc(e)}</li>`).join('')
+        + ((d.unreferenced || []).length ? `<li class="list-group-item list-group-item-info small">${d.unreferenced.length} spoke(s) have no reference worktree yet, so the sweep could not count them, and the list keeps what the sweep before counted.  The next refresh of the references makes them: ${d.unreferenced.map(esc).join(', ')}</li>` : '');
       document.getElementById('loc-repos').innerHTML = repos.map(([repo, r]) => {
         const points = history[repo] || [];
         const top = (r.languages || []).slice(0, 3).map(l => `${esc(l.language)} <span class="text-body-secondary">${num(l.sloc)}</span>`).join(', ');
@@ -456,7 +458,7 @@
         <td class="small">${top}${more}</td>
         <td class="text-end text-nowrap" title="${esc(num(r.cocomo?.lloc?.person_months))} person-months over ${esc(num(r.cocomo?.lloc?.schedule_months))} months">$${num(r.cocomo?.lloc?.cost)}</td>
         <td class="text-nowrap">${trend(points, 'sloc', 120, 28)} <span class="small text-body-secondary">${esc(change(points, 'sloc'))}</span></td></tr>`;
-      }).join('') || '<tr><td colspan="7" class="text-body-secondary">No sweep yet.</td></tr>';
+      }).join('') || `<tr><td colspan="7" class="text-body-secondary">${none}</td></tr>`;
     }
 
     async function refresh() {
