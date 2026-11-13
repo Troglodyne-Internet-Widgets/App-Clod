@@ -542,7 +542,9 @@ subtest spoke_fix => sub {
     is( $partial->{state}, 'finished', 'a run that commits and says that a refused call blocked it finishes' ) or diag Mojo::Util::dumper $partial->{result};
     like( $partial->{result}, { pr => 101, blocked => qr/callers\ in\ bin/, denied => ['Bash(rtk git push)'] }, 'and opens the pull request, with what blocked it in its result' );
     my $unfinished = qr/did\ not\ finish\ this\ change\.\ It\ says:\ git\ push/;
-    like( calls_of('pull')->[0][2]{body}, qr/Renamed\ the\ sub\. .* $unfinished .* `Bash\(rtk\ git\ push\)`/sx, 'and its body says what the run said, and the refused calls' );
+    my $counted    = qr/refused\ one\ call\ of\ the\ run\ \(Bash\ 1\)\./;
+    my $kept_by    = qr/Job\ $partial->{id}\ keeps\ them .* `clod\ evidence\ $partial->{id}`/sx;
+    like( calls_of('pull')->[0][2]{body}, qr/Renamed\ the\ sub\. .* $unfinished .* $counted\ $kept_by/sx, 'and its body says what the run said, counts the refused calls and names the job that keeps them' );
 
     answer( { title => 't', summary => 's' }, commit => 1 );
     my $unnamed = run_job( spoke_fix => { item => { %item, title => '!!!' }, repo => 'Test-Org/one', instructions => 'x' } );
@@ -861,7 +863,9 @@ subtest spoke_address => sub {
     like( $partial->{result}, { commits => 1, blocked => qr/callers\ in\ bin/, denied => ['Bash(rtk git push)'] }, 'and pushes, with what blocked it in its result' );
     is( [ map { $_->[2]{body} } @{ calls_of('reply') } ], ['Renamed in lib/.'], 'and replies' );
     my $unfinished = qr/\AThe\ run\ did\ not\ finish\ this\ change\./;
-    like( [ map { $_->[2]{body} } @{ calls_of('comment') } ], [qr/$unfinished\ It\ says:\ git\ push .* `Bash\(rtk\ git\ push\)`/sx], 'and its comment says what the run said, and the refused calls' );
+    my $counted    = qr/refused\ one\ call\ of\ the\ run\ \(Bash\ 1\)\./;
+    my $kept_by    = qr/Job\ $partial->{id}\ keeps\ them/;
+    like( [ map { $_->[2]{body} } @{ calls_of('comment') } ], [qr/$unfinished\ It\ says:\ git\ push .* $counted\ $kept_by/sx], 'and its comment says what the run said, counts the refused calls and names the job that keeps them' );
 
     @calls                  = ();
     $state{review_comments} = [];
@@ -1378,6 +1382,13 @@ subtest conversation => sub {
     my $second = qr/\#\#\ review\ by\ trusted\n\nsecond/;
     like( App::Clod::Tasks::context( $app->clod_config, $gh, { %item, is_pr => 1, number => 11 } ), qr/$first.*$second.*third/s, 'and the context of a pull request shows the review where it came' );
     %state = ();
+};
+
+subtest unfinished_note => sub {
+    my $note    = App::Clod::Tasks::unfinished_note( { refusals => { blocked => 'b', denied => [ 'Bash(cat > /bogus <<EOF', 'Edit(/bogus)', 'Bash(rm /bogus)' ] } }, 7 );
+    my $counted = qr/refused\ 3\ calls\ of\ the\ run\ \(Bash\ 2,\ Edit\ 1\)\./;
+    like( $note, qr/$counted\ Job\ 7\ keeps\ them/, 'several refused calls are counted by tool, and the job that keeps them is named' );
+    is( [ App::Clod::Tasks::unfinished_note( { refusals => { denied => ['Bash(x)'] } }, 7 ) ], [], 'a run that says nothing kept it from finishing gets no note' );
 };
 
 subtest pending_threads => sub {

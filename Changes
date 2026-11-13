@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - When a run commits but says that something kept it from finishing,
+      the pull request or the comment no longer quotes the calls that
+      claude refused.  A command can name a host or a path, and a forge
+      can be public.  The note counts the refused calls by tool and names
+      the job.  The result of the job and `clod evidence` still hold them.
     - A new task, packages_restore, queues an install of the system
       packages that each spoke declares and the host lacks, as the button
       Install packages does.  A provisioner queues it once the worker runs
