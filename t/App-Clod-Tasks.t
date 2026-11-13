@@ -2034,7 +2034,21 @@ subtest 'system packages' => sub {
     is( $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } )->total,        1,        'and still queues a check, for what it installed before it failed' );
     is( run_job( packages_install => { repo => 'Test-Org/one', packages => [] } )->{state}, 'failed', 'and a job with no package runs no installer' );
 
+    $minion->reset( { all => 1 } );
+    run_job('harness_scan');
+    %have = ( 'libfoo-dev' => 1 );
+    $packages->redefine( installed => sub ( $packager, $name ) { return $have{$name} } );
+    my $waiting  = $minion->enqueue( packages_install => [ { repo => 'Test-Org/one', packages => ['ffmpeg'] } ], { notes => { repo => 'Test-Org/one' } } );
+    my $restored = run_job('packages_restore')->{result}{queued};
+    is( [ sort keys %$restored ],    \@SPOKES, 'a restore queues an install for each spoke that lacks a package' );
+    is( $restored->{'Test-Org/one'}, $waiting, 'but not a second one for a spoke whose install waits already' );
+    my $two = $minion->job( $restored->{'Test-Org/two'} )->info;
+    is( [ $two->@{qw{args notes}} ], [ [ { repo => 'Test-Org/two', packages => [qw{ffmpeg libmagic-t64}], sources => [ \%jellyfin ] } ], { repo => 'Test-Org/two' } ], 'the install has what the check finds missing, as the button queues it' );
+    %have = ( ffmpeg => 1, 'libmagic-t64' => 1, 'libfoo-dev' => 1 );
+    is( run_job('packages_restore')->{result}{queued}, {}, 'and a host that lacks nothing gets no install' );
+
     delete $config->{system_packages};
+    is( run_job('packages_restore')->{result}{queued},                                                            {},                                 'without system_packages, a restore queues nothing' );
     is( run_job( packages_install => { repo => 'Test-Org/one', packages => ['libmagic-dev'] } )->{result}{error}, 'clod.conf has no system_packages', 'without the configuration, an install fails, and says why' );
     $minion->reset( { all => 1 } );
 };

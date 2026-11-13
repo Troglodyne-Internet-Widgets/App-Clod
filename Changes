@@ -1,6 +1,11 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - A new task, packages_restore, queues an install of the system
+      packages that each spoke declares and the host lacks, as the button
+      Install packages does.  A provisioner queues it once the worker runs
+      on a host that it built again, so the packages come back with no
+      click.
     - Each claude run writes its stream-json transcript, with the time that
       each event arrived, to the new evidence directory, under its job and
       attempt.  A job that fails, or finishes with something in blocked or

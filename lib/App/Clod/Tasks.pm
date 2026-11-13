@@ -68,6 +68,7 @@ our %TASKS = (
     plugin_update      => \&plugin_update,
     deps_upgrade       => \&deps_upgrade,
     packages_install   => \&packages_install,
+    packages_restore   => \&packages_restore,
 );
 
 # Each Minion schedule: its cron line and its task.
@@ -3313,6 +3314,57 @@ sub packages_install ( $job, $config, $args ) {
     return $job->fail( { %result, error => $error } ) if !defined $output;
     my $resumed = defined $args->{resume} ? resume( $job, $args->{resume} ) : undef;
     return $job->finish( { %result, output => $output, ( $resumed ? ( resumed => $resumed ) : () ) } );
+}
+
+=func pending_job
+
+C<($minion, $task, $repo, $note)>.  The id of a job of C<$task> that waits or
+runs, or undef.  With C<$repo>, only a job with that value in its notes counts:
+in the note C<$note>, which is C<repo> unless it is given.
+
+=cut
+
+sub pending_job ( $minion, $task, $repo = undef, $note = 'repo' ) {
+    my $jobs = $minion->jobs( { tasks => [$task], states => [qw{inactive active}] } );
+    while ( my $info = $jobs->next ) {
+        return $info->{id} if !defined $repo || ( $info->{notes}{$note} // q{} ) eq $repo;
+    }
+    return;
+}
+
+=func queue_install
+
+C<($minion, $repo, $lacks)>, with C<$lacks> what L</lacks_of> returns for the
+spoke C<$repo>.  Queues a L</packages_install> of its C<missing> packages and
+its C<sources>, noted with C<repo>, and returns the id.  If one waits or runs
+for C<$repo> already, it returns the id of that one, and queues none.
+
+=cut
+
+sub queue_install ( $minion, $repo, $lacks ) {
+    return pending_job( $minion, 'packages_install', $repo ) // $minion->enqueue( packages_install => [ { repo => $repo, packages => $lacks->{missing}, sources => $lacks->{sources} // [] } ], { notes => { repo => $repo } } );
+}
+
+=func packages_restore
+
+Queued by the provisioner when the worker starts on a host that it built
+again.  Queues a L</packages_install> with L</queue_install> for each spoke
+that lacks a package that it declares, as L</host_packages> finds it from the
+last L</harness_scan>.  So a new host gets the packages that the dashboard
+installed on the host before it, with no click.  It installs only what each
+spoke declares on its default branch, as the button does.  Its result has
+C<queued>, a hash of each spoke to the id of its install.  Without
+C<system_packages>, it queues nothing.  When the host cannot be read, the job
+fails, and the dashboard still has the buttons.
+
+=cut
+
+sub packages_restore ( $job, $config ) {
+    return $job->finish( { queued => {} } ) if !$config->{system_packages};
+    my $minion = $job->minion;
+    my $lacks  = host_packages( $config, last_result( $minion, 'harness_scan' ), App::Clod::Packages::os_release() );
+    my %queued = map { $_ => queue_install( $minion, $_, $lacks->{$_} ) } grep { @{ $lacks->{$_}{missing} // [] } } sort keys %$lacks;
+    return $job->finish( { queued => \%queued } );
 }
 
 =func resume

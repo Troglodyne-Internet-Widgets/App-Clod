@@ -367,7 +367,10 @@ there and restarts the bot.
 
 =item * Install packages, when a spoke declares system packages that the host
 lacks, queues L<App::Clod::Tasks/packages_install>, which installs them with
-the C<installer> of C<system_packages>.  See L<App::Clod::Packages>.
+the C<installer> of C<system_packages>.  See L<App::Clod::Packages>.  A host that
+is built again needs no click: the provisioner queues
+L<App::Clod::Tasks/packages_restore>, which queues the same install for
+each spoke.
 
 =item * Install and resume, when a pull request of the bot needs system
 packages that the host lacks, installs them, as Install packages does, and
