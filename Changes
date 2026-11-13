@@ -1,6 +1,18 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Each claude run writes its stream-json transcript, with the time that
+      each event arrived, to the new evidence directory, under its job and
+      attempt.  A job that fails, or finishes with something in blocked or
+      error, keeps the transcripts.  Any other job discards them.  A triage
+      or sort_review keeps them, because its instructions are where a spoke
+      job that fails later started.  self_check removes evidence after 30
+      days.  The directory is mode 0700, so the agent account cannot read it.
+    - clod evidence JOB prints the transcripts that a job kept: the prompt of
+      each run, each call of a tool with its input, each result, and the
+      text of the model, with the seconds since the run started.
+    - With telemetry configured, each claude run gets OTEL_RESOURCE_ATTRIBUTES
+      that name its job, task, attempt, repository and origin.
     - Triage no longer writes instructions that let a spoke run stop on its
       own judgment of what its machine can do.  A run told "if the host cannot
       build a guest, say so" stopped because a program that the work does not

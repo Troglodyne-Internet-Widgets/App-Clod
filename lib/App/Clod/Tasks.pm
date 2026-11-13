@@ -11,6 +11,7 @@ use IPC::Run         ();
 use List::Util       ();
 use Mojo::File       ();
 use Mojo::JSON       ();
+use Mojo::Util       ();
 use POSIX            ();
 use Text::ParseWords ();
 use Time::HiRes      qw{time};
@@ -19,6 +20,7 @@ use App::Clod::Budget();
 use App::Clod::Claude();
 use App::Clod::CodeOwners();
 use App::Clod::Deps();
+use App::Clod::Evidence();
 use App::Clod::GitHub();
 use App::Clod::Harness();
 use App::Clod::Loccount();
@@ -85,11 +87,18 @@ our %SCHEDULED = map { $_->[1] => 1 } values %SCHEDULES;
 # The tasks that run claude in a worktree of one spoke.
 our %SPOKE_TASKS = map { $_ => 1 } qw{spoke_fix spoke_review spoke_address};
 
+# The tasks whose runs write the instructions of a spoke run.  Their
+# transcripts stay when they finish, beside the spoke job that may fail.
+our %INSTRUCTING_TASKS = map { $_ => 1 } qw{triage sort_review};
+
 my $HOUR          = 3600;
 my $DAY           = 86_400;
 my $CLAIM_SECONDS = 30 * $DAY;
-my $REPO_SECONDS  = 4 * $HOUR;
-my $HISTORY       = 10;
+
+# How long the evidence of a job stays after its last run.
+our $EVIDENCE_SECONDS = 30 * $DAY;
+my $REPO_SECONDS = 4 * $HOUR;
+my $HISTORY      = 10;
 
 =func register
 
@@ -109,18 +118,74 @@ sub register ( $app, $config ) {
 
 C<($job, $config, $code, @args)>.  Runs the task, unless an outage holds it.
 If GitHub refuses the token, it starts a GitHub outage, and the job waits
-through C<hold> in place of failing.
+through C<hold> in place of failing.  When the task returns and the job
+L</turned_out_fine>, it discards the transcripts that the claude runs of this
+attempt wrote, as L</run_claude> says.
 
 =cut
 
 sub perform ( $job, $config, $code, @args ) {
     return hold($job) if App::Clod::Outage::holding( $job->minion, $job->task );
-    return 1          if eval { $code->( $job, $config, @args ); 1 };
+    my $ok    = eval { $code->( $job, $config, @args ); 1 };
     my $error = $@;
-    die $error if !App::Clod::GitHub::is_unauthorized($error);
+    evidence( $job, $config )->discard if $ok && turned_out_fine($job);
+    return 1                           if $ok;
+    die $error                         if !App::Clod::GitHub::is_unauthorized($error);
     App::Clod::Outage::begin( $job, github => $error );
     log_note( $job, 'GitHub refused the token; all work waits' );
     return hold($job);
+}
+
+=func evidence
+
+C<($job, $config)>.  The L<App::Clod::Evidence> of this attempt of the job.
+
+=cut
+
+sub evidence ( $job, $config ) {
+    return App::Clod::Evidence->new( root => $config->{evidence}, job => $job->id, attempt => $job->retries );
+}
+
+=func turned_out_fine
+
+C<($job)>, after its task returned.  True when nothing about the job needs
+the transcripts of its runs, so L</perform> discards them.  That is a job that
+finished, or that the worker will finish because its task returned without a
+result, with nothing in C<blocked> or C<error> of its result.  A job of
+C<%INSTRUCTING_TASKS> never turned out fine here, because a spoke job that it
+started can fail later, and its instructions came from this run.
+L<App::Clod::Evidence/prune> removes those after C<$EVIDENCE_SECONDS>.
+
+A job that failed, or that will retry, did not turn out fine, and a task
+that died never gets here.
+
+=cut
+
+sub turned_out_fine ($job) {
+    return 0 if $INSTRUCTING_TASKS{ $job->task };
+    my $info = $job->info;
+    return 0 if $info->{state} ne 'finished' && $info->{state} ne 'active';
+    my $result = ref $info->{result} eq 'HASH' ? $info->{result} : {};
+    return 0 if ( $result->{blocked} // q{} ) =~ m{\S} || defined $result->{error};
+    return 1;
+}
+
+=func telemetry_attributes
+
+C<($job, \%otel)>.  C<OTEL_RESOURCE_ATTRIBUTES> for the claude runs of the
+job: the C<OTEL_RESOURCE_ATTRIBUTES> of C<%otel>, the C<otel> section of the
+configuration, then C<clod.job_id>, C<clod.task>, C<clod.attempt>, and
+C<clod.repo> and C<clod.origin> from the notes of the job when it has them.
+Each value is percent-encoded, because the variable takes the W3C Baggage
+format, where a comma, an equals sign or a space would end the value.
+
+=cut
+
+sub telemetry_attributes ( $job, $otel ) {
+    my $notes = $job->info->{notes} // {};
+    my %attr  = ( 'clod.job_id' => $job->id, 'clod.task' => $job->task, 'clod.attempt' => $job->retries, map { ( "clod.$_" => $notes->{$_} ) } grep { defined $notes->{$_} } qw{repo origin} );
+    my $own   = $otel->{OTEL_RESOURCE_ATTRIBUTES} // q{};
+    return join q{,}, ( $own ne q{} ? $own : () ), map { "$_=" . Mojo::Util::url_escape( $attr{$_}, '^A-Za-z0-9\-._~/#' ) } sort keys %attr;
 }
 
 =func hold
@@ -321,8 +386,11 @@ sub retry_after ( $job, $delay ) {
 
 C<($job, $config, %run)>.  Runs claude as L<App::Clod::Claude/run> does, with
 the L</system_text> of the job's task as C<system>, and writes its progress to
-the job notes.  Returns the outcome of L<App::Clod::Claude/run>, a hash
-reference.  If the quota is paused or runs out, or Claude refuses the token, it
+the job notes.  The run writes its transcript to the L</evidence> of the
+job, which starts with the directory, the prompt, and the argument list of
+claude, as L<App::Clod::Claude/command> builds it.  With telemetry
+configured, the run gets the L</telemetry_attributes> of the job.  Returns
+the outcome of L<App::Clod::Claude/run>, a hash reference.  If the quota is paused or runs out, or Claude refuses the token, it
 retries the job and returns undef instead, so the caller returns at once.  A
 refused token starts a Claude outage, see L<App::Clod::Outage>.
 
@@ -331,11 +399,15 @@ refused token starts a Claude outage, see L<App::Clod::Outage>.
 sub run_claude ( $job, $config, %run ) {
     my $minion = $job->minion;
     return retry_after( $job, 600 ) if App::Clod::Budget::paused($minion);
+    my $claude = claude($config);
+    $claude->env( { %{ $claude->env }, OTEL_RESOURCE_ATTRIBUTES => telemetry_attributes( $job, $config->{otel} ) } ) if %{ $config->{otel} };
+    my %args    = ( system => system_text( $config, $job->task ), %run );
+    my $record  = evidence( $job, $config )->recorder( task => $job->task, dir => "$run{dir}", prompt => $run{prompt}, command => $claude->command(%args) );
     my $events  = 0;
-    my $outcome = claude($config)->run(
-        system => system_text( $config, $job->task ),
-        %run,
+    my $outcome = $claude->run(
+        %args,
         on_event => sub ($event) {
+            $record->($event);
             $job->note( progress => { events => $events, last => $event->{type}, at => time } ) if !( ++$events % 25 );
         },
     );
@@ -2877,7 +2949,8 @@ sub harness_run ( $job, $item, $task, $args, $left, $done ) {
 
 =func self_check
 
-Every half hour.  Says whether the bot is up to date: C<running>, the commit
+Every half hour.  Removes the L</evidence> of each job that no run added to
+for C<$EVIDENCE_SECONDS>.  Says whether the bot is up to date: C<running>, the commit
 that the worker runs, from the helper C<running> of L<App::Clod>, and
 C<checkout>, the L<App::Clod/checkout> after a fetch, with C<head>,
 C<upstream>, its upstream branch, and C<behind> and C<ahead>, the commits
@@ -2897,6 +2970,7 @@ L<App::Clod::Packages/os_release>, or C<system_packages_error>.
 
 sub self_check ( $job, $config ) {
     prune_history( $job->minion, q{self_check} );
+    App::Clod::Evidence->new( root => $config->{evidence} )->prune($EVIDENCE_SECONDS);
     my %result = ( checked_at => time, running => $job->app->running );
     if ( my $dir = App::Clod::checkout() ) {
         my $git = spoke( $config, 'App-Clod' );

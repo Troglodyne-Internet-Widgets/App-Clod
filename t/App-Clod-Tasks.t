@@ -19,6 +19,7 @@ use Test::MockModule ();
 use Time::HiRes      qw{time};
 
 use App::Clod();
+use App::Clod::Evidence();
 use App::Clod::Outage();
 use App::Clod::Tasks();
 
@@ -723,6 +724,68 @@ subtest kickback => sub {
     is( run_job( kickback => { item => { %item, is_pr => 1 }, triage => { scope => 'clarify', reason => 'r', question => { text => 'Why?' } } } )->{result}{person}, 'pr-author', 'on a pull request, it goes to the author' );
     $state{pull} = { user => { login => $BOT } };
     is( run_job( kickback => { item => { %item, is_pr => 1 }, triage => { scope => 'clarify', reason => 'r', question => { text => 'Why?' } } } )->{result}{person}, 'trusted', 'or to the reviewer, when the bot is the author' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest 'the evidence of the runs of a job' => sub {
+    %state = ();
+    @calls = ();
+    my $root = $tmp->child(qw{workspace evidence});
+    my sub kept ($info) { return App::Clod::Evidence->new( root => "$root", job => $info->{id}, attempt => $info->{retries} )->runs }
+
+    answer( { title => 'A title', summary => 'What changed.', blocked => q{} }, commit => 1 );
+    my $fine = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'do it' } );
+    is( $fine->{state}, 'finished', 'a fix with nothing in its way finishes' ) or diag Mojo::Util::dumper $fine->{result};
+    is( kept($fine),    [],         'and keeps no transcript' );
+
+    answer( { title => 't', summary => 'Renamed the sub.', blocked => 'The guest could not be built, so the change is not tested.' }, commit => 1 );
+    my $partial = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'rename it' } );
+    is( $partial->{state}, 'finished', 'a fix that commits and says what blocked it finishes' ) or diag Mojo::Util::dumper $partial->{result};
+    my $runs = kept($partial);
+    is( scalar @$runs, 1, 'and keeps the transcript of its run' );
+    like( $runs->[0][0]{run}, { task => 'spoke_fix', prompt => qr/rename\ it/, dir => qr{/work/$partial->{id}/} }, 'which starts with the prompt and the directory of the run' );
+    is( ( scalar grep { $_ eq '--permission-mode' } @{ $runs->[0][0]{run}{command} } ), 1,        'and the argument list that claude got' );
+    is( $runs->[-1][-1]{event}{type},                                                   'result', 'and ends with the result that the run sent' );
+
+    answer( { title => 't', summary => 'Not updated.', blocked => 'The fetch of the release failed.' } );
+    my $failed = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( $failed->{state},          'failed', 'a fix that commits nothing and says what blocked it fails' );
+    is( scalar @{ kept($failed) }, 1,        'and keeps the transcript of its run' );
+
+    answer( { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1, instructions => 'x' } ] } );
+    my $triage = run_job( triage => \%item );
+    is( $triage->{state},          'finished', 'a triage finishes' ) or diag Mojo::Util::dumper $triage->{result};
+    is( scalar @{ kept($triage) }, 1,          'and keeps its transcript, because the spoke job that it started can still fail' );
+    $minion->reset( { all => 1 } );
+};
+
+subtest telemetry_attributes => sub {
+    my sub attributes ( $notes, $otel ) {
+        my $id  = $minion->enqueue( spoke_fix => [ {} ], { notes => $notes } );
+        my $job = $minion->worker->register->dequeue( 0, { id => $id } );
+        my $got = App::Clod::Tasks::telemetry_attributes( $job, $otel );
+        $job->finish;
+        $minion->worker->unregister;
+        return ( $id, $got );
+    }
+
+    my ( $id, $got ) = attributes( { repo => 'Test-Org/one', origin => 'Test-Org/one#7' }, {} );
+    is( $got, "clod.attempt=0,clod.job_id=$id,clod.origin=Test-Org/one#7,clod.repo=Test-Org/one,clod.task=spoke_fix", 'each run names its job, its task, its attempt, its repository and its origin' );
+
+    ( $id, $got ) = attributes( {}, { OTEL_RESOURCE_ATTRIBUTES => 'team=bots' } );
+    is( $got, "team=bots,clod.attempt=0,clod.job_id=$id,clod.task=spoke_fix", 'after the attributes that the configuration sets, and without the notes that the job lacks' );
+
+    ( undef, $got ) = attributes( { origin => 'a b,c=d' }, { OTEL_RESOURCE_ATTRIBUTES => q{} } );
+    like( $got, qr/,clod.origin=a%20b%2Cc%3Dd,/, 'a space, a comma or an equals sign in a value is percent-encoded, so it cannot start another attribute' );
+
+    my $config = $app->clod_config;
+    $config->{otel} = { OTEL_EXPORTER_OTLP_ENDPOINT => 'http://telemetry.test.test' };
+    answer( { title => 't', summary => 'Nothing to do here.' } );
+    $fake{FAKE_CLAUDE_ENV} = "$tmp/otel-env";
+    run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
+    $config->{otel} = {};
+    delete $fake{FAKE_CLAUDE_ENV};
+    like( [ split m{\n}, Mojo::File->new("$tmp/otel-env")->slurp ], bag { item 'OTEL_RESOURCE_ATTRIBUTES'; item 'CLAUDE_CODE_ENABLE_TELEMETRY'; etc; }, 'with telemetry configured, the run gets them' );
     $minion->reset( { all => 1 } );
 };
 

@@ -30,6 +30,7 @@ our %SCHEMA = (
     properties           => {
         bot       => $LOGIN,
         workspace => { type => 'string', minLength => 1 },
+        evidence  => { type => 'string', minLength => 1 },
         auth      => section(
             {
                 trusted_header  => { type => 'string', minLength => 1 },
@@ -125,6 +126,7 @@ sub validate ($raw) {
     $config = Clone::clone($config);
     $config->{minion}             //= "sqlite:$config->{workspace}/minion.db";
     $config->{bot_email}          //= "$config->{bot}\@users.noreply.github.com";
+    $config->{evidence}           //= "$config->{workspace}/evidence";
     $config->{agent_own_lib}      //= "$config->{workspace}/agent-own-lib" if $config->{agent_lib};
     $config->{harness}{standards} //= { git => "$config->{github_web}/$config->{harness}{plugin_repo}.git", path => 'skills/packaging-perl' };
     App::Clod::Harness::default_config( $config->{harness} );
@@ -209,6 +211,16 @@ repositories that are not ours.
 The users and organizations whose repositories are ours.  A fix whose best
 place is a repository outside this list goes back to a person.
 The Upstream tab leaves out pull requests in their repositories.
+
+=item evidence
+
+The directory where each claude run writes its transcript, under its job and
+attempt, as L<App::Clod::Evidence> describes.  The transcripts of a job stay
+only when it fails, or finishes with something in C<blocked> or C<error>.
+Default F<evidence> in the workspace.  The worker makes it mode 0700, so the
+account of C<run_as>, which shares the group of the workspace, cannot read
+it.  Put it where a rebuild of the host keeps it, beside the Minion
+database, for the evidence to outlive the host.
 
 =item minion
 
