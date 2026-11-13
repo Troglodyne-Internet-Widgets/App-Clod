@@ -29,7 +29,7 @@ Renders the health page.
 
 =cut
 
-sub page ($self) { return $self->render( template => 'dashboard', bot => $self->clod_config->{bot} ) }
+sub page ($self) { return $self->render( template => 'dashboard', $self->clod_config->%{qw{bot grafana_url}} ) }
 
 =method overview
 

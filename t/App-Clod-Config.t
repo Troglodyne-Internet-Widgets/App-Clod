@@ -131,6 +131,12 @@ subtest follow_up_max => sub {
     refused( { %minimal, follow_up_max => -1 }, '/follow_up_max: -1 < minimum(0)', 'a cap below none dies' );
 };
 
+subtest grafana_url => sub {
+    is( App::Clod::Config::validate( {%minimal} )->{grafana_url},                                                undef,                        'there is no grafana unless the configuration names one' );
+    is( App::Clod::Config::validate( { %minimal, grafana_url => 'https://logs.test.test/d/x' } )->{grafana_url}, 'https://logs.test.test/d/x', 'and an https URL lives' );
+    refused( { %minimal, grafana_url => 'javascript:alert(1)' }, '/grafana_url: String does not match', 'a URL that is not http or https dies, because the page links to it' );
+};
+
 subtest 'the standards of the harness' => sub {
     my $config = App::Clod::Config::validate( {%minimal} );
     is( $config->{harness}{flavor}, 'troglodyne-compat', 'a spoke without .conformance.yml is held to troglodyne-compat' );

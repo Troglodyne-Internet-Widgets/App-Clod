@@ -354,6 +354,16 @@ subtest work => sub {
     is( [ map { $_->{has_job} } @{ $work->{assigned} } ], [ 1, 0 ],                                    'an assigned issue with no job is shown as waiting' );
 };
 
+subtest 'the link to grafana' => sub {
+    $t->get_ok('/')->status_is(200)->element_exists( 'a[href="/minion"]', 'the page links to Minion' );
+    my $dom = $t->tx->res->dom;
+    ok( !$dom->at('#grafana'), 'and to no grafana, when the configuration names none' );
+    my $url = 'https://logs.test.test/d/claude-runs';
+    $t->app->clod_config->{grafana_url} = $url;
+    $t->get_ok('/')->status_is(200)->attr_is( '#grafana' => href => $url, 'with one, it links to it' );
+    delete $t->app->clod_config->{grafana_url};
+};
+
 subtest 'an outage' => sub {
     job( inbox_poll => { polled_at => time - 3600 } );
     job( triage     => { cost      => 0 }, notes => { outage => { service => 'github', error => 'GitHub GET /notifications: 401 Bad credentials', at => time } } );
