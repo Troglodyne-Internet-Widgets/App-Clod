@@ -1600,7 +1600,7 @@ sub spoke_fix ( $job, $config, $args ) {
 
             my $answer = $work->{answer};
             my $lacks  = branch_packages( $job, $config, $tree );
-            my $body   = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior ), unfinished_note($work), ( $lacks ? packages_note($lacks) : () );
+            my $body   = join "\n\n", $answer->{summary} // q{}, 'For ' . origin_url( $config, $item ), ( map { "Follows $_->{pr_url}" } grep { $_->{pr_url} } @prior ), unfinished_note( $work, $job->id ), ( $lacks ? packages_note($lacks) : () );
             my $pull   = $gh->create_pull( $repo, { title => $args->{title} // ( $answer->{title} || $item->{title} ), head => $branch, base => $base, body => $body, ( $lacks ? ( draft => Mojo::JSON::true ) : () ) } );
             log_note( $job, "opened $pull->{html_url}" . ( $lacks ? ' as a draft, because the host lacks ' . join( q{ }, @{ $lacks->{missing} } ) : q{} ) );
             assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $item->{requester} ) );
@@ -2018,7 +2018,7 @@ sub spoke_address ( $job, $config, $args ) {
             my $lacks = exists $work->{lacks} ? $work->{lacks} : branch_packages( $job, $config, $tree );
             draft_state( $job, $gh, $pull, $lacks ? 1 : 0 ) if $lacks || $args->{resume};
             my $said     = $held ? undef : @$comments ? $answer->{comment} : $args->{resume} ? $answer->{summary} : undef;
-            my @said     = grep { ( $_ // q{} ) ne q{} } $said, $held ? undef : unfinished_note($work), $lacks ? packages_note($lacks) : undef;
+            my @said     = grep { ( $_ // q{} ) ne q{} } $said, $held ? undef : unfinished_note( $work, $job->id ), $lacks ? packages_note($lacks) : undef;
             my $answered = @said ? $gh->comment( $repo, $item->{number}, join "\n\n", @said )->{html_url} : undef;
             describe( $job, $config, $gh, $item, $pull, $answer->{description} ) if !$held;
             return $job->finish( { repo => $repo, branch => $branch, pr => $item->{number}, pr_url => $pull->{html_url}, commits => $work->{commits}, replied => \@replied, ( $answered ? ( comment_url => $answered ) : () ), summary => $answer->{summary}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{refusals} // {} }, %{ $work->{usage} } } );
@@ -2222,18 +2222,25 @@ sub refused ($outcome) {
 
 =func unfinished_note
 
-C<(\%work)>.  The paragraph for the pull request when the run committed, but
-says in C<blocked> that something kept it from finishing.  It says what the
-run said, and names the refused calls, when there are some.  An empty list when the run says
-that nothing kept it from finishing.
+C<(\%work, $job_id)>.  The paragraph for the pull request when the run
+committed, but says in C<blocked> that something kept it from finishing.  It
+says what the run said.  When claude refused calls, it counts them by tool and
+names the job, whose result and evidence hold the calls; the calls themselves
+stay off the forge, because a command can name a host or a path.  An empty
+list when the run says that nothing kept it from finishing.
 
 =cut
 
-sub unfinished_note ($work) {
+sub unfinished_note ( $work, $job_id ) {
     my $refusals = $work->{refusals}    // {};
     my $why      = $refusals->{blocked} // return;
-    my @denied   = map { "`$_`" } @{ $refusals->{denied} // [] };
-    return join q{ }, "The run did not finish this change. It says: $why", ( @denied ? 'Claude refused these calls of the run: ' . join( q{, }, @denied ) . q{.} : () ),
+    my @denied   = @{ $refusals->{denied} // [] };
+    my %by_tool;
+    $by_tool{ $_ =~ s/\(.*//sr }++ for @denied;
+    my $tools = join q{, }, map { "$_ $by_tool{$_}" } sort keys %by_tool;
+    my $calls = @denied == 1 ? 'one call' : scalar(@denied) . ' calls';
+    return join q{ }, "The run did not finish this change. It says: $why",
+      ( @denied ? "Claude refused $calls of the run ($tools). Job $job_id keeps them, on the dashboard and in `clod evidence $job_id`." : () ),
       'A person must finish the change, or ask the bot here to finish it.';
 }
 
