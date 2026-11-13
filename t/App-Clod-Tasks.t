@@ -440,7 +440,8 @@ subtest triage => sub {
     $system->{triage} = 'Test with the provisioner.';
     $fake{FAKE_CLAUDE_RECORD} = "$tmp/triage-record";
     run_job( triage => \%item );
-    is( record_of("$tmp/triage-record")->{flags}{'--append-system-prompt'}, ['Test with the provisioner.'], 'the system prompt of triage from the configuration reaches the run' );
+    my $commands = App::Clod::Tasks::prompt('commands');
+    is( record_of("$tmp/triage-record")->{flags}{'--append-system-prompt'}, ["$commands\n\nTest with the provisioner."], 'the system prompt of triage from the configuration reaches the run' );
     my $sent = Mojo::JSON::decode_json( record_of("$tmp/triage-record")->{flags}{'--json-schema'}[0] );
     is( $sent->{properties}{repos}{items}{properties}{repo}{enum}, App::Clod::Tasks::spokes( $minion, $app->clod_config ), 'and claude is told which repositories are spokes, in the schema' );
     is( [ grep { exists $sent->{$_} } qw{allOf anyOf oneOf} ],     [],                                                     'which has no allOf, anyOf or oneOf at its top level, because the API refuses them there' );
@@ -1017,12 +1018,16 @@ subtest claude => sub {
 };
 
 subtest system_text => sub {
-    my %config = ( spoke_prompt => 'Test on a guest.', system_prompts => { spoke_fix => 'Fix with care.' } );
-    is( App::Clod::Tasks::system_text( \%config, 'spoke_fix' ), "Test on a guest.\n\nFix with care.", 'a spoke run gets the spoke prompt, then the prompt of its task' );
+    my %config   = ( spoke_prompt => 'Test on a guest.', system_prompts => { spoke_fix => 'Fix with care.' } );
+    my $commands = App::Clod::Tasks::prompt('commands');
+    like( $commands, qr/write\ each\ command\ out\s+literally/, 'the rules of a command line are a prompt of their own' );
+    is( App::Clod::Tasks::system_text( \%config, 'spoke_fix' ), "$commands\n\nTest on a guest.\n\nFix with care.", 'a spoke run gets them, then the spoke prompt, then the prompt of its task' );
     $config{agent_own_lib} = '/bogus/own-lib';
     my $install = qr/If\ the\ change\ needs\ a\ CPAN\ module.*/;
-    like( App::Clod::Tasks::system_text( \%config, 'spoke_fix' ), qr/\ATest\ on\ a\ guest[.]\n\n$install\n\nFix\ with\ care[.]\z/, 'and with an own lib, how to install a module, between them' );
-    is( App::Clod::Tasks::system_text( \%config, 'triage' ), undef, 'but a run that is not in a spoke gets neither' );
+    my $lead    = qr/\A\Q$commands\E\n\nTest\ on\ a\ guest[.]/;
+    my $tail    = qr/Fix\ with\ care[.]\z/;
+    like( App::Clod::Tasks::system_text( \%config, 'spoke_fix' ), qr/$lead\n\n$install\n\n$tail/, 'and with an own lib, how to install a module, before the prompt of its task' );
+    is( App::Clod::Tasks::system_text( \%config, 'triage' ), $commands, 'a run that is not in a spoke gets the rules of a command line alone' );
 };
 
 subtest 'tool spokes and the spoke prompt' => sub {
@@ -1045,8 +1050,9 @@ subtest 'tool spokes and the spoke prompt' => sub {
     my $fix  = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'do it' } );
     my $told = record_of($record_file);
     my $dir  = $tmp->child( 'workspace', 'work', $fix->{id}, 'Test-Org', 'two' )->to_string;
-    is( $fix->{state},                            'finished',                             'a fix with a tool spoke finishes' ) or diag Mojo::Util::dumper $fix->{result};
-    is( $told->{flags}{'--append-system-prompt'}, ["Test on a guest.\n\nFix with care."], 'a spoke run is told the spoke prompt, then the system prompt of its task' );
+    is( $fix->{state}, 'finished', 'a fix with a tool spoke finishes' ) or diag Mojo::Util::dumper $fix->{result};
+    my $commands = App::Clod::Tasks::prompt('commands');
+    is( $told->{flags}{'--append-system-prompt'}, ["$commands\n\nTest on a guest.\n\nFix with care."], 'a spoke run is told the spoke prompt, then the system prompt of its task' );
     my $scratch = scratch_of($fix);
     is( $told->{flags}{'--add-dir'}, [ $scratch, $dir ], 'it gets a worktree of the tool spoke of its own, after its scratch directory' );
     like( $told->{prompt}, qr/-\ Test-Org\/two\ in\ \Q$dir\E,\ at\ main\n/, 'and its prompt says where, at which branch' );
@@ -1099,7 +1105,7 @@ subtest 'tool spokes and the spoke prompt' => sub {
     $fake{FAKE_CLAUDE_RECORD} = $record_file;
     my $review = run_job( spoke_review => { item => { %item, kind => 'review', is_pr => 1, number => 9 }, repo => 'Test-Org/one', instructions => 'x' } );
     my $read   = record_of($record_file);
-    is( $read->{flags}{'--append-system-prompt'}, ['Test on a guest.'],                                                                'a review is told the spoke prompt, and not the system prompt of another task' );
+    is( $read->{flags}{'--append-system-prompt'}, ["$commands\n\nTest on a guest."],                                                   'a review is told the spoke prompt, and not the system prompt of another task' );
     is( $read->{flags}{'--add-dir'},              [ $tmp->child( 'workspace', 'work', $review->{id}, 'Test-Org', 'two' )->to_string ], 'and gets a tool worktree too' );
     unlike( $read->{flags}{'--allowedTools'}[0], qr/provision/, 'but not the extra tools, because it only reads' );
 
@@ -1110,7 +1116,7 @@ subtest 'tool spokes and the spoke prompt' => sub {
     like( $triage->{prompt}, qr/<<<SPOKE_PROMPT\nTest\ on\ a\ guest\.\nSPOKE_PROMPT>>>/, 'triage is told what each spoke run is told' );
     like( $triage->{prompt}, qr/tools:\ Test-Org\/two\./,                                'and which the tool spokes are' );
     unlike( $triage->{flags}{'--allowedTools'}[0], qr/provision/, 'and is not allowed the extra tools' );
-    is( $triage->{flags}{'--append-system-prompt'}, undef, 'nor told the spoke prompt as its own' );
+    is( $triage->{flags}{'--append-system-prompt'}, [$commands], 'nor told the spoke prompt as its own' );
 
     delete $config->{spoke_prompt};
     answer( { scope => 'single', reason => 'r', repos => [ { repo => 'Test-Org/one', order => 1, instructions => 'x' } ] } );
