@@ -228,17 +228,21 @@ sub github ($config) { return App::Clod::GitHub->new( api => $config->{github_ap
 
 =func spoke
 
-C<($config, $repo)>.  An L<App::Clod::Spoke> for that repository.
+C<($config, $repo)>.  An L<App::Clod::Spoke> for that repository.  With
+C<run_as>, its C<as_agent> is L<App::Clod::Claude/as_account> of L</claude>, so
+that the worktree of a claude run belongs to the account that claude runs as.
 
 =cut
 
 sub spoke ( $config, $repo ) {
+    my $claude = claude($config);
     return App::Clod::Spoke->new(
         repo         => $repo,
         workspace    => $config->{workspace},
         github_web   => $config->{github_web},
         author_name  => $config->{bot},
         author_email => $config->{bot_email},
+        ( $claude->run_as ? ( as_agent => sub (@cmd) { $claude->as_account(@cmd) } ) : () ),
     );
 }
 
@@ -1591,7 +1595,7 @@ sub spoke_fix ( $job, $config, $args ) {
     my $kept = kept( $job, spoke( $config, $repo ) );
     return in_worktree(
         $job, $config, $repo,
-        $kept ? { at => $kept->{sha} } : { branch => $branch, base => $base },
+        $kept ? { at => $kept->{sha} } : { branch => $branch, base => $base, agent => 1 },
         sub ( $spoke, $tree, $tools ) {
             stage_patch( $spoke, $tree, $args->{patch} ) if !$kept && defined $args->{patch};
             my $work = $kept // fix_run( $job, $config, $gh, $args, $spoke, $tree, $tools, branch => $branch, base => $base, prior => $prior ) // return;
@@ -1612,7 +1616,8 @@ sub spoke_fix ( $job, $config, $args ) {
 =func stage_patch
 
 C<($spoke, $tree, $patch)>.  Applies C<$patch>, the output of C<git diff
---cached --binary>, to the worktree C<$tree> and to its index, and installs
+--cached --binary>, to the worktree C<$tree> and to its index, as the account that owns the
+worktree, and installs
 the hooks that the worktree has now, as L<App::Clod::Spoke/install_hooks>
 does.  So the run of L</spoke_fix> starts with those changes staged, and its
 commit runs the hooks that the patch brings.
@@ -1620,8 +1625,7 @@ commit runs the hooks that the patch brings.
 =cut
 
 sub stage_patch ( $spoke, $tree, $patch ) {
-    my $file = Mojo::File::tempfile()->spew($patch);
-    $spoke->git( q{-C}, "$tree", qw{apply --index}, "$file" );
+    $spoke->apply_patch( $tree, $patch );
     $spoke->install_hooks($tree);
     return;
 }
@@ -1716,7 +1720,7 @@ sub spoke_review ( $job, $config, $args ) {
 
     return in_worktree(
         $job, $config, $repo,
-        { pull => $item->{number} },
+        { pull => $item->{number}, agent => 1 },
         sub ( $, $tree, $tools ) {
             my $outcome = run_claude(
                 $job, $config,
@@ -1874,7 +1878,7 @@ sub sort_review ( $job, $config, $item ) {
     my $branch = $pull->{head}{ref};
     return in_worktree(
         $job, $config, $repo,
-        { detach => $branch },
+        { detach => $branch, agent => 1 },
         sub ( $spoke, $tree, $tools ) {
             my $outcome = run_claude(
                 $job, $config,
@@ -2001,7 +2005,7 @@ sub spoke_address ( $job, $config, $args ) {
     }
     return in_worktree(
         $job, $config, $repo,
-        $kept ? { at => $kept->{sha} } : { existing => $branch },
+        $kept ? { at => $kept->{sha} } : { existing => $branch, agent => 1 },
         sub ( $spoke, $tree, $tools ) {
             my $work = $kept // address_run( $job, $config, $gh, $args, $spoke, $tree, $tools, pull => $pull, pending => $pending, comments => $comments ) // return;
             log_note( $job, "pushes $work->{sha}, which an earlier try kept" ) if $kept;
