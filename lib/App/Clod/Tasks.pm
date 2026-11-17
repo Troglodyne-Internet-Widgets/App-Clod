@@ -1111,12 +1111,17 @@ another job holds the lock, the job retries later.
 C<scratch> is the absolute path of an empty directory, C<$SCRATCH> in the
 directory of the job, for the files that a run that changes the spoke writes
 and does not commit, such as the output of a command.  L</fix_run> and
-L</address_run> add it to the session and name it in the prompt, from
-F<share/prompts/scratch.md>.  Claude Code checks the target of a redirect such
+L</address_run> add it to the session, name it in the prompt, from
+F<share/prompts/scratch.md>, and make it the C<TMPDIR> of the run.  Claude Code checks the target of a redirect such
 as C<< > /tmp/out >> against the directories of the session, so a run with no
 person to ask cannot write to F</tmp>.  A run that only reads does not get it.
 It is removed with the rest.  Its name begins with a dot, so it is no name of
 an owner on GitHub, and no checkout has it.
+
+Before it removes anything, it runs the L</clean_up> of the worktrees, so that
+what a run made outside them goes too, also when the run failed.  A directory
+that an earlier attempt of the job left, because its worker was killed, gets
+L</sweep_root> first.
 
 A tool worktree is made without the lock of its repository.  The lock keeps two
 jobs from working on one repository at once, and a tool worktree is no such
@@ -1134,7 +1139,8 @@ our $SCRATCH = '.scratch';
 sub in_worktree ( $job, $config, $repo, $how, $work ) {
     my $guard = $job->minion->guard( "repo:$repo", $REPO_SECONDS );
     return retry_after( $job, 120 ) if !$guard;
-    my $root  = Mojo::File->new( $config->{workspace}, 'work', $job->id );
+    my $root = Mojo::File->new( $config->{workspace}, 'work', $job->id );
+    sweep_root( $job, $config, $root ) if -d $root;
     my $spoke = spoke( $config, $repo );
     my @made  = ( { repo => $repo, spoke => $spoke, dir => $root->child($repo) } );
     my $tree  = $spoke->worktree( $made[0]{dir}, %$how );
@@ -1150,16 +1156,121 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
         $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ), checkouts => [@made], scratch => $scratch->to_abs->to_string } );
     };
     my $err = $@;
+    clean_up( $job, $config, $root, @made );
+    remove_work( $root, @made );
+    die $err if $err;
+    return @out;
+}
+
+=func clean_up
+
+C<($job, $config, $root, @checkouts)>, the directory of a job under F<work/>
+and its C<checkouts>, as L</in_worktree> makes them.  Runs each program that
+the F<clod.json> of a checkout names in C<cleanup>, from the top of that
+checkout, as the account that claude runs as, with the absolute path of
+C<$SCRATCH> in C<$root> as its one argument.  A program is for what a run of
+that repository makes outside the directory of the job, such as a guest on a
+hypervisor, and finds what to remove in the scratch directory.  It runs after
+every run, whether the run passed, failed or timed out, and it must succeed
+when the run made nothing.
+
+The paths are read and checked as L</declared_paths> does for C<run>, from the
+default branch.  The program that runs is the one in the worktree, which the
+run can change.  It runs as the account of the run, so it can do no more than
+the run itself could.  A checkout that is no longer a directory is skipped.
+Each program gets C<$CLEANUP_SECONDS>.  A program that fails, or a
+F<clod.json> that cannot be read, is noted on C<$job> with the first line of
+why, and the rest still run.
+
+=cut
+
+our $CLEANUP_SECONDS = 1_800;
+
+sub clean_up ( $job, $config, $root, @checkouts ) {
+    my @declaring = grep { -d $_->{dir} } @checkouts;
+    return if !@declaring;
+    my $gh      = github($config);
+    my $claude  = claude($config);
+    my $scratch = $root->child($SCRATCH)->to_abs->to_string;
+    for my $checkout (@declaring) {
+        my $repo  = $checkout->{repo};
+        my @paths = eval { declared_paths( $job, $checkout->{spoke}, default_branch( $gh, $repo ), 'cleanup' ) };
+        if ( my $err = $@ ) {
+            log_note( $job, "runs no cleanup from clod.json of $repo, because " . ( split m{\n}, $err )[0] );
+            next;
+        }
+        my $dir = $checkout->{dir}->to_abs->to_string;
+        for my $path (@paths) {
+            next if eval { $claude->as_account_in( $dir, $CLEANUP_SECONDS, "$dir/$path", $scratch ); 1 };
+            log_note( $job, "the cleanup $path of $repo failed: " . ( split m{\n}, $@ )[0] );
+        }
+    }
+    return;
+}
+
+=func remove_work
+
+C<($root, @checkouts)>, as L</clean_up> takes them.  Removes each worktree and
+then C<$root>.  A worktree that git will not remove is deleted with the rest
+and pruned from its bare clone, so that it holds no branch.
+
+=cut
+
+sub remove_work ( $root, @checkouts ) {
     my @stuck;
-    for my $made (@made) {
+    for my $made (@checkouts) {
         next if eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 };
         warn "could not remove $made->{dir}: $@";
         push @stuck, $made->{spoke};
     }
     $root->remove_tree;
     $_->prune_worktrees for @stuck;
-    die $err if $err;
-    return @out;
+    return;
+}
+
+=func sweep_work
+
+C<($job, $config)>.  For each directory under F<work/> of the workspace whose
+job no longer waits or runs, such as the job of a worker that was killed before
+L</in_worktree> removed it, runs L</sweep_root>.  A job that Minion no longer
+has counts as one that no longer runs.  Returns the ids of the directories that
+it removed.
+
+=cut
+
+our %STILL_RUNS = map { $_ => 1 } qw{inactive active};
+
+sub sweep_work ( $job, $config ) {
+    my $work = Mojo::File->new( $config->{workspace}, 'work' );
+    return if !-d $work;
+    my @swept;
+    for my $root ( sort { $a cmp $b } grep { -d } $work->list( { dir => 1 } )->each ) {
+        my $id    = $root->basename;
+        my $other = $id =~ m{\A[[:digit:]]+\z} ? $job->minion->job($id) : undef;
+        next if $other && $STILL_RUNS{ $other->info->{state} };
+        sweep_root( $job, $config, $root );
+        push @swept, $id;
+    }
+    return @swept;
+}
+
+=func sweep_root
+
+C<($job, $config, $root)>.  Runs L</clean_up> and L</remove_work> on the
+directory of a job that a run left behind.  A checkout is a directory under
+C<$root>, one or two levels down, that holds a F<.git>, and its repository is
+its path under C<$root>, as L</in_worktree> makes them.
+
+=cut
+
+sub sweep_root ( $job, $config, $root ) {
+    my @checkouts = map {
+        my $repo = $_->to_rel($root)->to_string;
+        +{ repo => $repo, spoke => spoke( $config, $repo ), dir => $_ }
+    } sort { $a cmp $b } grep { -e $_->child('.git') } $root->list_tree( { dir => 1, max_depth => 2 } )->each;
+    clean_up( $job, $config, $root, @checkouts );
+    remove_work( $root, @checkouts );
+    return;
 }
 
 =func slug
@@ -1452,7 +1563,7 @@ checkout of L</in_worktree>.  C<$own> is true for the spoke of the run.
 sub checkout_rules ( $job, $gh, $checkout, $own ) {
     my ( $repo, $spoke ) = @$checkout{qw{repo spoke}};
     my $dir   = $checkout->{dir}->to_abs->to_string;
-    my @paths = eval { declared_paths( $job, $spoke, default_branch( $gh, $repo ) ) };
+    my @paths = eval { declared_paths( $job, $spoke, default_branch( $gh, $repo ), 'run' ) };
     if ( my $err = $@ ) {
         log_note( $job, "gives the run no rule from clod.json of $repo, because " . ( split m{\n}, $err )[0] );
         return;
@@ -1472,31 +1583,32 @@ sub checkout_rules ( $job, $gh, $checkout, $own ) {
 
 =func declared_paths
 
-C<($job, $spoke, $branch)>.  The paths of the files that F<clod.json> on
-C<origin/$branch> of the spoke declares, as L</declared_rules> says.  The job
-notes each path that it leaves out, and why.  Empty when there is no
-F<clod.json>.  Dies when it cannot be read.
+C<($job, $spoke, $branch, $key)>.  The paths of the files that F<clod.json> on
+C<origin/$branch> of the spoke declares under C<$key>, C<run> or C<cleanup>, as
+L</declared_rules> says.  The job notes each path that it leaves out, and why.
+Empty when there is no F<clod.json>.  Dies when it cannot be read.
 
 =cut
 
-our %RULES_SCHEMA = ( type => 'object', properties => { run => { type => 'array', items => { type => 'string' } } } );
+our %RULES_SCHEMA = ( type => 'object',                    properties => { map { $_ => { type => 'array', items => { type => 'string' } } } qw{run cleanup} } );
+our %LEAVES_OUT   = ( run  => 'gives the run no rule for', cleanup    => 'runs no cleanup' );
 
-sub declared_paths ( $job, $spoke, $branch ) {
+sub declared_paths ( $job, $spoke, $branch, $key ) {
     my ($file) = grep { $_->{path} eq 'clod.json' } $spoke->files_at( $branch, 'clod.json' );
     return if !$file;
     my $declared = Mojo::JSON::decode_json( $spoke->blob( $file->{object} ) );
     my @errors   = JSON::Validator::Schema::Draft7->new( {%RULES_SCHEMA} )->validate($declared);
     die join( q{; }, @errors ) . "\n" if @errors;
     my @paths;
-    for my $path ( @{ $declared->{run} // [] } ) {
+    for my $path ( @{ $declared->{$key} // [] } ) {
         if ( $path !~ $DECLARED_PATH ) {
-            log_note( $job, "gives the run no rule for $path of clod.json, because it is not a plain path inside the repository" );
+            log_note( $job, "$LEAVES_OUT{$key} $path of clod.json, because it is not a plain path inside the repository" );
             next;
         }
         my $dir   = $path =~ s{/\*\z}{/}r;
         my @files = $dir eq $path ? grep { $_->{path} eq $path } $spoke->files_at( $branch, $path ) : $spoke->files_at( $branch, $dir );
         my @found = grep                 { runnable( $spoke, $_ ) } @files;
-        log_note( $job, "gives the run no rule for $path of clod.json, because it names no executable file on $branch" ) if !@found;
+        log_note( $job, "$LEAVES_OUT{$key} $path of clod.json, because it names no executable file on $branch" ) if !@found;
         push @paths, map { $_->{path} } @found;
     }
     return @paths;
@@ -1654,6 +1766,7 @@ sub fix_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %fix ) {
         ),
         tools    => change_tools( $config, [ declared_rules( $job, $gh, $tools->{checkouts} ) ], @programs ),
         add_dirs => [ $tools->{scratch}, @{ $tools->{add_dirs} } ],
+        tmpdir   => $tools->{scratch},
         schema   => {
             type       => 'object',
             required   => [qw{title summary blocked}],
@@ -2117,6 +2230,7 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
         ),
         tools    => change_tools( $config, [ declared_rules( $job, $gh, $tools->{checkouts} ) ], @programs ),
         add_dirs => [ $tools->{scratch}, @{ $tools->{add_dirs} } ],
+        tmpdir   => $tools->{scratch},
         schema   => {
             type       => 'object',
             required   => [qw{summary blocked replies}],
@@ -2958,7 +3072,8 @@ sub harness_run ( $job, $item, $task, $args, $left, $done ) {
 =func self_check
 
 Every half hour.  Removes the L</evidence> of each job that no run added to
-for C<$EVIDENCE_SECONDS>.  Says whether the bot is up to date: C<running>, the commit
+for C<$EVIDENCE_SECONDS>, and the directories of jobs that L</sweep_work>
+finds, as C<swept>, their ids.  Says whether the bot is up to date: C<running>, the commit
 that the worker runs, from the helper C<running> of L<App::Clod>, and
 C<checkout>, the L<App::Clod/checkout> after a fetch, with C<head>,
 C<upstream>, its upstream branch, and C<behind> and C<ahead>, the commits
@@ -2979,7 +3094,7 @@ L<App::Clod::Packages/os_release>, or C<system_packages_error>.
 sub self_check ( $job, $config ) {
     prune_history( $job->minion, q{self_check} );
     App::Clod::Evidence->new( root => $config->{evidence} )->prune($EVIDENCE_SECONDS);
-    my %result = ( checked_at => time, running => $job->app->running );
+    my %result = ( checked_at => time, running => $job->app->running, swept => [ sweep_work( $job, $config ) ] );
     if ( my $dir = App::Clod::checkout() ) {
         my $git = spoke( $config, 'App-Clod' );
         $result{checkout} = eval {
