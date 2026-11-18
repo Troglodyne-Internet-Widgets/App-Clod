@@ -98,8 +98,8 @@ my $CLAIM_SECONDS = 30 * $DAY;
 
 # How long the evidence of a job stays after its last run.
 our $EVIDENCE_SECONDS = 30 * $DAY;
-my $REPO_SECONDS = 4 * $HOUR;
-my $HISTORY      = 10;
+my $WORK_LOCK_SECONDS = 4 * $HOUR;
+my $HISTORY           = 10;
 
 =func register
 
@@ -1100,7 +1100,7 @@ sub tools_note ($checkouts) {
 
 =func in_worktree
 
-C<($job, $config, $repo, \%how, $work)>.  Takes the lock of the spoke, makes a
+C<($job, $config, $repo, \%how, $work)>.  Takes the lock of L</work_lock>, makes a
 worktree with the options in C<%how>, and a worktree of each tool spoke at its
 L</tool_branch>, runs C<< $work->($spoke, $tree, \%tools) >>, and removes every
 worktree and the directory of the job under F<work/> whatever happened.  A
@@ -1127,27 +1127,38 @@ what a run made outside them goes too, also when the run failed.  A directory
 that an earlier attempt of the job left, because its worker was killed, gets
 L</sweep_root> first.
 
-A tool worktree is made without the lock of its repository.  The lock keeps two
-jobs from working on one repository at once, and a tool worktree is no such
-work: it is detached, so it holds no branch, it writes no shared configuration,
-and nothing is pushed from it.  The one write that it shares with other jobs is
-the fetch into the bare clone, which triage already makes without the lock.
-Two fetches at once can meet on the lock file of a ref, and then one of them
-fails, with the job.  Taking the lock would hold every spoke run back while any
-job works in a tool spoke, for up to four hours.
+With C<at>, C<%how> also has C<onto>, the branch that the commit goes to,
+which names the lock.  The worktree does not get it.
+
+The lock keeps two jobs from working on one branch, or on one pull request, at
+once.  git refuses to check out one branch in two worktrees, and two jobs that
+pushed to one branch would each push over the other, or reply twice to one
+review.  Jobs on different branches of one repository run at once.  Each has
+its own worktree, and what they share in the bare clone is safe without the
+lock: L<App::Clod::Spoke/worktree> fetches, adds the worktree and installs the
+hooks under L<App::Clod::Spoke/locked>, the author is set once by the fetch,
+and each branch and each L</kept_ref> belongs to one job.  The hooks that a
+commit runs are the ones that the last job installed, so a branch that changes
+its hooks can see another branch run them while both jobs run.
+
+A tool worktree is made without a lock.  It is detached, so it holds no
+branch, and nothing is pushed from it, and taking a lock would hold every run
+on that branch back while any job works in a tool spoke, for up to four hours.
 
 =cut
 
 our $SCRATCH = '.scratch';
 
 sub in_worktree ( $job, $config, $repo, $how, $work ) {
-    my $guard = $job->minion->guard( "repo:$repo", $REPO_SECONDS );
+    my %opt   = %$how;
+    my $guard = $job->minion->guard( work_lock( $repo, \%opt ), $WORK_LOCK_SECONDS );
     return retry_after( $job, 120 ) if !$guard;
+    delete $opt{onto};
     my $root = Mojo::File->new( $config->{workspace}, 'work', $job->id );
     sweep_root( $job, $config, $root ) if -d $root;
     my $spoke = spoke( $config, $repo );
     my @made  = ( { repo => $repo, spoke => $spoke, dir => $root->child($repo) } );
-    my $tree  = $spoke->worktree( $made[0]{dir}, %$how );
+    my $tree  = $spoke->worktree( $made[0]{dir}, %opt );
     my @out   = eval {
         my $gh = github($config);
         for my $tool ( grep { $_ ne $repo } @{ $config->{tool_spokes} } ) {
@@ -1164,6 +1175,27 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
     remove_work( $root, @made );
     die $err if $err;
     return @out;
+}
+
+=func work_lock
+
+C<($repo, \%how)>.  The name of the Minion lock that L</in_worktree> takes for
+a worktree of C<$repo> with the options in C<%how>.  It names the branch that
+the job works on: the one that C<branch> or C<existing> checks out, the one
+that C<detach> reads, or C<onto>, the one that the commit of C<at> goes to.  A
+worktree of C<pull> names the pull request, because the job reviews it, and
+its head can be in another repository.  Dies when C<%how> names neither.
+
+A detached worktree holds no branch for git, but its job still works on one.
+L</sort_review> reads the branch of the bot's own pull request and replies to
+its reviews, and a L</spoke_address> on that branch replies to the same ones.
+
+=cut
+
+sub work_lock ( $repo, $how ) {
+    return "pull:$repo#$how->{pull}" if $how->{pull};
+    my $branch = $how->{branch} // $how->{existing} // $how->{detach} // $how->{onto} // die "a worktree of $repo names no branch to lock\n";
+    return "branch:$repo:$branch";
 }
 
 =func clean_up
@@ -1707,7 +1739,7 @@ sub spoke_fix ( $job, $config, $args ) {
     my $kept = kept( $job, spoke( $config, $repo ) );
     return in_worktree(
         $job, $config, $repo,
-        $kept ? { at => $kept->{sha} } : { branch => $branch, base => $base, agent => 1 },
+        $kept ? { at => $kept->{sha}, onto => $branch } : { branch => $branch, base => $base, agent => 1 },
         sub ( $spoke, $tree, $tools ) {
             stage_patch( $spoke, $tree, $args->{patch} ) if !$kept && defined $args->{patch};
             my $work = $kept // fix_run( $job, $config, $gh, $args, $spoke, $tree, $tools, branch => $branch, base => $base, prior => $prior ) // return;
@@ -2118,7 +2150,7 @@ sub spoke_address ( $job, $config, $args ) {
     }
     return in_worktree(
         $job, $config, $repo,
-        $kept ? { at => $kept->{sha} } : { existing => $branch, agent => 1 },
+        $kept ? { at => $kept->{sha}, onto => $branch } : { existing => $branch, agent => 1 },
         sub ( $spoke, $tree, $tools ) {
             my $work = $kept // address_run( $job, $config, $gh, $args, $spoke, $tree, $tools, pull => $pull, pending => $pending, comments => $comments ) // return;
             log_note( $job, "pushes $work->{sha}, which an earlier try kept" ) if $kept;
