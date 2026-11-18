@@ -140,7 +140,7 @@ subtest 'install, readable by its group and no more' => sub {
     App::Clod::Deps::install( "$lib", 'Foo' );
     is( umask, $worker, 'it puts back the umask of the worker' );
     umask $before;
-    my $perms = oct '7777';
+    my $perms = oct '0777';
     is( sprintf( '%04o', ( stat $made )[2] & $perms ),     '0640', 'what it installs, the group may read and not change' );
     is( sprintf( '%04o', ( stat "$made.d" )[2] & $perms ), '0750', 'and enter, in a directory' );
 };

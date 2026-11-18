@@ -28,6 +28,7 @@ my $tmp  = Mojo::File->new( File::Temp->newdir->dirname )->child( 'clod-tasks-' 
 END { $tmp->remove_tree if $tmp }
 
 my $BOT    = 'test-bot';
+my $BOT_RE = quotemeta $BOT;
 my @SPOKES = qw{Test-Org/one Test-Org/two};
 
 sub git (@args) {
@@ -52,7 +53,7 @@ sub seed ( $repo, $name, $text ) {
     git( '-C',  "$seed", 'push', '--quiet', "$bare", 'main' );
     return;
 }
-seed( $_, 'CLAUDE.md', "# CLAUDE.md\n\n$_ is a test spoke.\n" ) for @SPOKES;
+foreach my $spoke (@SPOKES) { seed( $spoke, 'CLAUDE.md', "# CLAUDE.md\n\n$spoke is a test spoke.\n" ) }
 
 sub path_of ($c) {
     my $url = $c->req->url;
@@ -429,7 +430,7 @@ subtest triage => sub {
     answer( { scope => 'multi', reason => 'both need it', repos => [ { repo => 'Test-Org/two', order => 2, instructions => 'then two' }, { repo => 'Test-Org/one', order => 1, instructions => 'first one' } ] } );
     my $info = run_job( triage => \%item );
     is( $info->{state}, 'finished', 'triage finishes' ) or diag Mojo::Util::dumper $info->{result};
-    my @children = map { $minion->job($_)->info } @{ $info->{result}{children} };
+    my @children = map { local ($_) = $_; $minion->job($_)->info } @{ $info->{result}{children} };
     is( [ map { $_->{task} } @children ],                [qw{spoke_fix spoke_fix report}],       'a multi fix is a spoke job per repo, then a report' );
     is( [ map { $_->{args}[0]{repo} // () } @children ], [qw{Test-Org/one Test-Org/two}],        'in the order triage gave' );
     is( $children[1]{parents},                           [ $children[0]{id} ],                   'each spoke waits for the one before it' );
@@ -557,7 +558,7 @@ subtest spoke_fix => sub {
     answer( { title => 't', summary => 's', question => 'Keep the old name?', path => 'lib/X.pm' } );
     my $ask = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
     like( $ask->{result}, { question => 'Keep the old name?', person => 'lib-owner', assigned => 1 }, 'a spoke that asks a question gives the issue to the owner of the path' );
-    my $resume = qr/mention\ \@$BOT\ here\ or\ assign\ this\ to\ \@$BOT\ again/;
+    my $resume = qr/mention\ \@$BOT_RE\ here\ or\ assign\ this\ to\ \@$BOT_RE\ again/;
     my $asks   = qr/Test-Org\/one.*Keep\ the\ old\ name\?/s;
     like( calls_of('comment')->[0][2]{body}, qr/\A\@lib-owner:\ .*$asks.*$resume/s, 'and asks it there, with how to go on' );
     is( calls_of('unassign')->[0][2], { assignees => [$BOT] }, 'and the bot lets go of the issue' );
@@ -711,8 +712,8 @@ subtest report => sub {
     %state = ();
     @calls = ();
     $minion->add_task( fake_spoke => sub ( $job, $r ) { $job->finish($r) } );
-    my @parents = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 1, pr_url => 'https://test.test/one/1' }, { repo => 'Test-Org/two', pr => 2, pr_url => 'https://test.test/two/2' };
-    run_id($_) for @parents;
+    my @parents = map { local ($_) = $_; $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 1, pr_url => 'https://test.test/one/1' }, { repo => 'Test-Org/two', pr => 2, pr_url => 'https://test.test/two/2' };
+    foreach my $parent (@parents) { run_id($parent) }
     my $info = run_id( $minion->enqueue( report => [ { item => \%item } ], { parents => \@parents } ) );
     is( $info->{result}{prs}, [ 'https://test.test/one/1', 'https://test.test/two/2' ], 'the report lists every pull request' );
     like( calls_of('comment')->[0][2]{body}, qr{one/1.*two/2}s, 'on the origin' );
@@ -721,25 +722,25 @@ subtest report => sub {
     like( calls_of('update_pull')->[0][2]{body}, qr{Merge\ together\ with:\n-\ \S+/two/2}, 'by adding the siblings to its body' );
 
     @calls = ();
-    my @asked = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', question => 'Which?' }, { repo => 'Test-Org/two', waiting => 1 };
-    run_id($_) for @asked;
+    my @asked = map { local ($_) = $_; $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', question => 'Which?' }, { repo => 'Test-Org/two', waiting => 1 };
+    foreach my $parent (@asked) { run_id($parent) }
     my $quiet = run_id( $minion->enqueue( report => [ { item => \%item } ], { parents => \@asked } ) );
     is( [ $quiet->{result}{waiting}, scalar @{ calls_of('comment') } ], [ 1, 0 ], 'when a spoke asked and none opened a pull request, the question is the last word' );
 
-    my @some = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 1, pr_url => 'https://test.test/one/1' }, { repo => 'Test-Org/two', question => 'Which?' };
-    run_id($_) for @some;
+    my @some = map { local ($_) = $_; $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 1, pr_url => 'https://test.test/one/1' }, { repo => 'Test-Org/two', question => 'Which?' };
+    foreach my $parent (@some) { run_id($parent) }
     run_id( $minion->enqueue( report => [ { item => \%item } ], { parents => \@some } ) );
     like( calls_of('comment')->[0][2]{body}, qr{one/1.*1\ of\ 2.*wait\ for\ the\ answer}s, 'otherwise the report says that the rest wait for the answer' );
 
     @calls = ();
     my $pr  = { %item, kind => 'address_review', is_pr => 1, number => 11 };
-    my @own = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 11, pr_url => 'https://test.test/one/11' };
-    run_id($_) for @own;
+    my @own = map { local ($_) = $_; $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 11, pr_url => 'https://test.test/one/11' };
+    foreach my $parent (@own) { run_id($parent) }
     my $own = run_id( $minion->enqueue( report => [ { item => $pr } ], { parents => \@own } ) );
     is( [ $own->{result}{quiet}, scalar @{ calls_of('comment') } ], [ 1, 0 ], 'an answer on the bot\'s own pull request alone is not reported on it again' );
 
-    my @wider = map { $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 11, pr_url => 'https://test.test/one/11' }, { repo => 'Test-Org/two', pr => 2, pr_url => 'https://test.test/two/2' };
-    run_id($_) for @wider;
+    my @wider = map { local ($_) = $_; $minion->enqueue( fake_spoke => [$_] ) } { repo => 'Test-Org/one', pr => 11, pr_url => 'https://test.test/one/11' }, { repo => 'Test-Org/two', pr => 2, pr_url => 'https://test.test/two/2' };
+    foreach my $parent (@wider) { run_id($parent) }
     run_id( $minion->enqueue( report => [ { item => $pr } ], { parents => \@wider } ) );
     like( calls_of('comment')->[0][2]{body}, qr{two/2}, 'but one that opened a pull request in another spoke is' );
     $minion->reset( { all => 1 } );
@@ -759,14 +760,14 @@ subtest kickback => sub {
     like( calls_of('comment')->[0][2]{body}, qr/$to.*Other\/lib.*X\ is\ broken\ there/s, 'and says why, to them and to the team that owns the path' );
     my $clone   = qr/run\ claude\ yourself\ in\ a\ clone\ of\ Other\/lib,/;
     my $by_hand = qr/$clone\ with\ perl-slop:pull-requests/;
-    my $tell    = qr/mention\ \@$BOT\ here\ with\ a\ link/;
+    my $tell    = qr/mention\ \@$BOT_RE\ here\ with\ a\ link/;
     like( calls_of('comment')->[0][2]{body}, qr/$by_hand.*$tell/s, 'and how to fix it upstream by hand, then tell the bot' );
 
     @calls = ();
     $state{files} = {};
     my $ask = run_job( kickback => { item => \%item, triage => { scope => 'clarify', reason => 'two readings', question => { text => 'Which one do you mean?' } } } );
     like( $ask->{result}, { person => 'trusted', assigned => 0, question => 'Which one do you mean?' }, 'with no CODEOWNERS and an organization owner, a question goes back to the requester' );
-    my $resume = qr/mention\ \@$BOT\ here\ or\ assign\ this\ to\ \@$BOT\ again/;
+    my $resume = qr/mention\ \@$BOT_RE\ here\ or\ assign\ this\ to\ \@$BOT_RE\ again/;
     like( calls_of('comment')->[0][2]{body}, qr/\A\@trusted:\ .*Which\ one\ do\ you\ mean\?.*$resume/s, 'it asks the question, and says how to go on' );
 
     @calls = ();
@@ -1117,7 +1118,8 @@ subtest 'tool spokes and the spoke prompt' => sub {
     is( $head_of->(), { $scratch => 0, $dir => $main }, 'with no earlier job in the tool spoke, the worktree is at its default branch, and the scratch directory is there and empty' );
     like( $told->{flags}{'--allowedTools'}[0], qr/,Bash\(bin\/provision:\*\),Bash\(rtk\ bin\/provision:\*\)\z/, 'and the extra tools are allowed, after the configured ones, with the rule for what rtk makes of each' );
     ok( !-e $tmp->child( 'workspace', 'work', $fix->{id} ), 'every worktree of the run is gone afterwards' );
-    is( [ grep { m{/work/} } split /\n/, git( '--git-dir', $tools, 'worktree', 'list' ) ], [], 'and the bare clone of the tool spoke has no worktree left' );
+    my $work_dir = $tmp->child( 'workspace', 'work' )->to_string;
+    is( [ grep { index( $_, $work_dir ) >= 0 } split /\n/, git( '--git-dir', $tools, 'worktree', 'list' ) ], [], 'and the bare clone of the tool spoke has no worktree left' );
 
     # A recipe that an earlier spoke of the same change pushed, two jobs back.
     my $seed = $tmp->child( 'seed', 'Test-Org/two' );
@@ -1351,8 +1353,8 @@ subtest 'the rules that a repository declares in clod.json' => sub {
     $fake{FAKE_CLAUDE_RECORD} = $record_file;
     my $bad = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
     is( $rules_of->(), [], 'a clod.json that is not valid gives no rule' );
-    my $unread = 'gives the run no rule from clod.json of Test-Org/two, because';
-    like( [ map { $_->{message} } @{ $bad->{notes}{log} } ], bag { item qr{\A\Q$unread\E}; etc }, 'and the job notes why' );
+    my $unread = quotemeta 'gives the run no rule from clod.json of Test-Org/two, because';
+    like( [ map { $_->{message} } @{ $bad->{notes}{log} } ], bag { item qr{\A$unread}; etc }, 'and the job notes why' );
 
     git( q{-C}, "$seed", qw{rm --quiet -r clod.json bin scripts} );
     git( q{-C}, "$seed", qw{-c user.name=t -c user.email=t@test.test commit --quiet -m clean} );
@@ -1543,7 +1545,7 @@ subtest harness_fix => sub {
     my $hook = $here->child(qw{data standards templates pre-commit})->slurp;
     chomp $hook;
     is( git( '--git-dir', $bare, 'show', "$info->{result}{branch}:git-hooks/pre-commit" ), $hook, 'with the hook of the standards on its branch' );
-    like( git( '--git-dir', $bare, 'log', '-1', '--format=%an %s', $info->{result}{branch} ), qr/\A$BOT\ Meet\ the\ harness\ standards\z/, 'committed by the bot' );
+    like( git( '--git-dir', $bare, 'log', '-1', '--format=%an %s', $info->{result}{branch} ), qr/\A$BOT_RE\ Meet\ the\ harness\ standards\z/, 'committed by the bot' );
 
     @calls = ();
     $state{open_pulls} = [ { title => 'Meet the harness standards', user => { login => $BOT }, html_url => 'https://test.test/pull/7' } ];
@@ -1721,9 +1723,11 @@ subtest harness_fix => sub {
     my @as_t = qw{-c user.name=t -c user.email=t@test.test};
 
     # Both of severity 2, so perlcritic with no profile reports neither.
-    my $magic   = 'ValuesAndExpressions::ProhibitMagicNumbers';
-    my $postfix = 'ControlStructures::ProhibitPostfixControls';
-    my $profile = sub (@policies) {
+    my $magic      = 'ValuesAndExpressions::ProhibitMagicNumbers';
+    my $postfix    = 'ControlStructures::ProhibitPostfixControls';
+    my $magic_re   = quotemeta $magic;
+    my $postfix_re = quotemeta $postfix;
+    my $profile    = sub (@policies) {
         return join q{}, "severity = 1\nonly = 1\n", map { "[$_]\n" } @policies;
     };
     git( q{-C}, "$seed", qw{pull --quiet --ff-only}, $bare_one, 'main' );
@@ -1744,10 +1748,10 @@ subtest harness_fix => sub {
     my $critic = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
     is( $critic->{state}, 'finished', 'a harness fix that changes the critic profile finishes' ) or diag Mojo::Util::dumper $critic->{result};
     my $with   = qr/`CriticProfile`:\ with\ the\ new\ `\.perlcriticrc`,/;
-    my $finds  = qr/perlcritic\ finds\ `\Q$postfix\E`\ broken/;
+    my $finds  = qr/perlcritic\ finds\ `$postfix_re`\ broken/;
     my $broken = qr/$with\ $finds\ in\ `lib\/Spoke\.pm`/;
     like( $critic->{result}{critic}, [$broken], 'and names each policy that the new profile finds broken, with the files' );
-    is( [ grep { m/\Q$magic\E/ } @{ $critic->{result}{critic} } ], [], 'but not one that the code broke under the old profile' );
+    is( [ grep { m/$magic_re/ } @{ $critic->{result}{critic} } ], [], 'but not one that the code broke under the old profile' );
     like( calls_of('pull')->[0][2]{body}, qr/Left\ for\ a\ person: .* $broken .* $claude_does/s, 'and its pull request says that a claude run does it' );
     my $critic_run = $minion->job( $critic->{result}{next}{id} )->info;
     like( $critic_run, { task => 'spoke_address', args => [ { resume => 1, item => { number => $critic->{result}{pr}, is_pr => 1 }, instructions => qr/$broken .* perlcritic\ --profile/s } ] }, 'a spoke_address of that pull request is told what perlcritic finds' );
@@ -1992,15 +1996,16 @@ subtest 'the agent lib' => sub {
 };
 
 subtest restart_unit => sub {
-    my $unit = 'clod-worker-test.test.service';
-    my $run  = Test::MockModule->new('IPC::Run');
+    my $unit    = 'clod-worker-test.test.service';
+    my $unit_re = quotemeta $unit;
+    my $run     = Test::MockModule->new('IPC::Run');
     my @argv;
     $run->redefine( run => sub ( $cmd, @ ) { @argv = @$cmd; return 1 } );
     App::Clod::Tasks::restart_unit($unit);
     is( \@argv, [ qw{sudo -n /usr/bin/systemctl restart --no-block}, $unit ], 'the restart does not wait for the stop, which waits for the job that asks for it' );
 
     $run->redefine( run => sub ( $cmd, @redirects ) { ${ $redirects[5] } = "sudo: a password is required\n"; return 0 } );
-    like( dies { App::Clod::Tasks::restart_unit($unit) }, qr/\Arestart[ ]\Q$unit\E:[ ]sudo:[ ]a[ ]password[ ]is[ ]required/, 'and a refusal dies with what sudo said' );
+    like( dies { App::Clod::Tasks::restart_unit($unit) }, qr/\Arestart[ ]$unit_re:[ ]sudo:[ ]a[ ]password[ ]is[ ]required/, 'and a refusal dies with what sudo said' );
 };
 
 subtest harness_scan => sub {
@@ -2143,7 +2148,7 @@ subtest 'system packages' => sub {
     $packages->redefine(
         install => sub ( $installer, $file, @names ) {
             push @installed, [ $installer, $file, @names ];
-            @lines = defined $file ? map { Mojo::JSON::decode_json($_) } split m{\n}, Mojo::File->new($file)->slurp : ();
+            @lines = defined $file ? map { local ($_) = $_; Mojo::JSON::decode_json($_) } split m{\n}, Mojo::File->new($file)->slurp : ();
             return $output;
         }
     );
@@ -2409,7 +2414,7 @@ subtest activity_sweep => sub {
     my $window = qr{\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ};
     is(
         [ sort @{ $state{searches} } ],
-        [ map { match($_) } qr{\Auser:Test-Org\ is:issue\ created:>=$window\z}, qr{\Auser:Test-Org\ is:issue\ is:open\ no:assignee\z}, qr{\Auser:Test-Org\ is:pr\ is:merged\ merged:>=$window\z} ],
+        [ map { local ($_) = $_; match($_) } qr{\Auser:Test-Org\ is:issue\ created:>=$window\z}, qr{\Auser:Test-Org\ is:issue\ is:open\ no:assignee\z}, qr{\Auser:Test-Org\ is:pr\ is:merged\ merged:>=$window\z} ],
         'each search names the owner, and the 7 day window where it has one'
     );
 
@@ -2618,8 +2623,8 @@ subtest loc_sweep => sub {
     my $counted = $tmp->child('loccount-args');
     local $ENV{FAKE_LOCCOUNT_RECORD} = "$counted";
     local $ENV{FAKE_LOCCOUNT_OUTPUT} = $here->child(qw{data loccount-tree.txt})->to_string;
-    my %ref  = map { $_ => App::Clod::Tasks::spoke( $config, $_ )->refresh_reference('main') } @SPOKES;
-    my %head = map { $_ => git( q{-C}, "$ref{$_}", qw{rev-parse HEAD} ) } @SPOKES;
+    my %ref  = map { local ($_) = $_; $_ => App::Clod::Tasks::spoke( $config, $_ )->refresh_reference('main') } @SPOKES;
+    my %head = map { $_                  => git( q{-C}, "$ref{$_}", qw{rev-parse HEAD} ) } @SPOKES;
     my $day  = sub ($ago) { POSIX::strftime( '%Y-%m-%d', gmtime( time - $ago * 86_400 ) ) };
     my %now  = ( day => $day->(0), sloc => 7158, lloc => 4738, files => 73, sloc_cost => 492851, lloc_cost => 426086 );
 
@@ -2713,7 +2718,7 @@ subtest create_repo => sub {
     is( $triage->{state}, 'finished', 'a triage that asks for a repository that a trusted user asked for finishes' ) or diag Mojo::Util::dumper $triage->{result};
     my $where = qr/in\ one\ of\ these\ organizations:\ Test-Org,/;
     like( record_of("$tmp/create-record")->{prompt}, qr/$where\nand\ one\ at\ most\ for\ this\ request/, 'triage is told where it may ask for one, and that it is one' );
-    my @children = map { $minion->job($_)->info } @{ $triage->{result}{children} };
+    my @children = map { local ($_) = $_; $minion->job($_)->info } @{ $triage->{result}{children} };
     is( [ map { $_->{task} } @children ], [qw{create_repo spoke_fix spoke_fix report}], 'the repository is made first, then each spoke works, then the report' );
     is( $children[1]{parents},            [ $children[0]{id} ],                         'the first spoke waits for the new repository' );
     is( $children[2]{args}[0]{created},   1,                                            'and the run in the new one is told that it is new' );
@@ -2819,7 +2824,7 @@ subtest file_issues => sub {
     my $triage = run_job( triage => $pr );
     is( $triage->{state}, 'finished', 'a triage that only files a follow-up issue, which a trusted user asked for, finishes' ) or diag Mojo::Util::dumper $triage->{result};
     like( record_of("$tmp/follow-record")->{prompt}, qr/file\ follow-up\ issues\ in\ the\ spokes,\ at\ most\ 3/, 'triage is told that it may, and how many' );
-    my @children = map { $minion->job($_)->info } @{ $triage->{result}{children} };
+    my @children = map { local ($_) = $_; $minion->job($_)->info } @{ $triage->{result}{children} };
     is( [ map { $_->{task} } @children ], ['file_issues'], 'filing is the whole plan: no spoke runs, and no report' );
     is( calls_of('issue'),                [],              'triage itself files nothing' );
 

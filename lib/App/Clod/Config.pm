@@ -12,9 +12,16 @@ use App::Clod::Budget();
 use App::Clod::Harness();
 use App::Clod::Packages();
 
-my $REPO  = { type => 'string', pattern => '\A[\w.-]+/[\w.-]+\z' };
-my $LOGIN = { type => 'string', pattern => '\A[\w.-]+\z' };
-my $TEXT  = { type => 'string' };
+my $REPO_RE     = qr{\A [\w.-]+ / [\w.-]+ \z};
+my $LOGIN_RE    = qr{\A [\w.-]+ \z};
+my $SHA256_RE   = qr{\A [\da-f]{64} \z};
+my $HTTP_URL_RE = qr{\A https?://};
+my $RUN_AS_RE   = qr{\A [[:lower:]_] [[:lower:]\d_-]* \z};
+my $UNIT_RE     = qr{\A [\w@.:-]+ [.]service \z};
+my $ABSOLUTE_RE = qr{\A /};
+my $REPO        = { type => 'string', pattern => "$REPO_RE" };
+my $LOGIN       = { type => 'string', pattern => "$LOGIN_RE" };
+my $TEXT        = { type => 'string' };
 
 # The read-only commands, which allowed_tools and read_tools both allow.
 our @READ_COMMANDS = map { "Bash($_:*)" } qw{cat head tail wc ls grep cut tr cmp diff stat jq du df};
@@ -35,7 +42,7 @@ our %SCHEMA = (
             {
                 trusted_header  => { type => 'string', minLength => 1 },
                 user            => { type => 'string', minLength => 1 },
-                password_sha256 => { type => 'string', pattern   => '\A[0-9a-f]{64}\z' },
+                password_sha256 => { type => 'string', pattern   => "$SHA256_RE" },
             },
             anyOf => [ { required => ['trusted_header'] }, { required => [qw{user password_sha256}] } ],
         ),
@@ -48,7 +55,7 @@ our %SCHEMA = (
         bot_email        => { type => 'string',  nullable => 1, default => undef },
         github_api       => { type => 'string',  default  => 'https://api.github.com' },
         github_web       => { type => 'string',  default  => 'https://github.com' },
-        grafana_url      => { type => 'string',  nullable => 1, default => undef, pattern => '\Ahttps?://' },
+        grafana_url      => { type => 'string',  nullable => 1, default => undef, pattern => "$HTTP_URL_RE" },
         retention_days   => { type => 'integer', minimum  => 1, default => 30 },
         poll_interval    => { type => 'integer', minimum  => 0, default => 60 },
         http_timeout     => seconds(30),
@@ -56,7 +63,7 @@ our %SCHEMA = (
             {
                 bin           => { type => 'string', default  => 'claude' },
                 model         => { type => 'string', nullable => 1, default => undef },
-                run_as        => { type => 'string', nullable => 1, default => undef, pattern => '\A[a-z_][a-z0-9_-]*\z' },
+                run_as        => { type => 'string', nullable => 1, default => undef, pattern => "$RUN_AS_RE" },
                 timeout       => seconds(3600),
                 allowed_tools => list_of( $TEXT, default => [ qw{Read Edit Write Grep Glob Bash(git:*) Bash(prove:*) Bash(perl:*) Bash(dzil:*) Bash(podchecker:*) Bash(perlcritic:*) Bash(perltidy:*) Bash(make:*) Bash(strace:*) Bash(gdb:*) Bash(nytprofhtml:*) Bash(nytprofmerge:*) Bash(clod-cpm:*) Bash(chmod:*) Bash(perldoc:*)}, @READ_COMMANDS ] ),
                 read_tools    => list_of( $TEXT, default => [ qw{Read Grep Glob}, ( map { "Bash(git $_:*)" } qw{log grep show diff blame status ls-files rev-parse} ), 'Bash(git reflog)', 'Bash(git reflog show:*)', @READ_COMMANDS ] ),
@@ -86,7 +93,7 @@ our %SCHEMA = (
         spoke_prompt    => { type => 'string',  nullable => 1, default => undef },
         follow_up_max   => { type => 'integer', minimum  => 0, default => 3 },
         create_repos    => { type => 'boolean', default  => 0 },
-        restart_units   => list_of( { type => 'string', pattern => '\A[\w@.:-]+[.]service\z' } ),
+        restart_units   => list_of( { type => 'string', pattern => "$UNIT_RE" } ),
         local_lib       => { type => 'string', nullable => 1, default => undef },
         agent_lib       => { type => 'string', nullable => 1, default => undef },
         agent_own_lib   => { type => 'string', nullable => 1, default => undef },
@@ -98,7 +105,7 @@ our %SCHEMA = (
             required             => [qw{packager installer}],
             properties           => {
                 packager  => { type => 'string', enum    => [ sort keys %App::Clod::Packages::INSTALLED ] },
-                installer => { type => 'string', pattern => '\A/' },
+                installer => { type => 'string', pattern => "$ABSOLUTE_RE" },
             },
         },
     },

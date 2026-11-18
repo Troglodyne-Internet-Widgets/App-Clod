@@ -186,7 +186,7 @@ sub telemetry_attributes ( $job, $otel ) {
     my $notes = $job->info->{notes} // {};
     my %attr  = ( 'clod.job_id' => $job->id, 'clod.task' => $job->task, 'clod.attempt' => $job->retries, map { ( "clod.$_" => $notes->{$_} ) } grep { defined $notes->{$_} } qw{repo origin} );
     my $own   = $otel->{OTEL_RESOURCE_ATTRIBUTES} // q{};
-    return join q{,}, ( $own ne q{} ? $own : () ), map { "$_=" . Mojo::Util::url_escape( $attr{$_}, '^A-Za-z0-9\-._~/#' ) } sort keys %attr;
+    return join q{,}, ( $own ne q{} ? $own : () ), map { local ($_) = $_; "$_=" . Mojo::Util::url_escape( $attr{$_}, '^A-Za-z0-9\-._~/#' ) } sort keys %attr;
 }
 
 =func hold
@@ -214,7 +214,7 @@ C<upstream_sweep>, C<release_sweep>, C<loc_sweep> and C<self_check>.
 =cut
 
 sub schedule ($minion) {
-    $minion->schedule( $_ => @{ $SCHEDULES{$_} } ) for sort keys %SCHEDULES;
+    foreach my $name ( sort keys %SCHEDULES ) { $minion->schedule( $name => @{ $SCHEDULES{$name} } ) }
     return;
 }
 
@@ -905,7 +905,9 @@ sub asked_for ( $config, $written, $entry, $what ) {
     die "$who is not an authorized user, so $what cannot be made on their word\n" if !authorized( $config, $who );
     my $flat  = sub ($text) { return $text =~ s/\s+/ /gr =~ s/\A\ |\ \z//gr };
     my $quote = $flat->( $entry->{quote} );
-    return 1 if List::Util::any { $_->{by} eq $who && index( $flat->( $_->{body} ), $quote ) >= 0 } @$written;
+    foreach my $message (@$written) {
+        return 1 if $message->{by} eq $who && index( $flat->( $message->{body} ), $quote ) >= 0;
+    }
     die "The quote that asks for $what is not in anything that $who wrote here; ask for it only when they did\n";
 }
 
@@ -962,8 +964,8 @@ sub triage ( $job, $config, $item ) {
         return $job->fail( { error => "the triage run failed: $outcome->{stderr}", usage_of(@outcomes) } ) if !$outcome->{ok};
         $answer = eval {
             my $valid = App::Clod::Triage::validate( $outcome->{structured}, $spokes, %create );
-            asked_for( $config, $written, $_, $_->{repo} )                            for @{ $valid->{new_repos} };
-            asked_for( $config, $written, $_, qq{the follow-up issue "$_->{title}"} ) for @{ $valid->{follow_ups} };
+            foreach my $new    ( @{ $valid->{new_repos} } )  { asked_for( $config, $written, $new,    $new->{repo} ) }
+            foreach my $follow ( @{ $valid->{follow_ups} } ) { asked_for( $config, $written, $follow, qq{the follow-up issue "$follow->{title}"} ) }
             $valid;
         };
         last if $answer;
@@ -1010,6 +1012,7 @@ sub plan_children ( $job, $item, $answer ) {
     my @new  = @{ $answer->{new_repos} // [] };
     my %new  = map { $_->{repo} => 1 } @new;
     my @made = map {
+        local ($_) = $_;
         my %args = ( item => $item, %$_{qw{org name description module private asked_by}} );
         $minion->enqueue( create_repo => [ \%args ], { notes => { %notes, repo => $_->{repo} } } );
     } @new;
@@ -1040,6 +1043,7 @@ C<($job)>.  The results of the parents of the job, where they are hashes.
 sub parent_results ($job) {
     my $minion = $job->minion;
     return map {
+        local ($_) = $_;
         my $parent = $minion->job($_);
         my $result = $parent ? $parent->info->{result} : undef;
         ref $result eq q{HASH} ? $result : ();
@@ -1260,7 +1264,7 @@ sub remove_work ( $root, @checkouts ) {
         warn "could not remove $made->{dir}: $@";
     }
     $root->remove_tree;
-    $_->{spoke}->prune_worktrees for @checkouts;
+    foreach my $made (@checkouts) { $made->{spoke}->prune_worktrees }
     return;
 }
 
@@ -1301,9 +1305,10 @@ its path under C<$root>, as L</in_worktree> makes them.
 
 sub sweep_root ( $job, $config, $root ) {
     my @checkouts = map {
+        local ($_) = $_;
         my $repo = $_->to_rel($root)->to_string;
         +{ repo => $repo, spoke => spoke( $config, $repo ), dir => $_ }
-    } sort { $a cmp $b } grep { -e $_->child('.git') } $root->list_tree( { dir => 1, max_depth => 2 } )->each;
+    } sort { $a cmp $b } grep { local ($_) = $_; -e $_->child('.git') } $root->list_tree( { dir => 1, max_depth => 2 } )->each;
     clean_up( $job, $config, $root, @checkouts );
     remove_work( $root, @checkouts );
     return;
@@ -1844,7 +1849,7 @@ sub spoke_review ( $job, $config, $args ) {
     my $repo    = $args->{repo};
     my $gh      = github($config);
     my $pull    = $gh->pull( $repo, $item->{number} );
-    my @related = map { spoke( $config, $_ )->reference->to_string } @{ $args->{related} // [] };
+    my @related = map { local ($_) = $_; spoke( $config, $_ )->reference->to_string } @{ $args->{related} // [] };
     my $related = @{ $args->{related} // [] } ? "Triage says the change also concerns these spokes, checked out at their default branch: @{ $args->{related} }." : q{};
 
     return in_worktree(
@@ -2470,7 +2475,7 @@ sub hand_back ( $job, $config, $gh, $item, $path, @paragraphs ) {
     my ( $repo, $number ) = @{$item}{qw{repo number}};
     my $owners = [];
     if ( ( $path // q{} ) ne q{} ) {
-        my ($text) = grep { defined } map { $gh->file( $repo, $_ ) } @App::Clod::CodeOwners::LOCATIONS;
+        my ($text) = grep { defined } map { local ($_) = $_; $gh->file( $repo, $_ ) } @App::Clod::CodeOwners::LOCATIONS;
         $owners = App::Clod::CodeOwners::owners( App::Clod::CodeOwners::parse($text), $path ) if defined $text;
     }
     my @teams = grep { m{/} } @$owners;
@@ -2720,7 +2725,7 @@ spoke, which a repository that this change made is by now.
 sub filing_refusal ( $job, $config, $item, $issues ) {
     my $filed = filed_for( $job->minion, origin_of($item), $job->id );
     return "this request has filed $filed already, and the configuration allows $config->{follow_up_max} in all" if $filed + @$issues > $config->{follow_up_max};
-    my @strangers = grep { !is_spoke( $job->minion, $config, $_ ) } List::Util::uniq( map { $_->{repo} } @$issues );
+    my @strangers = grep { local ($_) = $_; !is_spoke( $job->minion, $config, $_ ) } List::Util::uniq( map { $_->{repo} } @$issues );
     return "@strangers is not a spoke" if @strangers;
     return;
 }
@@ -3054,7 +3059,7 @@ job notes why, and there is nothing.
 =cut
 
 sub tidied ( $job, $tree, $results ) {
-    my ($profile) = grep { Mojo::File->new($_)->basename eq '.perltidyrc' } map {
+    my ($profile) = grep { local ($_) = $_; Mojo::File->new($_)->basename eq '.perltidyrc' } map {
         map { $_->{path} }
           @{ $_->{changes} }
     } @$results;
@@ -3119,7 +3124,7 @@ sub self_check ( $job, $config ) {
         my $git = spoke( $config, 'App-Clod' );
         $result{checkout} = eval {
             $git->git_remote( q{-C}, "$dir", qw{fetch --quiet origin} );
-            my %at = map { $_ => $git->git( q{-C}, "$dir", 'rev-parse', $_ eq 'head' ? 'HEAD' : '@{upstream}' ) } qw{head upstream};
+            my %at = map { local ($_) = $_; $_ => $git->git( q{-C}, "$dir", 'rev-parse', $_ eq 'head' ? 'HEAD' : '@{upstream}' ) } qw{head upstream};
             my ( $behind, $ahead ) = split m{\s+}, $git->git( q{-C}, "$dir", qw{rev-list --count --left-right}, '@{upstream}...HEAD' );
             +{ %at, behind => 0 + $behind, ahead => 0 + $ahead };
         } // { error => ( split m{\n}, $@ )[0] };
@@ -3138,7 +3143,8 @@ sub self_check ( $job, $config ) {
         $result{system_packages} = eval {
             my %host = App::Clod::Packages::os_release();
             $result{system_host} = \%host;
-            host_packages( $config, last_result( $job->minion, 'harness_scan' ), %host );
+            my $minion = $job->minion;
+            host_packages( $config, last_result( $minion, 'harness_scan' ), %host );
         } // do { $result{system_packages_error} = ( split m{\n}, $@ )[0]; {} };
     }
     return $job->finish( \%result );
@@ -3320,10 +3326,10 @@ sub restart_and_finish ( $job, $config, $result ) {
     return $job->finish( { %$result, restarted => [], restart => 'restart_units names no unit, so a person must restart the bot' } ) if !@units;
     my $own    = own_unit() // q{};
     my @others = grep { $_ ne $own } @units;
-    restart_unit($_) for @others;
+    foreach my $unit (@others) { restart_unit($unit) }
     my @mine = grep { $_ eq $own } @units;
     $job->finish( { %$result, restarted => [ @others, @mine ] } );
-    restart_unit($_) for @mine;
+    foreach my $unit (@mine) { restart_unit($unit) }
     return;
 }
 
@@ -3413,7 +3419,7 @@ ids.
 
 sub plugin_update ( $job, $config ) {
     my $claude  = claude($config);
-    my @updated = map { $claude->cli( qw{plugin update}, $_->{id} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
+    my @updated = map { local ($_) = $_; $claude->cli( qw{plugin update}, $_->{id} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
     recheck($job);
     return $job->finish( { updated => \@updated } );
 }
@@ -3447,7 +3453,7 @@ sub packages_install ( $job, $config, $args ) {
     my %result  = ( repo => $args->{repo}, packages => \@packages, sources => [ map { $_->{name} } @sources ] );
     my $dir     = Mojo::File->new( $config->{workspace}, 'work', $job->id );
     my $output  = eval {
-        my $file = @sources ? $dir->make_path->child('sources.jsonl')->spew( join q{}, map { Mojo::JSON::encode_json($_) . "\n" } @sources ) : undef;
+        my $file = @sources ? $dir->make_path->child('sources.jsonl')->spew( join q{}, map { local ($_) = $_; Mojo::JSON::encode_json($_) . "\n" } @sources ) : undef;
         App::Clod::Packages::install( $how->{installer}, $file ? "$file" : undef, @packages );
     };
     my $error = $@;

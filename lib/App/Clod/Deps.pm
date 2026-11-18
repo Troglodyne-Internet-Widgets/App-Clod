@@ -68,7 +68,7 @@ of the agent can install beside what it installs.  Dies as L</run> does.
 
 sub install_needed ( $lib, $checkout ) {
     return if !-e "$checkout/dist.ini";
-    my @needed = grep { !Module::Metadata->find_module_by_name($_) } missing( $lib, listdeps($checkout) );
+    my @needed = grep { local ($_) = $_; !Module::Metadata->find_module_by_name($_) } missing( $lib, listdeps($checkout) );
     return if !@needed;
     Mojo::File->new("$lib")->make_path;
     Mutex::Flock->new( path => "$lib.lock" )->synchronize( sub { run( {}, @CPM, qw{install --without-test -L}, "$lib", @needed ) } );
@@ -100,7 +100,8 @@ the agent lib C<$lib> lacks, or has another version of.
 
 sub stale_programs ($lib) {
     my $bin = Mojo::File->new( "$lib", 'bin' );
-    return map { $_->basename } grep {
+    return map { local ($_) = $_; $_->basename } grep {
+        local ($_) = $_;
         my $there = $bin->child( $_->basename );
         !-e $there || $there->slurp ne $_->slurp
     } App::Clod::share_dir()->child('agent-bin')->list->each;
@@ -121,7 +122,9 @@ sub policies (@profiles) {
     my %on;
     for my $text (@profiles) {
         my $ini = Config::Tiny->read_string($text) // die 'A critic profile does not parse: ' . Config::Tiny->errstr . "\n";
-        $on{ Perl::Critic::Utils::policy_long_name($_) } = 1 for grep { $_ ne q{_} && !m{\A-} } keys %$ini;
+        foreach my $policy ( grep { $_ ne q{_} && !m{\A-} } keys %$ini ) {
+            $on{ Perl::Critic::Utils::policy_long_name($policy) } = 1;
+        }
     }
     my @policies = sort keys %on;
     return @policies;
@@ -137,7 +140,7 @@ for every architecture.
 
 sub missing ( $lib, @modules ) {
     my @dirs = ( "$lib/lib/perl5/$Config::Config{archname}", "$lib/lib/perl5" );
-    return grep { !Module::Metadata->find_module_by_name( $_, \@dirs ) } @modules;
+    return grep { local ($_) = $_; !Module::Metadata->find_module_by_name( $_, \@dirs ) } @modules;
 }
 
 =func outdated

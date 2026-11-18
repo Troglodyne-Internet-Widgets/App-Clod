@@ -89,7 +89,8 @@ sub runs ($self) {
     return [] if !-d $dir;
     return [
         map {
-            [ map { Mojo::JSON::decode_json($_) } split m{\n}, $_->slurp ]
+            local ($_) = $_;
+            [ map { local ($_) = $_; Mojo::JSON::decode_json($_) } split m{\n}, $_->slurp ]
         } sort { $a cmp $b } $dir->list->grep(qr{[.]jsonl\z})->each
     ];
 }
@@ -104,7 +105,7 @@ ignores L</attempt>.
 sub attempts ($self) {
     my $job = Mojo::File->new( $self->root, $self->job );
     return [] if !-d $job;
-    return [ sort { $a <=> $b } grep { m{\A\d+\z} } map { $_->basename } $job->list( { dir => 1 } )->grep( sub { -d $_ } )->each ];
+    return [ sort { $a <=> $b } grep { m{\A\d+\z} } map { local ($_) = $_; $_->basename } $job->list( { dir => 1 } )->grep( sub { -d $_ } )->each ];
 }
 
 =method discard
@@ -134,9 +135,9 @@ sub prune ( $self, $seconds ) {
     my $root = Mojo::File->new( $self->root );
     return [] if !-d $root;
     my $before = time - $seconds;
-    my @old    = grep { $_->stat->mtime < $before } $root->list( { dir => 1 } )->grep( sub { -d $_ } )->each;
-    $_->remove_tree for @old;
-    return [ map { $_->basename } @old ];
+    my @old    = grep { local ($_) = $_; $_->stat->mtime < $before } $root->list( { dir => 1 } )->grep( sub { -d $_ } )->each;
+    foreach my $dir (@old) { $dir->remove_tree }
+    return [ map { local ($_) = $_; $_->basename } @old ];
 }
 
 1;
