@@ -76,7 +76,6 @@ formats = #!/usr/bin/env perl
 [RegularExpressions::ProhibitRegexToChomp]
 [BuiltinFunctions::ProhibitChainingSameListSub]
 [RegularExpressions::ProhibitRegexForStringEquality]
-[Subroutines::ProhibitUnderscorePrivateSubs]
 [Subroutines::ProhibitSingleUseLexicalSubs]
 [ValuesAndExpressions::ProhibitLiteralArithmetic]
 [BuiltinFunctions::ProhibitIndirectBooleanGrep]
@@ -278,3 +277,5 @@ allow_unused_subroutine_arguments = 1
 [Variables::RequireNegativeIndices]
 # Extensions to perl -c
 [CompileTime]
+[RegularExpressions::ProhibitRegexInStrings]
+[Variables::ProhibitCallsWithAliasedTopic]
