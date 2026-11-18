@@ -7,11 +7,12 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
-use IPC::Run     ();
-use List::Util   ();
-use Mojo::File   ();
-use Mojo::Util   ();
-use Mutex::Flock ();
+use File::Slurper::Temp ();
+use IPC::Run            ();
+use List::Util          ();
+use Mojo::File          ();
+use Mojo::Util          ();
+use Mutex::Flock        ();
 
 use App::Clod::Retry ();
 
@@ -222,6 +223,12 @@ What L</fetch> does, for a caller that holds L</locked> already.  It sets the
 fetch refspec on every fetch, not only after the clone, so a clone whose first
 fetch died gets its remote-tracking refs with the next one.
 
+It also sets C<user.name> and C<user.email> of the bare clone to
+L</author_name> and L</author_email>, when they are set, so every commit in
+every worktree carries them.  A worktree shares that configuration, so
+writing it from each new worktree would only write the one file again, and
+two jobs that did so at once could meet on its lock and fail.
+
 =cut
 
 # A bare clone, with remote-tracking refs so that worktrees can start from origin.
@@ -233,6 +240,8 @@ sub fetch_unlocked ($self) {
     }
     $self->git( q{-C}, "$mirror", qw{config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*} );
     $self->git( q{-C}, "$mirror", qw{config core.sharedRepository group} );
+    $self->git( q{-C}, "$mirror", 'config', 'user.name',  $self->author_name )  if $self->author_name;
+    $self->git( q{-C}, "$mirror", 'config', 'user.email', $self->author_email ) if $self->author_email;
     $self->git_remote( q{-C}, "$mirror", qw{fetch --prune origin} );
     return $mirror;
 }
@@ -240,19 +249,30 @@ sub fetch_unlocked ($self) {
 =method install_hooks
 
 C<($tree)>.  Copies F<git-hooks/pre-commit> and F<git-hooks/post-commit> of
-that checkout into the bare clone, where every worktree finds them.
+that checkout into the bare clone, where every worktree finds them.  It holds
+L</locked> while it copies, so the two hooks of one call are never mixed with
+those of another.  Each hook is written to a file beside it and renamed into
+place, executable already, so a commit in another worktree runs the old hook
+or the new one, never a part of one.
 
 =cut
 
 # The hooks live in the shared git dir, so every worktree gets the repo's own.
 sub install_hooks ( $self, $tree ) {
-    my $hooks = $self->mirror->child('hooks')->make_path;
-    for my $name (qw{pre-commit post-commit}) {
-        my $hook = Mojo::File->new( $tree, 'git-hooks', $name );
-        next if !-e $hook;
-        my $installed = $hook->copy_to( $hooks->child($name) );
-        chmod 0755, $installed or die "chmod $installed: $!\n";
-    }
+    my $hooks = $self->mirror->child('hooks');
+    $self->locked(
+        sub {
+            $hooks->make_path;
+            local $File::Slurper::Temp::FILE_TEMP_PERMS = oct 755;
+            for my $name (qw{pre-commit post-commit}) {
+                my $hook = Mojo::File->new( $tree, 'git-hooks', $name );
+                next if !-e $hook;
+                my $installed = $hooks->child($name);
+                File::Slurper::Temp::write_binary( "$installed", $hook->slurp );
+                chmod oct 755, $installed or die "chmod $installed: $!\n";
+            }
+        }
+    );
     return;
 }
 
@@ -327,10 +347,18 @@ account, and a tool that it runs, such as C<perltidy -b>, may need to change
 the mode or the times of a file, which only its owner may do.  Without an
 account it makes no difference.
 
-A C<detach> or C<at> worktree gets no author and no hooks, because nothing
-commits in it.  So making one writes nothing to the bare clone but the fetch and its own
+A C<detach> or C<at> worktree gets no hooks, because nothing commits in it.
+So making one writes nothing to the bare clone but the fetch and its own
 worktree entry, and it holds no branch, so any number of them can be at one
-branch at once.
+branch at once.  Every worktree has the author of L</fetch_unlocked>, which is
+in the configuration of the bare clone.
+
+It adds the worktree under L</locked>, after the fetch, and the fetch of the
+head of a pull request with it.  So a fetch with C<--prune> by another job
+cannot remove the ref of that head before the worktree is at it.  The ref is
+under F<refs/remotes/origin/>, where the prune keeps only the branches on
+GitHub.
+And L</prune_worktrees> cannot run while git makes the entry of the worktree.
 
 =cut
 
@@ -340,23 +368,18 @@ sub worktree ( $self, $dir, %opt ) {
     $dir->dirname->make_path;
     my $by  = $opt{agent} ? undef : "$mirror";
     my $add = sub (@add) { $self->git_as_owner( $by, \undef, q{-C}, "$mirror", qw{worktree add}, @add ) };
-    if ( defined $opt{detach} || defined $opt{at} ) {
-        $add->( '--detach', "$dir", $opt{at} // "origin/$opt{detach}" );
-        return $dir;
-    }
-    if ( $opt{pull} ) {
-        $self->git_remote( q{-C}, "$mirror", 'fetch', 'origin', "+pull/$opt{pull}/head:refs/remotes/origin/pr/$opt{pull}" );
-        $add->( '--detach', "$dir", "origin/pr/$opt{pull}" );
-    }
-    elsif ( $opt{existing} ) {
-        $add->( '-B', $opt{existing}, "$dir", "origin/$opt{existing}" );
-    }
-    else {
-        $add->( '-B', $opt{branch}, "$dir", "origin/$opt{base}" );
-    }
-    $self->git( q{-C}, "$dir", 'config', 'user.name',  $self->author_name )  if $self->author_name;
-    $self->git( q{-C}, "$dir", 'config', 'user.email', $self->author_email ) if $self->author_email;
-    $self->install_hooks($dir);
+    $self->locked(
+        sub {
+            return $add->( '--detach', "$dir", $opt{at} // "origin/$opt{detach}" ) if defined $opt{detach} || defined $opt{at};
+            if ( $opt{pull} ) {
+                $self->git_remote( q{-C}, "$mirror", 'fetch', 'origin', "+pull/$opt{pull}/head:refs/remotes/origin/pr/$opt{pull}" );
+                return $add->( '--detach', "$dir", "origin/pr/$opt{pull}" );
+            }
+            return $add->( '-B', $opt{existing}, "$dir", "origin/$opt{existing}" ) if $opt{existing};
+            return $add->( '-B', $opt{branch},   "$dir", "origin/$opt{base}" );
+        }
+    );
+    $self->install_hooks($dir) if !defined $opt{detach} && !defined $opt{at};
     return $dir;
 }
 
@@ -420,12 +443,13 @@ sub remove_worktree ( $self, $dir ) {
 =method prune_worktrees
 
 Forgets each worktree of the bare clone whose directory is gone.  Such a
-worktree still holds its branch, so no other worktree can check it out.
+worktree still holds its branch, so no other worktree can check it out.  It
+holds L</locked>, so it never meets L</worktree> as it adds one.
 
 =cut
 
 sub prune_worktrees ($self) {
-    $self->git( q{-C}, $self->mirror->to_string, qw{worktree prune} );
+    $self->locked( sub { $self->git( q{-C}, $self->mirror->to_string, qw{worktree prune} ) } );
     return;
 }
 

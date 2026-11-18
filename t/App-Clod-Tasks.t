@@ -569,11 +569,58 @@ subtest spoke_fix => sub {
     is( $after->{result}{waiting}, 1, 'and so does the one after that' );
     $minion->reset( { all => 1 } );
 
-    $minion->lock( 'repo:Test-Org/one', 60 );
-    my $locked = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
-    is( $locked->{state}, 'inactive', 'a fix whose spoke another job holds goes back in the queue' );
+    my $held = $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ] );
+    my $lock = App::Clod::Tasks::work_lock( 'Test-Org/one', { branch => "clod/$held-fix-the-thing" } );
+    $minion->lock( $lock, 60 );
+    my $locked = run_id($held);
+    is( $locked->{state}, 'inactive', 'a fix whose branch another job holds goes back in the queue' );
     ok( $locked->{delayed} > time + 60, 'for later' );
-    $minion->unlock('repo:Test-Org/one');
+    $minion->unlock($lock);
+    $minion->reset( { all => 1 } );
+};
+
+# Runs the job $inner while the job $outer is in its worktree, just before its
+# claude run, and returns the info of both.
+sub run_during ( $outer, $inner ) {
+    my $mock = Test::MockModule->new('App::Clod::Tasks');
+    my $run  = $mock->original('run_claude');
+    my ( $during, $started );
+    $mock->redefine(
+        run_claude => sub (@args) {
+            $during = run_id($inner) if !$started++;
+            return $run->(@args);
+        }
+    );
+    my $info = run_id($outer);
+    return ( $info, $during );
+}
+
+subtest work_lock => sub {
+    my $lock = sub (%how) { App::Clod::Tasks::work_lock( 'Test-Org/one', \%how ) };
+    is( [ map { $lock->(@$_) } [ branch => 'b', base => 'main' ], [ existing => 'b' ], [ detach => 'b' ], [ at => 'abc', onto => 'b' ] ], [ ('branch:Test-Org/one:b') x 4 ], 'a new branch, an existing one, a detached one and a commit for one each lock that branch' );
+    isnt( $lock->( pull => 3 ), $lock->( branch => 'pull/3' ), 'a pull request has a lock of its own, which no branch name gives' );
+    like( dies { $lock->( at => 'abc' ) }, qr/names\ no\ branch/, 'a commit that names no branch to go to dies' );
+};
+
+subtest 'jobs on one spoke' => sub {
+    %state = ();
+    @calls = ();
+    answer( { title => 't', summary => 's' }, commit => 1 );
+    my @fixes = map { $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ] ) } 1, 2;
+    my ( $first, $second ) = run_during(@fixes);
+    is( [ $first->{state}, $second->{state} ], [qw{finished finished}], 'a fix runs while another fix of the same spoke, on its own branch, is in its worktree' ) or diag Mojo::Util::dumper [ $first, $second ];
+
+    my $bare = $remote->child('Test-Org/one.git')->to_string;
+    git( q{--git-dir}, $bare, qw{branch clod/2-both main} );
+    $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/2-both', repo => { full_name => 'Test-Org/one' } }, base => { ref => 'main' }, html_url => 'https://test.test/pull/12' };
+    $state{review_comments} = [ { id => 22, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'rename this' } ];
+    answer( { summary => 'Renamed.', replies => [ { id => 22, body => 'Done.' } ] }, commit => 1 );
+    my $pr      = { %item, kind => 'address_review', is_pr => 1, number => 12 };
+    my @answers = map { $minion->enqueue( spoke_address => [ { item => $pr, repo => 'Test-Org/one' } ] ) } 1, 2;
+    my ( $answered, $waits ) = run_during(@answers);
+    is( $answered->{state}, 'finished', 'an answer to a review finishes' ) or diag Mojo::Util::dumper $answered;
+    is( $waits->{state},    'inactive', 'and a second answer on the same branch, while the first is in its worktree, goes back in the queue' );
+    ok( $waits->{delayed} > time + 60, 'for later' );
     $minion->reset( { all => 1 } );
 };
 

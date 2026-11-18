@@ -90,6 +90,35 @@ subtest worktree => sub {
     $spoke->remove_worktree($_) for @detached;
 };
 
+subtest 'the author, in the bare clone' => sub {
+    my $fresh  = App::Clod::Spoke->new( repo => 'Test-Org/one', workspace => "$tmp/ws-author", github_web => "file://$tmp/remote", token => 'test-token', author_name => 'test-bot', author_email => 'bot@test.test' );
+    my $mirror = $fresh->fetch->to_string;
+    is( [ map { git( '--git-dir', $mirror, 'config', $_ ) } qw{user.name user.email} ], [ 'test-bot', 'bot@test.test' ], 'a fetch gives the bare clone the author' );
+    my $tree = $fresh->worktree( $tmp->child( 'ws-author', 'work', 1, 'Test-Org', 'one' ), branch => 'clod/1-author', base => 'main' );
+    {
+        # An author in the environment of git would win over the configuration.
+        delete local @ENV{qw{GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL}};
+        git( q{-C}, "$tree", qw{commit --quiet --no-verify --allow-empty -m authored} );
+    }
+    is( git( q{-C}, "$tree", qw{log -1 --format=%an<%ae>} ), 'test-bot<bot@test.test>', 'and a commit in a new worktree carries it' );
+    $fresh->remove_worktree($tree);
+};
+
+subtest install_hooks => sub {
+    my $dir       = $tmp->child( 'ws', 'work', 7, 'Test-Org', 'one' );
+    my $tree      = $spoke->worktree( $dir, branch => 'clod/7-hooks', base => 'main' );
+    my $installed = $spoke->mirror->child(qw{hooks pre-commit});
+    my $before    = ( stat $installed )[1];
+    $tree->child(qw{git-hooks pre-commit})->spew("#!/bin/sh\ntouch new-hook-ran\n");
+    $spoke->install_hooks($tree);
+    my @stat = stat $installed;
+    is( $installed->slurp, "#!/bin/sh\ntouch new-hook-ran\n", 'an install replaces a hook with the one of the worktree' );
+    isnt( $stat[1], $before, 'as a new file, renamed over the old one, so a commit elsewhere never runs a part of it' );
+    is( $stat[2] & oct 7777, oct 755, 'and executable' );
+    $spoke->remove_worktree($tree);
+    $spoke->install_hooks( $spoke->refresh_reference('main') );
+};
+
 subtest 'a push when GitHub fails for a moment' => sub {
     local @App::Clod::Retry::DELAYS = ( 0, 0, 0 );
     my $dir  = $tmp->child( 'ws', 'work', 5, 'Test-Org', 'one' );

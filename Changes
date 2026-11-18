@@ -12,6 +12,18 @@ Revision history for App-Clod
       tree without its changes: a detached git worktree in the scratch
       directory.  The worker now prunes the bare clone of each checkout
       after a run, so such a copy leaves nothing behind.
+    - Jobs on different branches of one spoke now run at the same time.
+      Before, each job in a worktree locked the whole repository.  So four
+      fixes of one spoke ran one after another while workers were idle.
+      The lock is now of the branch that the job works on, or of the pull
+      request that it reviews.  Two jobs on one branch still wait for each
+      other.  The fetch now sets the author in the bare clone once, and a
+      new worktree no longer writes it.  A worktree is added, and a stale
+      one is pruned, under the flock of the bare clone.  A hook is
+      installed under that flock too.  It is written beside the old hook
+      and renamed over it, so a commit never runs a part of a hook.  The
+      hooks are still shared by all worktrees.  While two jobs run, a
+      commit runs the hooks that the later job installed.
     - With run_as, the account that claude runs as now makes, patches and
       removes the worktree of each claude run.  So that account owns every
       file in the worktree.  The hooks of a spoke tidy a file with
