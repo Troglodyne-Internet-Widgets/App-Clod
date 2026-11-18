@@ -1215,20 +1215,20 @@ sub clean_up ( $job, $config, $root, @checkouts ) {
 =func remove_work
 
 C<($root, @checkouts)>, as L</clean_up> takes them.  Removes each worktree and
-then C<$root>.  A worktree that git will not remove is deleted with the rest
-and pruned from its bare clone, so that it holds no branch.
+then C<$root>, and prunes the bare clone of each checkout.  A worktree that git
+will not remove is deleted with the rest, and the prune takes it out of its
+bare clone, so that it holds no branch.  So does a worktree that the run added
+under C<$root>, such as a copy of the tree without its changes.
 
 =cut
 
 sub remove_work ( $root, @checkouts ) {
-    my @stuck;
     for my $made (@checkouts) {
         next if eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 };
         warn "could not remove $made->{dir}: $@";
-        push @stuck, $made->{spoke};
     }
     $root->remove_tree;
-    $_->prune_worktrees for @stuck;
+    $_->{spoke}->prune_worktrees for @checkouts;
     return;
 }
 

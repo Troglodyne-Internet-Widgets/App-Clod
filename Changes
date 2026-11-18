@@ -1,6 +1,17 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - A run that changes a repository may now run perldoc, and every run
+      may run du and df.  A hook of perl-slop asks for du and df before a
+      copy, so a run that followed it was refused.
+    - A run may read the agent lib with the Read tool, through a Read
+      rule.  It holds the policies and the tools that the run is held to,
+      and a run could not read their source or POD.  The lib is not added
+      to the session, which would also let the run edit it.
+    - The prompt of a run that changes a repository says how to test the
+      tree without its changes: a detached git worktree in the scratch
+      directory.  The worker now prunes the bare clone of each checkout
+      after a run, so such a copy leaves nothing behind.
     - With run_as, the account that claude runs as now makes, patches and
       removes the worktree of each claude run.  So that account owns every
       file in the worktree.  The hooks of a spoke tidy a file with

@@ -1251,7 +1251,7 @@ subtest 'the rules that a repository declares in clod.json' => sub {
     $commit->(
         'main',
         'clod.json'   => [ text    => Mojo::JSON::encode_json( { run => ['bin/provision'], cleanup => [qw{bin/broken bin/cleanup ../x}] } ) ],
-        'bin/cleanup' => [ program => qq{#!/bin/sh\nprintf '%s|%s|%s\\n' "\$(pwd -P)" "\$1" "\$([ -d "\$1" ] && echo dir)" >> '$cleaned'\n} ],
+        'bin/cleanup' => [ program => qq{#!/bin/sh\nprintf '%s|%s|%s\\n' "\$(pwd -P)" "\$1" "\$([ -d "\$1" ] && echo dir)" >> '$cleaned'\n[ -d "\$1/base" ] || git worktree add --quiet --detach "\$1/base" HEAD\n} ],
         'bin/broken'  => [ program => "#!/bin/sh\necho 'no hypervisor' >&2\nexit 1\n" ],
     );
     my $lines = sub () { return [ split m{\n}, -e $cleaned ? $cleaned->slurp : q{} ] };
@@ -1261,6 +1261,8 @@ subtest 'the rules that a repository declares in clod.json' => sub {
     is( $cleans->{state}, 'finished',                                'a fix in a repository that declares a cleanup finishes' ) or diag Mojo::Util::dumper $cleans->{result};
     is( $lines->(),       ["$root/Test-Org/two|$root/.scratch|dir"], 'the cleanup ran once, from the top of the worktree, with the scratch directory of the run while it was still there' );
     ok( !-e $root, 'and the directory of the job is gone after it' );
+    my $listed = git( q{-C}, App::Clod::Tasks::spoke( $config, 'Test-Org/two' )->mirror->to_string, qw{worktree list --porcelain} );
+    unlike( $listed, qr{/work/\Q$cleans->{id}\E/}, 'with a copy of the tree that the run added under it, which its bare clone no longer lists' ) or diag $listed;
     my @said = map { $_->{message} } @{ $cleans->{notes}{log} // [] };
     like(
         [ grep { m{cleanup} } @said ],

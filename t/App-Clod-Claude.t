@@ -256,6 +256,11 @@ subtest 'the agent lib' => sub {
 
     local $ENV{PATH} = join q{:}, $here->child(qw{bin sudo-dir}), $ENV{PATH};
     is( App::Clod::Claude->new( bin => "$bin", lib => '/bogus/agent-lib', run_as => 'test-agent' )->cli('x'), '/bogus/agent-lib/lib/perl5|/bogus/agent-lib/bin', 'also as another account, through sudo, which resets the environment' );
+
+    my $with = App::Clod::Claude->new( bin => 'test-claude', lib => '/bogus/agent-lib', allowed_tools => ['Bash(git:*)'] );
+    is( $with->command->[-1],                               'Bash(git:*),Bash(rtk git:*),Read(//bogus/agent-lib/**)', 'a run may read the agent lib with the Read tool, by its absolute path' );
+    is( $with->command( tools => [] )->[-1],                'Read(//bogus/agent-lib/**)',                             'also a run with no other tool' );
+    is( ( grep { $_ eq '--add-dir' } @{ $with->command } ), 0,                                                        'and the lib is no directory of the session, which a run could also edit' );
 };
 
 subtest 'the own lib of the agent' => sub {

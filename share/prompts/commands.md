@@ -10,4 +10,8 @@ literally:
 - Stay in the worktree. Do not `cd` out of it. Name the file in the command,
   or read it with the Read tool.
 
+Change a file with the Edit or Write tool. No rule allows `sed` or `awk`,
+because each of them can write a file. Read the source of a module, also one
+of the tools that check this run, with the Read tool.
+
 The result of a call that fails shows its exit status, so do not print it.
