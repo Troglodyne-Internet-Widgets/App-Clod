@@ -1585,14 +1585,15 @@ subtest harness_fix => sub {
     like( $refused->{notes}{log}, [ { message => qr/opened/ }, { message => qr/could\ not\ assign\ Test-Org\/one\#\d+\ to\ trusted/ } ], 'and says so in its log' );
     delete $state{refuse_assign};
 
-    my ( @asked, @committed_with );
+    my ( @asked, @committed_with, %umask );
     my $deps  = Test::MockModule->new('App::Clod::Deps');
     my $spoke = Test::MockModule->new('App::Clod::Spoke');
-    $deps->redefine( install_needed => sub ( $lib, $tree ) { push @asked, [ $lib, "$tree" ]; return qw{Plack::MIME} } );
+    $deps->redefine( install_needed => sub ( $lib, $tree ) { push @asked, [ $lib, "$tree" ]; $umask{install} = umask; return qw{Plack::MIME} } );
     my $commit = $spoke->original('commit');
     $spoke->redefine(
         commit => sub (@args) {
             push @committed_with, $ENV{PERL5LIB};
+            $umask{commit} = umask;
             return $commit->(@args);
         }
     );
@@ -1604,6 +1605,8 @@ subtest harness_fix => sub {
     like( \@asked, [ [ '/bogus/own-lib', qr{/Test-Org/one\z} ] ], 'after it installs what the spoke needs into the own lib of the agent' );
     is( \@committed_with, [ join q{:}, grep { $_ ne q{} } $bot_lib, '/bogus/agent-lib/lib/perl5', '/bogus/own-lib/lib/perl5' ], 'and commits with the lib of the agent and then that lib after the lib of the bot, so the hooks of the spoke find the policies and the modules' );
     like( $installed->{notes}{log}, [ { message => qr/installed\ Plack::MIME\ into\ the\ own\ lib/ } ], 'and notes what it installed' );
+    is( $umask{commit} & oct '0022',  oct '0022', 'the update and its commit leave no file that the group of the agent can write' )                             or diag sprintf '%04o', $umask{commit};
+    is( $umask{install} & oct '0020', 0,          'but what it installs into the own lib of the agent stays writable by that group, which installs there too' ) or diag sprintf '%04o', $umask{install};
 
     ( @asked, @committed_with ) = ();
     $deps->redefine( install_needed => sub (@) { die "cpm: no such module\n" } );

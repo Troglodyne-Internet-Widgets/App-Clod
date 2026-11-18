@@ -1,6 +1,20 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - With run_as, the agent can no longer change what git reads to
+      configure itself where the worker runs git.  The bare clone was
+      group-writable, its config included, and the agent is in that group.
+      A key such as core.fsmonitor names a command that git runs, so the
+      agent could run a command as the worker, and read its token.  A fetch
+      now takes the write of the group from the config and from the bare
+      clone, and the worker seals each worktree that it runs git in.  The
+      worker runs no git in a worktree of the agent: it asks the agent for
+      the commit there, and counts and pushes it from the bare clone.  Each
+      git command of the worker first checks that the agent can change none
+      of these files, and refuses otherwise.  The harness update works with
+      the umask 0027, and its commit refuses hooks that the agent can write.
+      The agent can no longer delete a branch, pack the refs or drop its
+      last stash, and a new branch of a worktree tracks no upstream.
     - A run that changes a repository may now run perldoc, and every run
       may run du and df.  A hook of perl-slop asks for du and df before a
       copy, so a run that followed it was refused.

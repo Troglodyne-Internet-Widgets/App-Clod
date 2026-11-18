@@ -1403,8 +1403,8 @@ sub push_or_keep ( $job, $spoke, $tree, $branch, $work ) {
         return;
     }
     my $error = $@;
-    my $sha   = $spoke->git( q{-C}, "$tree", qw{rev-parse HEAD} );
-    $spoke->git( q{-C}, "$tree", 'update-ref', kept_ref($job), $sha );
+    my $sha   = $spoke->head($tree);
+    $spoke->git( q{-C}, $spoke->mirror->to_string, 'update-ref', kept_ref($job), $sha );
     $job->note( kept => { %$work, sha => $sha } );
     log_note( $job, "kept $sha for a retry, because the push failed" );
     die $error;
@@ -2851,6 +2851,11 @@ such an issue open, for example because its pull request was closed without a
 merge, the job takes that issue and comments on it with the checks that fail
 now, and files no second one.
 
+It works with the umask C<0027>, so that the agent can change no file of the
+worktree, nor a file that the update writes.  The commit runs the hooks of the
+worktree as the worker, and L<App::Clod::Spoke/commit> refuses hooks that the
+agent could change.
+
 =cut
 
 my $HARNESS_TITLE  = 'Meet the harness standards';
@@ -2865,7 +2870,9 @@ then C<agent_lib>, then C<agent_own_lib>.  So a commit of the bot runs the
 tests of a spoke whose modules the bot does not have, and its perlcritic finds
 the policies that the standards name, as in a claude run.  The job notes what
 it installed, and an install that fails, and then the hooks run with what
-there is.  With neither lib, it installs nothing and returns nothing.
+there is.  With neither lib, it installs nothing and returns nothing.  It
+installs with the write of the group in the umask, whatever the umask of the
+caller, because the agent installs into the same lib.
 
 =cut
 
@@ -2873,7 +2880,9 @@ sub prerequisites_env ( $job, $config, $tree ) {
     my @libs = grep { defined } @$config{qw{agent_lib agent_own_lib}};
     return if !@libs;
     if ( defined( my $own = $config->{agent_own_lib} ) ) {
+        my $umask     = umask( umask() & ~oct('0020') );
         my @installed = eval { App::Clod::Deps::install_needed( $own, $tree ) };
+        umask $umask;
         log_note( $job, 'could not install the prerequisites of the spoke into the own lib of the agent: ' . ( split m{\n}, $@ )[0] ) if $@;
         log_note( $job, "installed @installed into the own lib of the agent" )                                                        if @installed;
     }
@@ -2926,62 +2935,69 @@ sub harness_fix ( $job, $config, $args ) {
     my $issue_item = { repo => $repo, number => $issue->{number}, kind => 'fix', requester => $args->{by}, title => $HARNESS_TITLE };
     my $base       = default_branch( $gh, $repo );
     my $branch     = 'clod/' . $job->id . '-harness';
-    return in_worktree(
-        $job, $config, $repo,
-        { branch => $branch, base => $base },
-        sub ( $spoke, $tree, $tools ) {
-            my $results = App::Clod::Harness::update( $tree, $config->{harness}, cache => "$config->{workspace}/conformance" );
-            my @changes = map {
-                my $check = $_->{check};
-                map { "- `$check`: $_->{action} `$_->{path}`" } @{ $_->{changes} }
-            } @$results;
-            my @manual = map {
-                my $check = $_->{check};
-                map { "- `$check`: $_" } @{ $_->{manual} }
-            } @$results;
+    my $umask      = umask oct '0027';
+    my @out        = eval {
+        in_worktree(
+            $job, $config, $repo,
+            { branch => $branch, base => $base },
+            sub ( $spoke, $tree, $tools ) {
+                my $results = App::Clod::Harness::update( $tree, $config->{harness}, cache => "$config->{workspace}/conformance" );
+                my @changes = map {
+                    my $check = $_->{check};
+                    map { "- `$check`: $_->{action} `$_->{path}`" } @{ $_->{changes} }
+                } @$results;
+                my @manual = map {
+                    my $check = $_->{check};
+                    map { "- `$check`: $_" } @{ $_->{manual} }
+                } @$results;
 
-            $spoke->git( q{-C}, "$tree", qw{add -A} );
-            my %done = ( repo => $repo, issue_url => $issue->{url}, changes => \@changes, manual => \@manual );
-            if ( $spoke->git( q{-C}, "$tree", qw{status --porcelain} ) eq q{} ) {
-                my $todo = join "\n", @manual;
-                $gh->comment( $repo, $issue->{number}, join "\n\n", 'The update of the harness changes no file here.', harness_left(@manual), @manual ? $LEFT_TO_CLAUDE : () );
-                my %next = @manual ? harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE }, $todo, 'It changed no file.' ) : ();
-                return $job->finish( { %done, no_change => 1, %next } );
-            }
-            my %env = prerequisites_env( $job, $config, $tree );
-            local @ENV{ keys %env } = values %env;
-            my ( $tidy_profile, @tidied ) = tidied( $job, $tree, $results );
-            if (@tidied) {
                 $spoke->git( q{-C}, "$tree", qw{add -A} );
-                push @changes, "- perltidy: tidy, with the new `$tidy_profile`, " . files_named(@tidied);
-                $done{tidied} = \@tidied;
-            }
-            my $what    = join "\n", 'The update of the harness standards, run by the bot.', q{}, @changes;
-            my @commit  = ( qw{--quiet -m}, "$HARNESS_TITLE\n\n$what" );
-            my @flagged = critic_flagged( $job, $spoke, $tree, $results );
-            $done{critic} = \@flagged if @flagged;
-            my @todo = ( @manual, @flagged );
-            my $todo = join "\n", @todo;
-            my $left = harness_left(@todo);
+                my %done = ( repo => $repo, issue_url => $issue->{url}, changes => \@changes, manual => \@manual );
+                if ( $spoke->git( q{-C}, "$tree", qw{status --porcelain} ) eq q{} ) {
+                    my $todo = join "\n", @manual;
+                    $gh->comment( $repo, $issue->{number}, join "\n\n", 'The update of the harness changes no file here.', harness_left(@manual), @manual ? $LEFT_TO_CLAUDE : () );
+                    my %next = @manual ? harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE }, $todo, 'It changed no file.' ) : ();
+                    return $job->finish( { %done, no_change => 1, %next } );
+                }
+                my %env = prerequisites_env( $job, $config, $tree );
+                local @ENV{ keys %env } = values %env;
+                my ( $tidy_profile, @tidied ) = tidied( $job, $tree, $results );
+                if (@tidied) {
+                    $spoke->git( q{-C}, "$tree", qw{add -A} );
+                    push @changes, "- perltidy: tidy, with the new `$tidy_profile`, " . files_named(@tidied);
+                    $done{tidied} = \@tidied;
+                }
+                my $what    = join "\n", 'The update of the harness standards, run by the bot.', q{}, @changes;
+                my @commit  = ( qw{--quiet -m}, "$HARNESS_TITLE\n\n$what" );
+                my @flagged = critic_flagged( $job, $spoke, $tree, $results );
+                $done{critic} = \@flagged if @flagged;
+                my @todo = ( @manual, @flagged );
+                my $todo = join "\n", @todo;
+                my $left = harness_left(@todo);
 
-            if ( !eval { App::Clod::Spoke::commit( $tree, @commit ); 1 } ) {
-                my $said  = "git -C $tree commit @commit: ";
-                my $hook  = substr( $@, index( $@, $said ) == 0 ? length $said : 0 ) =~ s{\s+\z}{}r;
-                my $patch = $spoke->git( q{-C}, "$tree", qw{diff --cached --binary} );
-                log_note( $job, 'the hooks of the spoke refused the commit of the update' );
-                $gh->comment( $repo, $issue->{number}, join "\n\n", "The hooks of this repository refused the commit of the update of the harness:\n\n```\n$hook\n```", $left, 'A claude run of the bot takes the update on, makes the code pass the hooks, and opens a pull request.' );
-                my %next = harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE, patch => "$patch\n" }, @todo ? $todo : 'Nothing more than what the hook refused.', prompt( 'harness-refused', hook => $hook ) );
-                return $job->finish( { %done, refused => $hook, %next } );
+                if ( !eval { App::Clod::Spoke::commit( $tree, @commit ); 1 } ) {
+                    my $said  = "git -C $tree commit @commit: ";
+                    my $hook  = substr( $@, index( $@, $said ) == 0 ? length $said : 0 ) =~ s{\s+\z}{}r;
+                    my $patch = $spoke->git( q{-C}, "$tree", qw{diff --cached --binary} );
+                    log_note( $job, 'the hooks of the spoke refused the commit of the update' );
+                    $gh->comment( $repo, $issue->{number}, join "\n\n", "The hooks of this repository refused the commit of the update of the harness:\n\n```\n$hook\n```", $left, 'A claude run of the bot takes the update on, makes the code pass the hooks, and opens a pull request.' );
+                    my %next = harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE, patch => "$patch\n" }, @todo ? $todo : 'Nothing more than what the hook refused.', prompt( 'harness-refused', hook => $hook ) );
+                    return $job->finish( { %done, refused => $hook, %next } );
+                }
+                $spoke->push_branch( $tree, $branch );
+                my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, @todo ? $LEFT_TO_CLAUDE : (), "Closes #$issue->{number}" ) } );
+                log_note( $job, "opened $pull->{html_url}" );
+                assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $args->{by} ) );
+                my %pr   = ( branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url} );
+                my %next = @todo ? harness_run( $job, { %$issue_item, number => $pull->{number}, is_pr => 1, kind => 'address_review' }, spoke_address => { resume => 1 }, $todo, 'It committed what it changed on this branch.' ) : ();
+                return $job->finish( { %done, %pr, %next } );
             }
-            $spoke->push_branch( $tree, $branch );
-            my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, @todo ? $LEFT_TO_CLAUDE : (), "Closes #$issue->{number}" ) } );
-            log_note( $job, "opened $pull->{html_url}" );
-            assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $args->{by} ) );
-            my %pr   = ( branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url} );
-            my %next = @todo ? harness_run( $job, { %$issue_item, number => $pull->{number}, is_pr => 1, kind => 'address_review' }, spoke_address => { resume => 1 }, $todo, 'It committed what it changed on this branch.' ) : ();
-            return $job->finish( { %done, %pr, %next } );
-        }
-    );
+        );
+    };
+    my $error = $@;
+    umask $umask;
+    die $error if $error;
+    return @out;
 }
 
 =func harness_left
