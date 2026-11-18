@@ -59,6 +59,54 @@ subtest 'the bare clone, shared with its group' => sub {
     umask $umask;
 };
 
+# The workspace is shared with the group of the agent, but the configuration of
+# the bare clone names commands that git runs, and the worker runs git there.
+sub mode ($path) { return ( stat $path )[2] & oct '7777' }
+
+subtest 'the configuration of the bare clone, sealed from the agent' => sub {
+    my $umask  = umask oct '0007';
+    my $mirror = $spoke->fetch;
+    my $config = $mirror->child('config');
+    chmod oct '2770', "$mirror" or die "chmod $mirror: $!";
+    chmod oct '0660', "$config" or die "chmod $config: $!";
+    $spoke->fetch;
+    is( mode($config) & oct '0022', 0, 'after a fetch, no group and no other account can write the configuration of the bare clone' ) or diag sprintf '%04o', mode($config);
+    is( mode($mirror) & oct '0022', 0, 'nor the bare clone, where they could make a configuration of their own' )                     or diag sprintf '%04o', mode($mirror);
+    my $worktrees = $mirror->child('worktrees');
+    is( mode($worktrees) & oct '1070', oct '1070', 'its group can make a worktree, and cannot rename one of the worker' ) or diag sprintf '%04o', mode($worktrees);
+    is( mode( $mirror->child('logs') ) & oct '0070', oct '0070', 'and can write the logs of the refs that it commits to' );
+
+    my $tree = $spoke->worktree( $tmp->child( 'ws', 'work', 9, 'Test-Org', 'one' ), branch => 'clod/9-sealed', base => 'main' );
+    my ($gitdir) = $tree->child('.git')->slurp =~ m{\Agitdir:\ ([^\n]+)};
+    is( [ map { mode($_) & oct '0022' } $tree->child('.git'), $gitdir, "$gitdir/commondir" ], [ 0, 0, 0 ], 'a worktree that the worker runs git in is sealed too' );
+    $spoke->remove_worktree($tree);
+    umask $umask;
+};
+
+subtest 'git refuses what the agent could change' => sub {
+    my $mirror = $spoke->fetch;
+    my $config = $mirror->child('config');
+    my $was    = mode($config);
+    chmod $was | oct '0002', "$config" or die "chmod $config: $!";
+    like( dies { $spoke->git( q{-C}, "$mirror", qw{rev-parse HEAD} ) }, qr{refused,\ because\ every\ account\ can\ write\ \Q$config\E}, 'the worker runs no git in a bare clone whose configuration another account can write' );
+    chmod $was, "$config" or die "chmod $config: $!";
+
+    my $owner = $mirror->dirname;
+    my $above = mode($owner);
+    chmod $above | oct '0002', "$owner" or die "chmod $owner: $!";
+    like( dies { $spoke->git( q{-C}, "$mirror", qw{rev-parse HEAD} ) }, qr{refused,\ because\ every\ account\ can\ write\ \Q$owner\E}, 'nor in one that another account could put in its place' );
+    chmod $above | oct '1002', "$owner" or die "chmod $owner: $!";
+    ok( lives { $spoke->git( q{-C}, "$mirror", qw{rev-parse HEAD} ) }, 'unless the directory above has the sticky bit' ) or diag $@;
+    chmod $above, "$owner" or die "chmod $owner: $!";
+
+    my $tree = $spoke->worktree( $tmp->child( 'ws', 'work', 10, 'Test-Org', 'one' ), existing => 'main' );
+    my $open = $tree->child(qw{git-hooks pre-commit});
+    chmod mode($open) | oct '0002', "$open" or die "chmod $open: $!";
+    like( dies { App::Clod::Spoke::commit( $tree, qw{--quiet --allow-empty -m}, 'by the worker' ) }, qr{refused,\ because\ every\ account\ can\ write\ \Q$open\E}, 'a commit of the worker runs no hook that another account can write' );
+    like( dies { $spoke->git( q{-C}, "$tmp", 'status' ) },                                           qr{is\ not\ a\ git\ repository},                              'nor git in a directory that is no repository, where git would look above it' );
+    $spoke->remove_worktree($tree);
+};
+
 subtest worktree => sub {
     my $dir  = $tmp->child( 'ws', 'work', 1, 'Test-Org', 'one' );
     my $tree = $spoke->worktree( $dir, branch => 'clod/1-test', base => 'main' );
@@ -304,7 +352,7 @@ subtest 'a worktree that the agent owns' => sub {
     is( scalar @asked, 1, 'the agent makes the worktree' );
     my $trusts   = qr{\Agit\ -c\ safe\.directory=\Q$tmp\E/ws/mirrors/\S+\ };
     my $hookless = qr{-c\ core\.hooksPath=/dev/null\ };
-    my $adds     = qr{-C\ \S+\ worktree\ add\ -B\ clod/5-agent\ };
+    my $adds     = qr{-C\ \S+\ worktree\ add\ --no-track\ -B\ clod/5-agent\ };
     like( "@{ $asked[0] // [] }", qr{$trusts$hookless$adds}, 'with git, trusting the real path of the bare clone, and running no hook' );
     is( $foreign->( sub { $agent->git( q{-C}, "$tree", qw{rev-parse --abbrev-ref HEAD} ) } ), 'clod/5-agent', 'and the worker trusts the worktree, through a symbolic link' );
 
@@ -319,9 +367,14 @@ subtest 'a worktree that the agent owns' => sub {
     is( $tree->child('patched')->slurp,                       "new\n",   'to the file' );
     is( git( q{-C}, "$tree", qw{diff --cached --name-only} ), 'patched', 'and to the index' );
 
-    is( $foreign->( sub { $agent->commits_since( $tree, 'origin/main' ) } ), 1, 'the worker counts the commits of the worktree' );
+    # The agent owns its worktree, and can point its .git anywhere.
+    my $dot = $tree->child('.git');
+    chmod mode($dot) | oct '0002', "$dot" or die "chmod $dot: $!";
+    like( dies { $agent->git( q{-C}, "$tree", qw{rev-parse HEAD} ) }, qr{refused}, 'the worker runs no git in a worktree that another account can change' );
+    is( $foreign->( sub { $agent->commits_since( $tree, 'origin/main' ) } ), 1, 'but counts the commits of the worktree' );
     my $sha = $agent->push_branch( $tree, 'clod/5-agent' );
-    is( git( '--git-dir', "$bare", 'rev-parse', 'clod/5-agent' ), $sha, 'and pushes them' );
+    is( git( '--git-dir', "$bare", 'rev-parse', 'clod/5-agent' ), $sha, 'and pushes them, from the bare clone, with the commit that the agent names' );
+    chmod mode($dot) & ~oct('0002'), "$dot" or die "chmod $dot: $!";
 
     my $asked = @asked;
     $foreign->( sub { $agent->remove_worktree($tree) } );
