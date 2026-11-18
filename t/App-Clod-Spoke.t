@@ -153,7 +153,7 @@ subtest 'the hooks of each worktree' => sub {
     App::Clod::Spoke::commit( $second, qw{--quiet --allow-empty -m}, 'by the worker' );
     is( $ran->()->[-1], 'changed-pre-commit', 'but a commit of the worker through commit runs the hooks of the worktree' );
 
-    $spoke->remove_worktree($_) for $first, $second;
+    foreach my $worktree ( $first, $second ) { $spoke->remove_worktree($worktree) }
 };
 
 subtest 'a push when GitHub fails for a moment' => sub {

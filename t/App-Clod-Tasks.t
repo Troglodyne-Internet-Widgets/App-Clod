@@ -598,7 +598,7 @@ sub run_during ( $outer, $inner ) {
 
 subtest work_lock => sub {
     my $lock = sub (%how) { App::Clod::Tasks::work_lock( 'Test-Org/one', \%how ) };
-    is( [ map { $lock->(@$_) } [ branch => 'b', base => 'main' ], [ existing => 'b' ], [ detach => 'b' ], [ at => 'abc', onto => 'b' ] ], [ ('branch:Test-Org/one:b') x 4 ], 'a new branch, an existing one, a detached one and a commit for one each lock that branch' );
+    is( [ map { local ($_) = $_; $lock->(@$_) } [ branch => 'b', base => 'main' ], [ existing => 'b' ], [ detach => 'b' ], [ at => 'abc', onto => 'b' ] ], [ ('branch:Test-Org/one:b') x 4 ], 'a new branch, an existing one, a detached one and a commit for one each lock that branch' );
     isnt( $lock->( pull => 3 ), $lock->( branch => 'pull/3' ), 'a pull request has a lock of its own, which no branch name gives' );
     like( dies { $lock->( at => 'abc' ) }, qr/names\ no\ branch/, 'a commit that names no branch to go to dies' );
 };
@@ -607,7 +607,7 @@ subtest 'jobs on one spoke' => sub {
     %state = ();
     @calls = ();
     answer( { title => 't', summary => 's' }, commit => 1 );
-    my @fixes = map { $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ] ) } 1, 2;
+    my @fixes = map { local ($_) = $_; $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ] ) } 1, 2;
     my ( $first, $second ) = run_during(@fixes);
     is( [ $first->{state}, $second->{state} ], [qw{finished finished}], 'a fix runs while another fix of the same spoke, on its own branch, is in its worktree' ) or diag Mojo::Util::dumper [ $first, $second ];
 
@@ -617,7 +617,7 @@ subtest 'jobs on one spoke' => sub {
     $state{review_comments} = [ { id => 22, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'rename this' } ];
     answer( { summary => 'Renamed.', replies => [ { id => 22, body => 'Done.' } ] }, commit => 1 );
     my $pr      = { %item, kind => 'address_review', is_pr => 1, number => 12 };
-    my @answers = map { $minion->enqueue( spoke_address => [ { item => $pr, repo => 'Test-Org/one' } ] ) } 1, 2;
+    my @answers = map { local ($_) = $_; $minion->enqueue( spoke_address => [ { item => $pr, repo => 'Test-Org/one' } ] ) } 1, 2;
     my ( $answered, $waits ) = run_during(@answers);
     is( $answered->{state}, 'finished', 'an answer to a review finishes' ) or diag Mojo::Util::dumper $answered;
     is( $waits->{state},    'inactive', 'and a second answer on the same branch, while the first is in its worktree, goes back in the queue' );
