@@ -82,7 +82,7 @@ them, without the time.
 sub pieces ($event) {
     my $type = $event->{type} // 'unknown';
     if ( $type eq 'result' ) {
-        my @denied = map { Mojo::JSON::encode_json($_) } @{ $event->{permission_denials} // [] };
+        my @denied = map { local ($_) = $_; Mojo::JSON::encode_json($_) } @{ $event->{permission_denials} // [] };
         return ( 'result' . ( $event->{is_error} ? ' (error)' : q{} ) . ': ' . ( $event->{result} // q{} ), map { "refused: $_" } @denied );
     }
     return "$type " . ( $event->{subtype} // q{} ) if $type ne 'assistant' && $type ne 'user';

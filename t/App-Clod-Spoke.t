@@ -84,10 +84,10 @@ subtest worktree => sub {
     is( git( '-C', "$freed", 'rev-parse', 'HEAD' ), $sha, 'until the bare clone is pruned' );
     $spoke->remove_worktree($freed);
 
-    my @detached = map { $spoke->worktree( $tmp->child( 'ws', 'work', $_, 'Test-Org', 'one' ), detach => 'clod/1-test' ) } 2, 3;
+    my @detached = map { local ($_) = $_; $spoke->worktree( $tmp->child( 'ws', 'work', $_, 'Test-Org', 'one' ), detach => 'clod/1-test' ) } 2, 3;
     is( [ map { git( '-C', "$_", 'rev-parse', 'HEAD' ) } @detached ], [ $sha, $sha ], 'two detached worktrees can be at one branch at once' );
     is( git( '-C', "$detached[0]", qw{rev-parse --abbrev-ref HEAD} ), 'HEAD',         'and neither holds the branch' );
-    $spoke->remove_worktree($_) for @detached;
+    foreach my $worktree (@detached) { $spoke->remove_worktree($worktree) }
 };
 
 subtest 'the author, in the bare clone' => sub {
@@ -153,7 +153,7 @@ subtest 'the hooks of each worktree' => sub {
     App::Clod::Spoke::commit( $second, qw{--quiet --allow-empty -m}, 'by the worker' );
     is( $ran->()->[-1], 'changed-pre-commit', 'but a commit of the worker through commit runs the hooks of the worktree' );
 
-    $spoke->remove_worktree($_) for $first, $second;
+    foreach my $worktree ( $first, $second ) { $spoke->remove_worktree($worktree) }
 };
 
 subtest 'a push when GitHub fails for a moment' => sub {

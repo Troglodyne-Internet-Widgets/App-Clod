@@ -159,7 +159,7 @@ perlcritic fails, for example over a policy that is not installed.
 =cut
 
 sub new_violations ( $tree, $profile, $old ) {
-    my @files = map { Mojo::File->new($_)->to_rel("$tree")->to_string } Perl::Critic::Utils::all_perl_files( grep { -d } map { "$tree/$_" } @SOURCES );
+    my @files = map { local ($_) = $_; Mojo::File->new($_)->to_rel("$tree")->to_string } Perl::Critic::Utils::all_perl_files( grep { -d } map { "$tree/$_" } @SOURCES );
     return {} if !@files;
     my $before = defined $old ? Mojo::File::tempfile()->spew($old) : undef;
     my %before = map { $_ => 1 } violations( $tree, ( defined $before ? ( '--profile', "$before" ) : '--noprofile' ), @files );
@@ -197,13 +197,13 @@ L<App::Clod::Deps/run> does when perltidy fails.
 our @PERLTIDY = ('perltidy');
 
 sub tidy ( $tree, $profile ) {
-    my @files = map { Mojo::File->new($_)->to_rel("$tree")->to_string } Perl::Critic::Utils::all_perl_files( grep { -d } map { "$tree/$_" } @SOURCES );
+    my @files = map { local ($_) = $_; Mojo::File->new($_)->to_rel("$tree")->to_string } Perl::Critic::Utils::all_perl_files( grep { -d } map { "$tree/$_" } @SOURCES );
     return if !@files;
-    my %before = map { $_ => Mojo::File->new("$tree/$_")->slurp } @files;
+    my %before = map { local ($_) = $_; $_ => Mojo::File->new("$tree/$_")->slurp } @files;
 
     # -bext=/ keeps no backup once a file is written.
     App::Clod::Deps::run( { dir => "$tree", exits => [ 0, 2 ] }, @PERLTIDY, "--profile=$profile", '-b', '-bext=/', @files );
-    my @changed = sort grep { Mojo::File->new("$tree/$_")->slurp ne $before{$_} } @files;
+    my @changed = sort grep { local ($_) = $_; Mojo::File->new("$tree/$_")->slurp ne $before{$_} } @files;
     return @changed;
 }
 
@@ -217,7 +217,7 @@ L<App::Clod::Deps/policies> can name the policies that the agent must have.
 
 sub critic_profiles ( $settings, %options ) {
     my $templates = standards( $settings, %options )->base->child('templates');
-    return map { $_->slurp } sort { $a cmp $b } grep { $_->basename =~ m{\Aperlcriticrc} } $templates->list->each;
+    return map { local ($_) = $_; $_->slurp } sort { $a cmp $b } grep { local ($_) = $_; $_->basename =~ m{\Aperlcriticrc} } $templates->list->each;
 }
 
 =func marketplace_check

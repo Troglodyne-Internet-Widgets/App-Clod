@@ -82,7 +82,7 @@ subtest 'links out of the skills' => sub {
 
 subtest 'other tools and other requests' => sub {
     my $skill = $skills->child(qw{recipes SKILL.md});
-    is( decision( $_ => $skill ), 'nothing', "$_ gets no decision, even on a skill" ) for qw{Read Bash NotebookEdit MultiEdit};
+    foreach my $tool (qw{Read Bash NotebookEdit MultiEdit}) { is( decision( $tool => $skill ), 'nothing', "$tool gets no decision, even on a skill" ) }
 
     my ( $out, $err ) = ( q{}, q{} );
     IPC::Run::run( [ $^X, "$hook", "$tree" ], '<', \'not json', '>', \$out, '2>', \$err );

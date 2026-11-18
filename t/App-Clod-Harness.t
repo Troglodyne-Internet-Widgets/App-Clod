@@ -26,7 +26,7 @@ sub tree (%files) {
     for my $key ( grep { index( $_, q{sha:} ) == 0 } keys %files ) {
         $sha{ substr $key, 4 } = delete $files{$key};
     }
-    my %tree = map { $_ => { path => $_, type => 'blob', sha => $sha{$_} // Dist::Conformance::Snapshot::blob_sha( $files{$_} ) } } keys %files;
+    my %tree = map { local ($_) = $_; $_ => { path => $_, type => 'blob', sha => $sha{$_} // Dist::Conformance::Snapshot::blob_sha( $files{$_} ) } } keys %files;
     return ( \%tree, sub ($path) { $files{$path} } );
 }
 
@@ -63,7 +63,9 @@ subtest 'a spoke without .conformance.yml' => sub {
     is( $result->{chosen},                              0,                                                'which it did not choose' );
     is( [ map { $_->{check} } @{ $result->{checks} } ], [qw{ClaudeMd ClaudeSettings GitHooks workflows}], 'one result for each check of the flavor, in order, and then workflows' );
     my $all = by_check($result);
-    is( $all->{$_}{status}, 'pass', "a conforming spoke passes $_" ) or diag $all->{$_}{detail} for qw{ClaudeMd ClaudeSettings GitHooks};
+    foreach my $check (qw{ClaudeMd ClaudeSettings GitHooks}) {
+        is( $all->{$check}{status}, 'pass', "a conforming spoke passes $check" ) or diag $all->{$check}{detail};
+    }
 
     my $bare = by_check( App::Clod::Harness::check( snapshot( 'README.md' => q{} ), \%settings ) );
     is( $bare->{ClaudeMd}{status},       'fail', 'an empty spoke fails ClaudeMd' );
@@ -137,7 +139,7 @@ subtest new_violations => sub {
     my $bareword = 'InputOutput::ProhibitBarewordFileHandles';
     my $magic    = 'ValuesAndExpressions::ProhibitMagicNumbers';
     my $unless   = 'ControlStructures::ProhibitUnlessBlocks';
-    my ( $lib, $t ) = map { $tree->child($_)->make_path } qw{lib t};
+    my ( $lib, $t ) = map { local ($_) = $_; $tree->child($_)->make_path } qw{lib t};
     $lib->child('Spoke.pm')->spew(qq{package Spoke;\nopen FH, '<', 'x';\nmy \$x = 42;\n1;\n});
     $t->child('spoke.t')->spew(qq{my \$y = 42;\n});
     $tree->child('README.md')->spew(qq{my \$z = 42;\n});
@@ -156,15 +158,15 @@ subtest tidy => sub {
     $tree->child('.perltidyrc')->spew("-l=100\n");
     is( [ App::Clod::Harness::tidy( $tree, '.perltidyrc' ) ], [], 'a checkout with no Perl has nothing to tidy, and runs no perltidy' );
 
-    my ( $lib, $t ) = map { $tree->child($_)->make_path } qw{lib t};
+    my ( $lib, $t ) = map { local ($_) = $_; $tree->child($_)->make_path } qw{lib t};
     $lib->child('Messy.pm')->spew(qq{package Messy;\nmy \$x=1+2;\n1;\n});
     $lib->child('Tidy.pm')->spew(qq{package Tidy;\nmy \$x = 1;\n1;\n});
     $t->child('messy.t')->spew(qq{my \$y=3;\n});
     $tree->child('README.md')->spew(qq{my \$z=4;\n});
-    is( [ App::Clod::Harness::tidy( $tree, '.perltidyrc' ) ], [ 'lib/Messy.pm', 't/messy.t' ],           'it names the Perl files that it changed, and not one that was tidy already' );
-    is( $lib->child('Messy.pm')->slurp,                       qq{package Messy;\nmy \$x = 1 + 2;\n1;\n}, 'which it tidied in place, with the profile' );
-    is( $tree->child('README.md')->slurp,                     qq{my \$z=4;\n},                           'and leaves what is not Perl alone' );
-    is( [ map { $_->basename } $lib->list->each ],            [qw{Messy.pm Tidy.pm}],                    'and leaves no backup behind' );
+    is( [ App::Clod::Harness::tidy( $tree, '.perltidyrc' ) ],       [ 'lib/Messy.pm', 't/messy.t' ],           'it names the Perl files that it changed, and not one that was tidy already' );
+    is( $lib->child('Messy.pm')->slurp,                             qq{package Messy;\nmy \$x = 1 + 2;\n1;\n}, 'which it tidied in place, with the profile' );
+    is( $tree->child('README.md')->slurp,                           qq{my \$z=4;\n},                           'and leaves what is not Perl alone' );
+    is( [ map { local ($_) = $_; $_->basename } $lib->list->each ], [qw{Messy.pm Tidy.pm}],                    'and leaves no backup behind' );
 
     $tree->child('.perltidyrc')->spew("--no-such-perltidy-option\n");
     $lib->child('Messy.pm')->spew(qq{my \$x=1;\n});

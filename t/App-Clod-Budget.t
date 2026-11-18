@@ -17,7 +17,9 @@ my $DAY  = 86_400;
 
 my $tmp    = File::Temp->newdir;
 my $minion = Minion->new( SQLite => "sqlite:$tmp/minion.db" );
-$minion->add_task( $_ => sub ( $job, $result ) { $job->finish($result) } ) for @App::Clod::Budget::CLAUDE_TASKS, 'harness_scan';
+foreach my $task ( @App::Clod::Budget::CLAUDE_TASKS, 'harness_scan' ) {
+    $minion->add_task( $task => sub ( $job, $result ) { $job->finish($result) } );
+}
 
 # A finished job with this result, finished this many seconds ago.
 sub finished ( $task, $result, $ago ) {

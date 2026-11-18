@@ -11,10 +11,10 @@ use JSON::Validator::Schema::Draft7 ();
 my @SCOPES = qw{single multi upstream clarify follow_up};
 
 # The name of a repository that the bot may make, without its organization.
-our $NAME = q{[A-Za-z0-9][A-Za-z0-9_-]{0,99}};
+our $NAME = qr{[[:alnum:]][[:alnum:]_-]{0,99}};
 
 # The name of a perl module, which names the release issue of a new repository.
-our $MODULE = q{[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)*};
+our $MODULE = qr{[[:alpha:]_]\w*(?:::\w+)*};
 
 =func schema
 
@@ -52,18 +52,22 @@ sub schema ( $spokes, %allow ) {
     my $repo   = sub () {
         my $spoke = { type => 'string', enum => [@$spokes] };
         return $spoke if !@orgs;
-        return { anyOf => [ $spoke, { type => 'string', pattern => '^(?:' . join( q{|}, map { s{[.]}{\\.}gr } @orgs ) . ")/$NAME\$" } ] };
+        my $org_re  = join q{|}, map { quotemeta } @orgs;
+        my $repo_re = qr{\A (?: $org_re ) / $NAME \z};
+        return { anyOf => [ $spoke, { type => 'string', pattern => "$repo_re" } ] };
     };
-    my $repos    = sub (%count) { return { properties => { repos => { type => 'array', %count } } } };
-    my $entry    = { type => 'object', required => [qw{repo order instructions}], properties => { repo => $repo->(), order => { type => 'integer' }, instructions => $text->() } };
-    my $new_repo = {
+    my $repos     = sub (%count) { return { properties => { repos => { type => 'array', %count } } } };
+    my $entry     = { type => 'object', required => [qw{repo order instructions}], properties => { repo => $repo->(), order => { type => 'integer' }, instructions => $text->() } };
+    my $name_re   = qr{\A $NAME \z};
+    my $module_re = qr{\A $MODULE \z};
+    my $new_repo  = {
         type       => 'object',
         required   => [qw{org name description asked_by quote}],
         properties => {
             org         => { type => 'string', enum      => [@orgs] },
-            name        => { type => 'string', pattern   => "^$NAME\$" },
+            name        => { type => 'string', pattern   => "$name_re" },
             description => { type => 'string', minLength => 1, maxLength => 350 },
-            module      => { type => 'string', pattern   => "^$MODULE\$" },
+            module      => { type => 'string', pattern   => "$module_re" },
             private     => { type => 'boolean' },
             $asking->(),
         },

@@ -14,7 +14,9 @@ use App::Clod::Outage();
 
 my $tmp    = File::Temp->newdir;
 my $minion = Minion->new( SQLite => "sqlite:$tmp/minion.db" );
-$minion->add_task( $_ => sub ( $job, @ ) { $job->finish } ) for qw{triage harness_scan};
+foreach my $task (qw{triage harness_scan}) {
+    $minion->add_task( $task => sub ( $job, @ ) { $job->finish } );
+}
 
 # Starts an outage from a job of that task, as a task does when it is refused.
 sub refused ( $task, $service, $error ) {

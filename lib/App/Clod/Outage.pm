@@ -75,7 +75,7 @@ when it finds none.
 
 sub summary ($minion) {
     my @summary;
-    for my $service ( grep { $minion->is_locked( lock_name($_) ) } sort keys %HOLDS ) {
+    for my $service ( grep { local ($_) = $_; $minion->is_locked( lock_name($_) ) } sort keys %HOLDS ) {
         push @summary, { service => $service, name => $NAME{$service}, %{ last_note( $minion, $service ) // {} } };
     }
     return \@summary;

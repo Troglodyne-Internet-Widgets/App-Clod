@@ -579,7 +579,7 @@ sub work ($self) {
         last if @items >= 100;
         my $item = $info->{args}[0] // {};
         $has_job{"$item->{repo}#$item->{number}"} = 1 if $item->{repo};
-        my @children = map { $self->child_job($_) } @{ $info->{notes}{children} // ( ref $info->{result} eq 'HASH' ? $info->{result}{children} : undef ) // [] };
+        my @children = map { local ($_) = $_; $self->child_job($_) } @{ $info->{notes}{children} // ( ref $info->{result} eq 'HASH' ? $info->{result}{children} : undef ) // [] };
         push @items,
           {
             id       => $info->{id},

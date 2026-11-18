@@ -178,8 +178,9 @@ subtest 'run, with no result' => sub {
 
 subtest absorb => sub {
     my %outcome = ( events => 1 );
-    App::Clod::Claude::absorb( \%outcome, $_ ) for { type => 'assistant', message => {} }
-    , { type => 'test-type-from-a-later-claude' }, {}, { type => 'system', subtype => 'test-subtype', session_id => 'test-session' };
+    foreach my $event ( { type => 'assistant', message => {} }, { type => 'test-type-from-a-later-claude' }, {}, { type => 'system', subtype => 'test-subtype', session_id => 'test-session' } ) {
+        App::Clod::Claude::absorb( \%outcome, $event );
+    }
     is( \%outcome, { events => 1 }, 'an event that it does not read leaves the outcome as it is' );
     App::Clod::Claude::absorb( \%outcome, { type => 'system', subtype => 'init', session_id => 'test-session' } );
     is( $outcome{session_id}, 'test-session', 'and the init event gives the session' );
