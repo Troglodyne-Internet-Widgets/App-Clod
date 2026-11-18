@@ -207,6 +207,68 @@ subtest 'files_at and blob' => sub {
     like( dies { $spoke->files_at( 'no-such-branch', 'bin/' ) }, qr/no-such-branch/, 'a branch that the bare clone does not have dies' );
 };
 
+# git refuses a repository that another account owns, and its own test switch
+# makes it take every repository for one.  So the worker can only work in a
+# worktree of the agent, or in the bare clone, when it trusts that directory.
+# The switch is off for a fetch or a push, because the remote on disk stands
+# for GitHub, which no test of ownership reaches.
+subtest 'a worktree that the agent owns' => sub {
+    my @asked;
+    my $link = $tmp->child('ws-link');
+    symlink "$tmp/ws", "$link" or die "symlink $link: $!";
+    my $agent = App::Clod::Spoke->new(
+        repo         => 'Test-Org/one',
+        workspace    => "$link",
+        github_web   => "file://$tmp/remote",
+        token        => 'test-token',
+        author_name  => 'test-bot',
+        author_email => 'bot@test.test',
+        as_agent     => sub (@cmd) { push @asked, [@cmd]; return ( qw{env CLOD_TEST_AS_AGENT=1}, @cmd ) },
+    );
+    my $mirror = $agent->fetch;
+    my $mock   = Test::MockModule->new('App::Clod::Spoke');
+    $mock->redefine( fetch  => sub ($self) { return $mirror } );
+    $mock->redefine( is_own => sub ($path) { return 0 } );
+    my $foreign = sub ($code) {
+        local $ENV{GIT_TEST_ASSUME_DIFFERENT_OWNER} = 1;
+        return $code->();
+    };
+
+    my $tree = $foreign->( sub { $agent->worktree( $link->child( 'work', 5, 'Test-Org', 'one' ), branch => 'clod/5-agent', base => 'main', agent => 1 ) } );
+    is( scalar @asked, 1, 'the agent makes the worktree' );
+    my $trusts = qr{\Agit\ -c\ safe\.directory=\Q$tmp\E/ws/mirrors/\S+\ };
+    my $adds   = qr{-C\ \S+\ worktree\ add\ -B\ clod/5-agent\ };
+    like( "@{ $asked[0] // [] }", qr{$trusts$adds}, 'with git, trusting the real path of the bare clone' );
+    is( $foreign->( sub { $agent->git( q{-C}, "$tree", qw{rev-parse --abbrev-ref HEAD} ) } ), 'clod/5-agent', 'and the worker trusts the worktree, through a symbolic link' );
+
+    $tree->child('patched')->spew("old\n");
+    git( q{-C}, "$tree", qw{add patched} );
+    git( q{-C}, "$tree", qw{-c user.name=t -c user.email=t@test.test commit --quiet --no-verify -m base} );
+    $tree->child('patched')->spew("new\n");
+    my $patch = git( q{-C}, "$tree", qw{diff --binary} ) . "\n";
+    git( q{-C}, "$tree", qw{checkout --quiet -- patched} );
+    $foreign->( sub { $agent->apply_patch( $tree, $patch ) } );
+    like( "@{ $asked[-1] }", qr{apply\ --index\z}, 'the agent applies a patch to its worktree' );
+    is( $tree->child('patched')->slurp,                       "new\n",   'to the file' );
+    is( git( q{-C}, "$tree", qw{diff --cached --name-only} ), 'patched', 'and to the index' );
+
+    is( $foreign->( sub { $agent->commits_since( $tree, 'origin/main' ) } ), 1, 'the worker counts the commits of the worktree' );
+    my $sha = $agent->push_branch( $tree, 'clod/5-agent' );
+    is( git( '--git-dir', "$bare", 'rev-parse', 'clod/5-agent' ), $sha, 'and pushes them' );
+
+    my $asked = @asked;
+    $foreign->( sub { $agent->remove_worktree($tree) } );
+    is( scalar @asked, $asked + 1, 'the agent removes its worktree' );
+    ok( !-d $tree, 'and it is gone' );
+
+    $mock->redefine( is_own => sub ($path) { return 1 } );
+    my $own = $foreign->( sub { $agent->worktree( $link->child( 'work', 6, 'Test-Org', 'one' ), detach => 'main' ) } );
+    $asked = @asked;
+    $foreign->( sub { $agent->remove_worktree($own) } );
+    is( scalar @asked, $asked, 'the worker makes and removes a worktree of its own, with no agent' );
+    ok( !-d $own, 'and it is gone' );
+};
+
 subtest git => sub {
     like( dies { $spoke->git(qw{rev-parse --verify no-such-ref}) }, qr/\Agit\ rev-parse\ --verify\ no-such-ref:\ fatal:\ [^\n]+\n\z/, 'a failing git command dies with its error, on one line, with no file or line' );
     ok( !( grep { m{test-token} } git( '--git-dir', $spoke->mirror->to_string, 'config', '--list' ) ), 'the token is not in the clone\'s configuration' );

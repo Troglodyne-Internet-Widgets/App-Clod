@@ -53,6 +53,16 @@ The name and address that commits in a worktree carry.
 
 has [qw{author_name author_email}];
 
+=attr as_agent
+
+A code ref that takes a command, as a list, and returns the list that runs it
+as the account that claude runs as, such as L<App::Clod::Claude/as_account>.
+Default undef: the worker runs every git command.  See L</THE AGENT ACCOUNT>.
+
+=cut
+
+has 'as_agent';
+
 =method mirror
 
 The bare clone, as a L<Mojo::File>.
@@ -72,7 +82,8 @@ sub reference ($self) { return Mojo::File->new( $self->workspace, 'ref', $self->
 =method git
 
 Runs git with the arguments as a list and returns its output.  Dies with the
-error output on failure.
+error output on failure.  When the arguments start with C<-C $dir>, git trusts
+C<$dir> as L</trust> says.
 
 =cut
 
@@ -82,10 +93,61 @@ sub git ( $self, @args ) {
     local $ENV{GIT_CONFIG_COUNT}    = 1;
     local $ENV{GIT_CONFIG_KEY_0}    = 'http.' . $self->github_web . '/.extraheader';
     local $ENV{GIT_CONFIG_VALUE_0}  = "AUTHORIZATION: basic $basic";
+    return run_git( [ 'git', trust(@args), @args ], \undef, @args );
+}
+
+=method git_as_owner
+
+C<($dir, \$input, @args)>.  Runs git as L</git> does, with C<$input> on its
+standard input, as the account that owns C<$dir>: the account of L</as_agent>
+when the worker does not own it, and the worker otherwise.  An undef C<$dir>
+means the account of L</as_agent>.  So a worktree that the agent made is
+changed and removed by the agent, which owns each file in it.  With no
+L</as_agent>, the worker runs it.  It gets no token, because sudo passes on no
+variable that L</as_agent> does not name, so it is for a command that does not
+talk to GitHub.
+
+=cut
+
+sub git_as_owner ( $self, $dir, $input, @args ) {
+    my $as = $self->as_agent;
+    return run_git( [ 'git', trust(@args), @args ],          $input, @args ) if !$as || ( defined $dir && is_own($dir) );
+    return run_git( [ $as->( 'git', trust(@args), @args ) ], $input, @args );
+}
+
+=func is_own
+
+C<($path)>.  True when the worker owns C<$path>, or when it is not there.
+
+=cut
+
+sub is_own ($path) {
+    my @stat = stat $path;
+    return !@stat || $stat[4] == $>;
+}
+
+=func trust
+
+C<(@args)>.  The arguments that make git trust the directory of C<-C>, when
+C<@args> start with C<-C $dir>: C<-c safe.directory=$dir>, with the real path
+of C<$dir>, because git compares the real path.  Empty otherwise.  git refuses
+to work in a repository that another account owns, and the bare clone and a
+worktree can each belong to the other account.  See L</THE AGENT ACCOUNT>.
+
+=cut
+
+sub trust (@args) {
+    return () if @args < 2 || $args[0] ne q{-C};
+    my $real = eval { Mojo::File->new( $args[1] )->realpath->to_string } // return ();
+    return ( q{-c}, "safe.directory=$real" );
+}
+
+# git, with $input on its standard input.  @shown is what an error names.
+sub run_git ( $cmd, $input, @shown ) {
     my ( $out, $err ) = ( q{}, q{} );
-    my $ok = IPC::Run::run( [ 'git', @args ], '>', \$out, '2>', \$err, IPC::Run::timeout(600) );
+    my $ok = IPC::Run::run( $cmd, '<', $input, '>', \$out, '2>', \$err, IPC::Run::timeout(600) );
     chomp $err;
-    die "git @args: $err\n" if !$ok;
+    die "git @shown: $err\n" if !$ok;
     chomp $out;
     return $out;
 }
@@ -259,6 +321,12 @@ C<< detach => $branch >> for a branch on the remote, detached, to read and to
 run what is in it, or C<< at => $commit >> for a commit of the bare clone,
 detached, to push it.
 
+With C<< agent => 1 >>, the account of L</as_agent> makes the worktree, so
+that it owns each file in it.  A run of claude edits files in it as that
+account, and a tool that it runs, such as C<perltidy -b>, may need to change
+the mode or the times of a file, which only its owner may do.  Without an
+account it makes no difference.
+
 A C<detach> or C<at> worktree gets no author and no hooks, because nothing
 commits in it.  So making one writes nothing to the bare clone but the fetch and its own
 worktree entry, and it holds no branch, so any number of them can be at one
@@ -270,19 +338,21 @@ sub worktree ( $self, $dir, %opt ) {
     my $mirror = $self->fetch;
     $dir = Mojo::File->new($dir);
     $dir->dirname->make_path;
+    my $by  = $opt{agent} ? undef : "$mirror";
+    my $add = sub (@add) { $self->git_as_owner( $by, \undef, q{-C}, "$mirror", qw{worktree add}, @add ) };
     if ( defined $opt{detach} || defined $opt{at} ) {
-        $self->git( q{-C}, "$mirror", qw{worktree add --detach}, "$dir", $opt{at} // "origin/$opt{detach}" );
+        $add->( '--detach', "$dir", $opt{at} // "origin/$opt{detach}" );
         return $dir;
     }
     if ( $opt{pull} ) {
         $self->git_remote( q{-C}, "$mirror", 'fetch', 'origin', "+pull/$opt{pull}/head:refs/remotes/origin/pr/$opt{pull}" );
-        $self->git( q{-C}, "$mirror", qw{worktree add --detach}, "$dir", "origin/pr/$opt{pull}" );
+        $add->( '--detach', "$dir", "origin/pr/$opt{pull}" );
     }
     elsif ( $opt{existing} ) {
-        $self->git( q{-C}, "$mirror", qw{worktree add -B}, $opt{existing}, "$dir", "origin/$opt{existing}" );
+        $add->( '-B', $opt{existing}, "$dir", "origin/$opt{existing}" );
     }
     else {
-        $self->git( q{-C}, "$mirror", qw{worktree add -B}, $opt{branch}, "$dir", "origin/$opt{base}" );
+        $add->( '-B', $opt{branch}, "$dir", "origin/$opt{base}" );
     }
     $self->git( q{-C}, "$dir", 'config', 'user.name',  $self->author_name )  if $self->author_name;
     $self->git( q{-C}, "$dir", 'config', 'user.email', $self->author_email ) if $self->author_email;
@@ -320,15 +390,30 @@ sub push_branch ( $self, $dir, $branch ) {
     return $head;
 }
 
+=method apply_patch
+
+C<($dir, $patch)>.  Applies C<$patch>, the output of C<git diff --cached
+--binary>, to the worktree C<$dir> and to its index, as the account that owns
+the worktree, as L</git_as_owner> says.  So each file that the patch writes
+belongs to that account too.
+
+=cut
+
+sub apply_patch ( $self, $dir, $patch ) {
+    $self->git_as_owner( $dir, \$patch, q{-C}, "$dir", qw{apply --index} );
+    return;
+}
+
 =method remove_worktree
 
-C<($dir)>.  Removes the worktree, if it is there.
+C<($dir)>.  Removes the worktree, if it is there, as the account that owns
+it, as L</git_as_owner> says.
 
 =cut
 
 sub remove_worktree ( $self, $dir ) {
     return if !-d $dir;
-    $self->git( q{-C}, $self->mirror->to_string, qw{worktree remove --force}, "$dir" );
+    $self->git_as_owner( $dir, \undef, q{-C}, $self->mirror->to_string, qw{worktree remove --force}, "$dir" );
     return;
 }
 
@@ -374,11 +459,24 @@ is never in a remote URL or in the clone's configuration.
 The repository's own F<git-hooks/pre-commit> and F<git-hooks/post-commit> are
 installed into the bare clone, so a commit in any worktree runs them.
 
+=head2 THE AGENT ACCOUNT
+
 Each fetch sets C<core.sharedRepository> to C<group> in the bare clone, so git
 makes what it writes there writable by the group.  That is for
 L<App::Clod::Claude/run_as>: claude commits as another account, into the bare
-clone of the worker, and the worker then pushes and removes the worktree.  It
-also needs three things that this module cannot do:
+clone of the worker.
+
+With L</as_agent>, that account makes the worktree of a claude run, applies a
+patch to it and removes it, so that it owns every file in it.  The group lets
+the agent write to a file that the worker owns, but not change its mode or its
+times, and the hooks of a spoke do both when they tidy a file.  The worker
+still fetches, writes the configuration and the hooks of the bare clone, and
+pushes.  Every git command of this module trusts the directory that it works
+in, with C<-c safe.directory>, because a worktree and the bare clone have
+different owners.  That trusts nothing new: the agent can already write the
+configuration and the hooks of the bare clone, through the group.
+
+It also needs three things that this module cannot do:
 
 =over
 
@@ -389,9 +487,10 @@ bit, so that everything in it gets that group.
 a worktree are writable by the group too.  sudo combines its own umask with
 the umask of the worker, so sudo needs C<umask=0007> as well.
 
-=item * The gitconfig of the other account names the worktrees in
-C<safe.directory>, because git refuses to work in a repository that another
-account owns.
+=item * sudo lets the worker run git as the agent, with no password.  And the
+gitconfig of the agent names the worktrees that the worker owns, such as the
+reference and the tool worktrees, in C<safe.directory>, because claude runs git
+in them too.
 
 =back
 

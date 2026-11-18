@@ -1017,6 +1017,16 @@ subtest claude => sub {
     is( App::Clod::Tasks::claude($config)->run_as, 'test-agent', 'and as the account of run_as when it does' );
 };
 
+subtest spoke => sub {
+    my $config = Clone::clone( $app->clod_config );
+    is( App::Clod::Tasks::spoke( $config, 'Test-Org/one' )->as_agent, undef, 'the worker runs every git command of a spoke unless the configuration names an account' );
+    $config->{claude}{run_as} = 'test-agent';
+    my $as  = App::Clod::Tasks::spoke( $config, 'Test-Org/one' )->as_agent;
+    my @cmd = $as ? $as->(qw{git status}) : ();
+    is( [ @cmd[ 0 .. 4 ] ], [qw{sudo -n -H -u test-agent}], 'and with run_as, it runs git through sudo as that account' );
+    is( [ @cmd[ -2, -1 ] ], [qw{git status}],               'with the command at the end' );
+};
+
 subtest system_text => sub {
     my %config   = ( spoke_prompt => 'Test on a guest.', system_prompts => { spoke_fix => 'Fix with care.' } );
     my $commands = App::Clod::Tasks::prompt('commands');
