@@ -1245,6 +1245,57 @@ subtest 'the rules that a repository declares in clod.json' => sub {
     is( $rules_of->(),    [],         'and gets none of its rules, because it only reads' );
     $config->{tool_spokes} = [];
 
+    # A cleanup records where it ran, its argument, and whether that is a
+    # directory then, one line each time.
+    my $cleaned = $tmp->child('cleaned');
+    $commit->(
+        'main',
+        'clod.json'   => [ text    => Mojo::JSON::encode_json( { run => ['bin/provision'], cleanup => [qw{bin/broken bin/cleanup ../x}] } ) ],
+        'bin/cleanup' => [ program => qq{#!/bin/sh\nprintf '%s|%s|%s\\n' "\$(pwd -P)" "\$1" "\$([ -d "\$1" ] && echo dir)" >> '$cleaned'\n} ],
+        'bin/broken'  => [ program => "#!/bin/sh\necho 'no hypervisor' >&2\nexit 1\n" ],
+    );
+    my $lines = sub () { return [ split m{\n}, -e $cleaned ? $cleaned->slurp : q{} ] };
+    answer( { title => 't', summary => 's' } );
+    my $cleans = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    my $root   = $tmp->child( 'workspace', 'work', $cleans->{id} )->realpath;
+    is( $cleans->{state}, 'finished',                                'a fix in a repository that declares a cleanup finishes' ) or diag Mojo::Util::dumper $cleans->{result};
+    is( $lines->(),       ["$root/Test-Org/two|$root/.scratch|dir"], 'the cleanup ran once, from the top of the worktree, with the scratch directory of the run while it was still there' );
+    ok( !-e $root, 'and the directory of the job is gone after it' );
+    my @said = map { $_->{message} } @{ $cleans->{notes}{log} // [] };
+    like(
+        [ grep { m{cleanup} } @said ],
+        [ map { qr{\A\Q$_->[0]\E .* \Q$_->[1]\E} } [ 'runs no cleanup ../x of clod.json', 'not a plain path' ], [ 'the cleanup bin/broken of Test-Org/two failed: ', 'no hypervisor' ] ],
+        'the job notes a path that it leaves out, and a cleanup that failed, and the next cleanup still runs'
+    );
+
+    # A worker that is killed leaves the directory of its job.
+    $cleaned->remove;
+    my $tasks = Test::MockModule->new('App::Clod::Tasks');
+    $tasks->redefine( clean_up    => sub (@) { return } );
+    $tasks->redefine( remove_work => sub (@) { return } );
+    answer( { title => 't', summary => 's' } );
+    my $killed = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    $tasks->unmock_all;
+    my $left = $tmp->child( 'workspace', 'work', $killed->{id} )->realpath;
+    ok( -d $left->child( 'Test-Org', 'two' ), 'a run whose worker was killed leaves its worktree' );
+    $minion->add_task( test_sweep => sub ($job) { $job->finish( [ App::Clod::Tasks::sweep_work( $job, $config ) ] ) } );
+    is( run_job('test_sweep')->{result}, ["$killed->{id}"],                         'the sweep removes the directory of a job that no longer runs, and says which' );
+    is( $lines->(),                      ["$left/Test-Org/two|$left/.scratch|dir"], 'after it runs the cleanup of its worktree' );
+    ok( !-e $left, 'and nothing of it is left' );
+
+    # A retry of the job finds the directory of its last attempt.
+    $cleaned->remove;
+    $tasks->redefine( clean_up    => sub (@) { return } );
+    $tasks->redefine( remove_work => sub (@) { return } );
+    answer( { title => 't', summary => 's' } );
+    my $again = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    $tasks->unmock_all;
+    $minion->job( $again->{id} )->retry;
+    answer( { title => 't', summary => 's' } );
+    is( run_id( $again->{id} )->{state}, 'finished', 'a retry of a job whose last attempt left its directory finishes' );
+    my $where = $tmp->child( 'workspace', 'work', $again->{id} );
+    is( $lines->(), [ ("$where/Test-Org/two|$where/.scratch|dir") x 2 ], 'it ran the cleanup of the last attempt first, and then its own' );
+
     $commit->( 'main', 'clod.json' => [ text => '{"run":"bin/provision"}' ] );
     answer( { title => 't', summary => 's' } );
     unlink $record_file;

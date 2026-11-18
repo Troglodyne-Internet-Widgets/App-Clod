@@ -227,7 +227,11 @@ added.  C<extra_tools> allows the runs that change a repository to run those
 tools.  See L<App::Clod::Config>.  A repository can also declare the programs
 in it that those runs may run, in F<clod.json> at its top.  The bot reads it
 from the default branch, so a declaration takes effect when a person merges
-it.  L<App::Clod::Tasks/declared_rules> says what it may hold.
+it.  L<App::Clod::Tasks/declared_rules> says what it may hold.  It can also
+name, in C<cleanup>, the programs that remove what a run made outside its
+worktree, such as a guest that a test built.  They run after every run, also a
+run that failed, and the sweep of each half hour runs them for a run whose
+worker was killed.  L<App::Clod::Tasks/clean_up> says how.
 
 If the best fix is upstream, the bot changes nothing.  It assigns the issue to
 the owner of the affected path in CODEOWNERS, or to the repository owner, and

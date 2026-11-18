@@ -181,7 +181,8 @@ read it.
 =cut
 
 sub command ( $self, %run ) {
-    my @cmd = $self->as_account( $self->bin, qw{-p --output-format stream-json --verbose} );
+    my @tmp = defined $run{tmpdir} ? ( '/usr/bin/env', "TMPDIR=$run{tmpdir}" ) : ();
+    my @cmd = $self->as_account( @tmp, $self->bin, qw{-p --output-format stream-json --verbose} );
     push @cmd, '--model', $self->model if $self->model;
     my $mode = $run{permission_mode} // 'acceptEdits';
     push @cmd, '--permission-mode', $mode;
@@ -260,10 +261,22 @@ on its standard error if it fails.
 
 =cut
 
-sub as_account_run ( $self, @cmd ) {
+sub as_account_run ( $self, @cmd ) { return $self->as_account_in( q{.}, 600, @cmd ) }
+
+=method as_account_in
+
+C<($dir, $seconds, @cmd)>.  Runs C<@cmd> in the directory C<$dir> as
+L</as_account_run> does, and stops it after C<$seconds>.  Returns what it
+printed, and dies with what it printed on its standard error if it fails.
+
+=cut
+
+sub as_account_in ( $self, $dir, $seconds, @cmd ) {
     local %ENV = $self->child_env;
     my ( $out, $err ) = ( q{}, q{} );
-    my $ok = eval { IPC::Run::run( [ $self->as_account(@cmd) ], '<', \undef, '>', \$out, '2>', \$err, IPC::Run::timeout(600) ) };
+    my $ok = eval {
+        IPC::Run::run( [ $self->as_account(@cmd) ], init => sub { chdir $dir or die "chdir $dir: $!\n" }, '<', \undef, '>', \$out, '2>', \$err, IPC::Run::timeout($seconds) );
+    };
     die "@cmd: " . ( $err ne q{} ? $err : $@ || 'failed' ) . "\n" if !$ok;
     return $out;
 }
@@ -332,7 +345,9 @@ sub rtk_too ($rule) {
 =method run
 
 Takes C<dir>, C<prompt>, and optionally C<tools>, C<add_dirs>, C<schema>,
-C<system>, C<permission_mode> and C<on_event>.  Returns a hash:
+C<system>, C<permission_mode>, C<tmpdir> and C<on_event>.  C<tmpdir> is the
+C<TMPDIR> of claude and of each program that it runs, so that a temporary file
+goes where the run is cleaned up.  Returns a hash:
 
 =over
 

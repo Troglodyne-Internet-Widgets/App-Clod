@@ -11,6 +11,18 @@ Revision history for App-Clod
       edits it.  Every git command of App::Clod::Spoke now trusts its
       directory with -c safe.directory, because a worktree and its bare
       clone can have different owners.
+    - clod.json can name programs in cleanup.  After every run in a
+      worktree, also one that failed or timed out, the worker runs each
+      as the account of the run, from the top of its checkout, with the
+      scratch directory of the run as its argument.  It is for what a run
+      makes outside its worktree, such as a guest that a test built.
+    - The scratch directory of a run is now its TMPDIR, so a temporary
+      file or directory that a program of the run makes is removed with
+      the run.
+    - self_check now also sweeps the directory of each job under work/
+      that no longer waits or runs, as when its worker was killed: it
+      runs the cleanup of its checkouts and removes them.  A retry of
+      such a job sweeps the directory of its last attempt first.
     - Every claude run now appends share/prompts/commands.md to its system
       prompt.  It tells the run to write each command out literally: no
       shell variables, one call per known item instead of a loop, and no
