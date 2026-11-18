@@ -287,6 +287,54 @@ subtest is_behind => sub {
     }
 };
 
+subtest 'run, with a TMPDIR' => sub {
+
+    # A claude that writes the TMPDIR that it got, and then answers as the fake.
+    my $seen = "$tmp/tmpdir-seen";
+    my $bin  = Mojo::File->new("$tmp/tmpdir-claude");
+    $bin->spew(qq{#!/bin/sh\nprintf '%s' "\$TMPDIR" > '$seen'\nexec '$fake' "\$@"\n});
+    chmod 0755, "$bin" or die "chmod $bin: $!";
+    local $ENV{TMPDIR} = '/bogus/worker-tmp';
+    my %env = ( FAKE_CLAUDE_STREAM => $here->child(qw{data stream-ok.jsonl})->to_string );
+
+    my $outcome = App::Clod::Claude->new( bin => "$bin", env => \%env )->run( dir => "$tmp", prompt => 'x', tmpdir => '/bogus/run-scratch' );
+    is( $outcome->{ok},                1,                    'a run with a tmpdir is ok' ) or diag $outcome->{stderr};
+    is( Mojo::File->new($seen)->slurp, '/bogus/run-scratch', 'and claude gets it as its TMPDIR, in place of the TMPDIR of the worker' );
+
+    local $ENV{PATH} = join q{:}, $here->child(qw{bin sudo-dir}), $ENV{PATH};
+    unlink $seen;
+    $outcome = App::Clod::Claude->new( bin => "$bin", env => \%env, run_as => 'test-agent' )->run( dir => "$tmp", prompt => 'x', tmpdir => '/bogus/agent-scratch' );
+    is( $outcome->{ok},                1,                      'also as another account' ) or diag $outcome->{stderr};
+    is( Mojo::File->new($seen)->slurp, '/bogus/agent-scratch', 'through sudo, which resets the environment' );
+
+    unlink $seen;
+    App::Clod::Claude->new( bin => "$bin", env => \%env )->run( dir => "$tmp", prompt => 'x' );
+    is( Mojo::File->new($seen)->slurp, '/bogus/worker-tmp', 'a run with no tmpdir keeps the TMPDIR of the worker' );
+};
+
+subtest as_account_in => sub {
+
+    # A program that prints where it runs and its argument, and fails on request.
+    my $bin = Mojo::File->new("$tmp/where");
+    $bin->spew(qq{#!/bin/sh\n[ "\$1" = fail ] && { echo 'it went wrong' >&2; exit 3; }\nprintf '%s|%s' "\$(pwd)" "\$1"\n});
+    chmod 0755, "$bin" or die "chmod $bin: $!";
+    my $dir = Mojo::File->new("$tmp/in-here")->make_path->realpath;
+
+    my $claude = App::Clod::Claude->new( bin => 'test-claude' );
+    is( $claude->as_account_in( "$dir", 60, "$bin", 'an-argument' ), "$dir|an-argument", 'the program runs in the directory, with its arguments, and its output comes back' );
+    like( dies { $claude->as_account_in( "$dir", 60, "$bin", 'fail' ) }, qr/\A\Q$bin\E\ fail:\ it\ went\ wrong$/m, 'a program that fails dies with what it printed on its standard error' );
+
+    my $slow = Mojo::File->new("$tmp/slow-cleanup");
+    $slow->spew("#!/bin/sh\nsleep 5\n");
+    chmod 0755, "$slow" or die "chmod $slow: $!";
+    like( dies { $claude->as_account_in( "$dir", 1, "$slow" ) }, qr/timeout/i, 'a program past its seconds is stopped, and dies' );
+
+    local $ENV{PATH}             = join q{:}, $here->child(qw{bin sudo-dir}), $ENV{PATH};
+    local $ENV{FAKE_SUDO_RECORD} = "$tmp/sudo-in";
+    is( App::Clod::Claude->new( bin => 'test-claude', run_as => 'test-agent' )->as_account_in( "$dir", 60, "$bin", 'x' ), "$dir|x",     'as another account it runs in the directory too' );
+    is( Mojo::File->new("$tmp/sudo-in")->slurp,                                                                           'test-agent', 'through sudo, as the account of run_as' );
+};
+
 subtest 'run, past the timeout' => sub {
     my $slow = "$tmp/slow";
     Mojo::File->new($slow)->spew("#!/bin/sh\nsleep 5\n");
