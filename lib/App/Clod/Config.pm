@@ -5,7 +5,9 @@ package App::Clod::Config;
 use 5.040;
 use warnings FATAL => 'all';
 use re '/aasx';
-use Clone ();
+use Clone      ();
+use List::Util ();
+use Mojo::File ();
 use JSON::Validator::Schema::Troglodyne();
 
 use App::Clod::Budget();
@@ -35,10 +37,11 @@ our %SCHEMA = (
     required             => [qw{bot workspace auth}],
     additionalProperties => 0,
     properties           => {
-        bot       => $LOGIN,
-        workspace => { type => 'string', minLength => 1 },
-        evidence  => { type => 'string', minLength => 1 },
-        auth      => section(
+        bot               => $LOGIN,
+        workspace         => { type => 'string', minLength => 1 },
+        evidence          => { type => 'string', minLength => 1 },
+        conformance_cache => { type => 'string', minLength => 1 },
+        auth              => section(
             {
                 trusted_header  => { type => 'string', minLength => 1 },
                 user            => { type => 'string', minLength => 1 },
@@ -132,10 +135,16 @@ sub validate ($raw) {
     die "create_repos needs spoke_orgs, because a repository is made in one of them, so that the sweep keeps it a spoke\n" if $config->{create_repos} && !@{ $config->{spoke_orgs} };
 
     $config = Clone::clone($config);
-    $config->{minion}             //= "sqlite:$config->{workspace}/minion.db";
-    $config->{bot_email}          //= "$config->{bot}\@users.noreply.github.com";
-    $config->{evidence}           //= "$config->{workspace}/evidence";
-    $config->{agent_own_lib}      //= "$config->{workspace}/agent-own-lib" if $config->{agent_lib};
+    $config->{minion}            //= "sqlite:$config->{workspace}/minion.db";
+    $config->{bot_email}         //= "$config->{bot}\@users.noreply.github.com";
+    $config->{evidence}          //= "$config->{workspace}/evidence";
+    $config->{agent_own_lib}     //= "$config->{workspace}/agent-own-lib" if $config->{agent_lib};
+    $config->{conformance_cache} //= App::Clod::Harness::default_cache();
+
+    # By the names, without asking the disk, which may not hold either yet.
+    my $cache     = Mojo::File->new( $config->{conformance_cache} )->to_abs->to_array;
+    my $workspace = Mojo::File->new( $config->{workspace} )->to_abs->to_array;
+    die "conformance_cache is in the workspace, which the account of run_as can write\n" if @$cache >= @$workspace && List::Util::all { $cache->[$_] eq $workspace->[$_] } 0 .. $#$workspace;
     $config->{harness}{standards} //= { git => "$config->{github_web}/$config->{harness}{plugin_repo}.git", path => 'skills/packaging-perl' };
     App::Clod::Harness::default_config( $config->{harness} );
     return $config;
@@ -229,6 +238,16 @@ Default F<evidence> in the workspace.  The worker makes it mode 0700, so the
 account of C<run_as>, which shares the group of the workspace, cannot read
 it.  Put it where a rebuild of the host keeps it, beside the Minion
 database, for the evidence to outlive the host.
+
+=item conformance_cache
+
+The directory where L<App::Clod::Harness> keeps the clones of the git sources
+of the standards.  The worker runs git in each clone, and so runs what its
+configuration and its hooks name.  So no other account may write there, and
+L<App::Clod::Harness/conformance> makes it mode 0700.  Default the cache of
+the account that runs the bot, as L<App::Clod::Harness/default_cache> finds
+it.  A directory in the workspace dies, because the account of C<run_as> can
+write the workspace, and so could replace the directory.
 
 =item minion
 
