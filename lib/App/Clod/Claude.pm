@@ -142,6 +142,11 @@ C<PERL5LIB> of every program that claude runs, with its F<bin> first on
 C<PATH>.  It holds the tools of the agent.  Default none: then claude gets the
 C<PATH> of the worker, and no C<PERL5LIB>, so not the modules of the bot.
 
+Every run may read it with the Read tool, through a C<Read> rule beside its
+tools, so that a run can read the source and the POD of the policies and the
+tools that it is held to.  The lib is not a directory of the session, which a
+run in C<acceptEdits> could also edit.
+
 =cut
 
 has lib => undef;
@@ -187,7 +192,7 @@ sub command ( $self, %run ) {
     my $mode = $run{permission_mode} // 'acceptEdits';
     push @cmd, '--permission-mode', $mode;
     push @cmd, '--settings',        $self->skill_settings( $run{dir} ) if $mode eq 'acceptEdits' && defined $run{dir};
-    my $tools = $run{tools} // $self->allowed_tools;
+    my $tools = [ @{ $run{tools} // $self->allowed_tools }, ( defined $self->lib ? 'Read(/' . $self->lib . '/**)' : () ) ];
     push @cmd, '--allowedTools',         join( q{,}, List::Util::uniq( map { rtk_too($_) } @$tools ) ) if @$tools;
     push @cmd, '--add-dir',              $_ for @{ $run{add_dirs} // [] };
     push @cmd, '--json-schema',          Mojo::JSON::encode_json( $run{schema} ) if $run{schema};
