@@ -1135,11 +1135,11 @@ once.  git refuses to check out one branch in two worktrees, and two jobs that
 pushed to one branch would each push over the other, or reply twice to one
 review.  Jobs on different branches of one repository run at once.  Each has
 its own worktree, and what they share in the bare clone is safe without the
-lock: L<App::Clod::Spoke/worktree> fetches, adds the worktree and installs the
-hooks under L<App::Clod::Spoke/locked>, the author is set once by the fetch,
-and each branch and each L</kept_ref> belongs to one job.  The hooks that a
-commit runs are the ones that the last job installed, so a branch that changes
-its hooks can see another branch run them while both jobs run.
+lock: L<App::Clod::Spoke/worktree> fetches and adds the worktree under
+L<App::Clod::Spoke/locked>, the author is set once by the fetch, and each
+branch and each L</kept_ref> belongs to one job.  A commit runs the hooks of
+its own worktree, as L<App::Clod::Spoke/HOOKS> says, so nothing that one job
+installs reaches the commits of another.
 
 A tool worktree is made without a lock.  It is detached, so it holds no
 branch, and nothing is pushed from it, and taking a lock would hold every run
@@ -1718,9 +1718,10 @@ has C<blocked> and C<denied>.  The work that the run did is on the branch,
 where a person can read it and finish it.
 
 L</harness_fix> gives two more arguments.  With C<patch>, the job stages
-that patch in the worktree before the run, as L</stage_patch> does, so the
-run commits it with its own changes.  With C<title>, the pull request has
-that title, in place of the one that the run gives.
+that patch in the worktree and its index before the run, as
+L<App::Clod::Spoke/apply_patch> does, so the run commits it with its own
+changes, through the hooks that the patched worktree has.  With C<title>, the
+pull request has that title, in place of the one that the run gives.
 
 =cut
 
@@ -1741,7 +1742,7 @@ sub spoke_fix ( $job, $config, $args ) {
         $job, $config, $repo,
         $kept ? { at => $kept->{sha}, onto => $branch } : { branch => $branch, base => $base, agent => 1 },
         sub ( $spoke, $tree, $tools ) {
-            stage_patch( $spoke, $tree, $args->{patch} ) if !$kept && defined $args->{patch};
+            $spoke->apply_patch( $tree, $args->{patch} ) if !$kept && defined $args->{patch};
             my $work = $kept // fix_run( $job, $config, $gh, $args, $spoke, $tree, $tools, branch => $branch, base => $base, prior => $prior ) // return;
             log_note( $job, "pushes $work->{sha}, which an earlier try kept" ) if $kept;
             push_or_keep( $job, $spoke, $tree, $branch, $work );
@@ -1755,23 +1756,6 @@ sub spoke_fix ( $job, $config, $args ) {
             return $job->finish( { repo => $repo, branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url}, summary => $answer->{summary}, commits => $work->{commits}, ( $lacks ? waits_for_packages($lacks) : () ), %{ $work->{refusals} // {} }, %{ $work->{usage} } } );
         }
     );
-}
-
-=func stage_patch
-
-C<($spoke, $tree, $patch)>.  Applies C<$patch>, the output of C<git diff
---cached --binary>, to the worktree C<$tree> and to its index, as the account that owns the
-worktree, and installs
-the hooks that the worktree has now, as L<App::Clod::Spoke/install_hooks>
-does.  So the run of L</spoke_fix> starts with those changes staged, and its
-commit runs the hooks that the patch brings.
-
-=cut
-
-sub stage_patch ( $spoke, $tree, $patch ) {
-    $spoke->apply_patch( $tree, $patch );
-    $spoke->install_hooks($tree);
-    return;
 }
 
 =func fix_run
@@ -2968,15 +2952,15 @@ sub harness_fix ( $job, $config, $args ) {
                 $done{tidied} = \@tidied;
             }
             my $what    = join "\n", 'The update of the harness standards, run by the bot.', q{}, @changes;
-            my @commit  = ( q{-C}, "$tree", qw{commit --quiet -m}, "$HARNESS_TITLE\n\n$what" );
+            my @commit  = ( qw{--quiet -m}, "$HARNESS_TITLE\n\n$what" );
             my @flagged = critic_flagged( $job, $spoke, $tree, $results );
             $done{critic} = \@flagged if @flagged;
             my @todo = ( @manual, @flagged );
             my $todo = join "\n", @todo;
             my $left = harness_left(@todo);
 
-            if ( !eval { $spoke->git(@commit); 1 } ) {
-                my $said  = "git @commit: ";
+            if ( !eval { App::Clod::Spoke::commit( $tree, @commit ); 1 } ) {
+                my $said  = "git -C $tree commit @commit: ";
                 my $hook  = substr( $@, index( $@, $said ) == 0 ? length $said : 0 ) =~ s{\s+\z}{}r;
                 my $patch = $spoke->git( q{-C}, "$tree", qw{diff --cached --binary} );
                 log_note( $job, 'the hooks of the spoke refused the commit of the update' );
