@@ -2854,7 +2854,8 @@ now, and files no second one.
 It works with the umask C<0027>, so that the agent can change no file of the
 worktree, nor a file that the update writes.  The commit runs the hooks of the
 worktree as the worker, and L<App::Clod::Spoke/commit> refuses hooks that the
-agent could change.
+agent could change.  The hooks, perltidy and perlcritic get no C<PERL5LIB> and
+no C<PATH> that the agent can write, as L</prerequisites_env> says.
 
 =cut
 
@@ -2864,27 +2865,36 @@ my $LEFT_TO_CLAUDE = 'A claude run of the bot now works on what is left for a pe
 =func prerequisites_env
 
 C<($job, $config, $tree)>.  Installs what the spoke in C<$tree> needs into
-C<agent_own_lib>, as L<App::Clod::Deps/install_needed> does, and returns the
+C<harness_lib>, as L<App::Clod::Deps/install_needed> does, and returns the
 C<PERL5LIB> and C<PATH> that the hooks of the spoke need: those of the worker,
-then C<agent_lib>, then C<agent_own_lib>.  So a commit of the bot runs the
-tests of a spoke whose modules the bot does not have, and its perlcritic finds
-the policies that the standards name, as in a claude run.  The job notes what
-it installed, and an install that fails, and then the hooks run with what
-there is.  With neither lib, it installs nothing and returns nothing.  It
-installs with the write of the group in the umask, whatever the umask of the
-caller, because the agent installs into the same lib.
+then C<agent_lib>, then C<harness_lib>, each that exists.  So a commit of
+the bot runs the tests of a spoke whose modules the bot does not have, and its
+perlcritic finds the policies that the standards name, as in a claude run.
+The job notes what it installed, and an install that fails, and then the hooks
+run with what there is.  With neither lib, it installs nothing and returns
+nothing.
+
+The hooks, perltidy and perlcritic run as the worker with these paths.  So it
+makes C<harness_lib> with the umask of the caller, and dies before it installs
+anything when the agent could change either lib, as
+L<App::Clod::Spoke/exposed> says.  It never gives the worker C<agent_own_lib>,
+because every claude run can change what is in it.
 
 =cut
 
 sub prerequisites_env ( $job, $config, $tree ) {
-    my @libs = grep { defined } @$config{qw{agent_lib agent_own_lib}};
+    my $own = $config->{harness_lib};
+    Mojo::File->new($own)->make_path if defined $own;
+    my @libs = grep { defined && -d } @$config{qw{agent_lib harness_lib}};
     return if !@libs;
-    if ( defined( my $own = $config->{agent_own_lib} ) ) {
-        my $umask     = umask( umask() & ~oct('0020') );
+    for my $lib (@libs) {
+        my $why = App::Clod::Spoke::exposed( Mojo::File->new($lib)->realpath->to_string ) // next;
+        die "The harness commit runs nothing from $lib, because $why\n";
+    }
+    if ( defined $own ) {
         my @installed = eval { App::Clod::Deps::install_needed( $own, $tree ) };
-        umask $umask;
-        log_note( $job, 'could not install the prerequisites of the spoke into the own lib of the agent: ' . ( split m{\n}, $@ )[0] ) if $@;
-        log_note( $job, "installed @installed into the own lib of the agent" )                                                        if @installed;
+        log_note( $job, 'could not install the prerequisites of the spoke into the harness lib: ' . ( split m{\n}, $@ )[0] ) if $@;
+        log_note( $job, "installed @installed into the harness lib" )                                                        if @installed;
     }
     return (
         PERL5LIB => join( q{:}, grep { $_ ne q{} } $ENV{PERL5LIB} // q{}, map { "$_/lib/perl5" } @libs ),

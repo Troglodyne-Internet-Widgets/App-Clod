@@ -204,6 +204,21 @@ subtest 'the hooks of each worktree' => sub {
     foreach my $worktree ( $first, $second ) { $spoke->remove_worktree($worktree) }
 };
 
+subtest 'the secrets of the worker, kept from the hooks of its commit' => sub {
+    my $seen = $tmp->child('hook-env');
+    hooks_branch( 'hooks-env', 'pre-commit' => qq{env > $seen} );
+    my $tree   = $spoke->worktree( $tmp->child( 'ws', 'work', 11, 'Test-Org', 'one' ), existing => 'hooks-env' );
+    my %secret = map { $_ => "secret-$_" } qw{GH_TOKEN GITHUB_TOKEN CLAUDE_CODE_OAUTH_TOKEN};
+    {
+        local @ENV{ keys %secret } = values %secret;
+        App::Clod::Spoke::commit( $tree, qw{--quiet --allow-empty -m}, 'by the worker' );
+        is( [ grep { exists $ENV{$_} } sort keys %secret ], [ sort keys %secret ], 'the worker keeps its secrets after the commit' );
+    }
+    my %env = map { split m{=}, $_, 2 } grep { m{=} } split m{\n}, $seen->slurp;
+    is( [ grep { exists $env{$_} } sort keys %secret ], [], 'but the hooks of the commit get none of them, as they need none' );
+    $spoke->remove_worktree($tree);
+};
+
 subtest 'a push when GitHub fails for a moment' => sub {
     local @App::Clod::Retry::DELAYS = ( 0, 0, 0 );
     my $dir  = $tmp->child( 'ws', 'work', 5, 'Test-Org', 'one' );

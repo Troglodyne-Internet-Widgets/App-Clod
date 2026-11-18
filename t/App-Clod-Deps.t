@@ -54,7 +54,7 @@ subtest install => sub {
 };
 
 subtest install_needed => sub {
-    my $lib     = $tmp->child('own-lib');
+    my $lib     = $tmp->child('harness-lib');
     my $already = $lib->child(qw{lib perl5 Already})->make_path;
     $already->child('There.pm')->spew("package Already::There;\n1;\n");
     local @App::Clod::Deps::DZIL = fake( 'dzil', "Mojolicious\nAlready::There\nNot::Installed::Anywhere\nperl\n" );
@@ -65,7 +65,7 @@ subtest install_needed => sub {
     $checkout->child('dist.ini')->spew("name = Bogus\n");
     is( [ App::Clod::Deps::install_needed( $lib, $checkout ) ], ['Not::Installed::Anywhere'], 'with one, a module that neither the lib nor @INC has is installed' );
     like( logged('cpm'), [qr{\ -L\ \Q$lib\E\ Not::Installed::Anywhere\z}], 'into the lib, alone' );
-    ok( -e "$lib.lock", 'under the lock that clod-cpm takes' );
+    ok( -e $lib->child('.lock'), 'under a lock inside the lib, which every worker shares' );
     logged('dzil');
 
     local @App::Clod::Deps::DZIL = fake( 'dzil', "Mojolicious\nAlready::There\n" );
