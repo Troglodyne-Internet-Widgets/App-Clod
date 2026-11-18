@@ -7,14 +7,16 @@ use warnings FATAL => 'all';
 use re '/aasx';
 use Mojo::Base -base, -signatures;
 
-use File::Slurper::Temp ();
-use IPC::Run            ();
-use List::Util          ();
-use Mojo::File          ();
-use Mojo::Util          ();
-use Mutex::Flock        ();
+use IPC::Run     ();
+use List::Util   ();
+use Mojo::File   ();
+use Mojo::Util   ();
+use Mutex::Flock ();
 
 use App::Clod::Retry ();
+
+# git finds no hook under /dev/null, which is not a directory.
+our @NO_HOOKS = ( q{-c}, 'core.hooksPath=/dev/null' );
 
 =attr repo
 
@@ -84,7 +86,8 @@ sub reference ($self) { return Mojo::File->new( $self->workspace, 'ref', $self->
 
 Runs git with the arguments as a list and returns its output.  Dies with the
 error output on failure.  When the arguments start with C<-C $dir>, git trusts
-C<$dir> as L</trust> says.
+C<$dir> as L</trust> says.  git runs no hook, as L</HOOKS> says; L</commit> is
+the one command of the worker that runs them.
 
 =cut
 
@@ -94,7 +97,7 @@ sub git ( $self, @args ) {
     local $ENV{GIT_CONFIG_COUNT}    = 1;
     local $ENV{GIT_CONFIG_KEY_0}    = 'http.' . $self->github_web . '/.extraheader';
     local $ENV{GIT_CONFIG_VALUE_0}  = "AUTHORIZATION: basic $basic";
-    return run_git( [ 'git', trust(@args), @args ], \undef, @args );
+    return run_git( [ 'git', trust(@args), @NO_HOOKS, @args ], \undef, @args );
 }
 
 =method git_as_owner
@@ -106,14 +109,32 @@ means the account of L</as_agent>.  So a worktree that the agent made is
 changed and removed by the agent, which owns each file in it.  With no
 L</as_agent>, the worker runs it.  It gets no token, because sudo passes on no
 variable that L</as_agent> does not name, so it is for a command that does not
-talk to GitHub.
+talk to GitHub.  git runs no hook, as for L</git>.
 
 =cut
 
 sub git_as_owner ( $self, $dir, $input, @args ) {
-    my $as = $self->as_agent;
-    return run_git( [ 'git', trust(@args), @args ],          $input, @args ) if !$as || ( defined $dir && is_own($dir) );
-    return run_git( [ $as->( 'git', trust(@args), @args ) ], $input, @args );
+    my $as  = $self->as_agent;
+    my @git = ( 'git', trust(@args), @NO_HOOKS, @args );
+    return run_git( \@git,           $input, @args ) if !$as || ( defined $dir && is_own($dir) );
+    return run_git( [ $as->(@git) ], $input, @args );
+}
+
+=func commit
+
+C<($dir, @args)>.  Runs C<git commit @args> in the worktree C<$dir> as the
+worker, with the hooks of that worktree, and returns its output.  Dies as
+L</git> does, with an error that names C<-C $dir commit @args>.  git gets no
+token header, as L</git> gives it, so neither do the hooks; they do get the
+environment of the worker.  It is for a worktree that the worker made and no
+claude run has worked in, because the hooks are the files of its branch.  See
+L</HOOKS>.
+
+=cut
+
+sub commit ( $dir, @args ) {
+    my @shown = ( q{-C}, "$dir", 'commit', @args );
+    return run_git( [ 'git', trust(@shown), @shown ], \undef, @shown );
 }
 
 =func is_own
@@ -229,6 +250,9 @@ every worktree carries them.  A worktree shares that configuration, so
 writing it from each new worktree would only write the one file again, and
 two jobs that did so at once could meet on its lock and fail.
 
+It sets C<core.hooksPath> of the bare clone to C<git-hooks>, as L</HOOKS>
+says.
+
 =cut
 
 # A bare clone, with remote-tracking refs so that worktrees can start from origin.
@@ -240,40 +264,11 @@ sub fetch_unlocked ($self) {
     }
     $self->git( q{-C}, "$mirror", qw{config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*} );
     $self->git( q{-C}, "$mirror", qw{config core.sharedRepository group} );
+    $self->git( q{-C}, "$mirror", qw{config core.hooksPath git-hooks} );
     $self->git( q{-C}, "$mirror", 'config', 'user.name',  $self->author_name )  if $self->author_name;
     $self->git( q{-C}, "$mirror", 'config', 'user.email', $self->author_email ) if $self->author_email;
     $self->git_remote( q{-C}, "$mirror", qw{fetch --prune origin} );
     return $mirror;
-}
-
-=method install_hooks
-
-C<($tree)>.  Copies F<git-hooks/pre-commit> and F<git-hooks/post-commit> of
-that checkout into the bare clone, where every worktree finds them.  It holds
-L</locked> while it copies, so the two hooks of one call are never mixed with
-those of another.  Each hook is written to a file beside it and renamed into
-place, executable already, so a commit in another worktree runs the old hook
-or the new one, never a part of one.
-
-=cut
-
-# The hooks live in the shared git dir, so every worktree gets the repo's own.
-sub install_hooks ( $self, $tree ) {
-    my $hooks = $self->mirror->child('hooks');
-    $self->locked(
-        sub {
-            $hooks->make_path;
-            local $File::Slurper::Temp::FILE_TEMP_PERMS = oct 755;
-            for my $name (qw{pre-commit post-commit}) {
-                my $hook = Mojo::File->new( $tree, 'git-hooks', $name );
-                next if !-e $hook;
-                my $installed = $hooks->child($name);
-                File::Slurper::Temp::write_binary( "$installed", $hook->slurp );
-                chmod oct 755, $installed or die "chmod $installed: $!\n";
-            }
-        }
-    );
-    return;
 }
 
 =method refresh_reference
@@ -347,11 +342,10 @@ account, and a tool that it runs, such as C<perltidy -b>, may need to change
 the mode or the times of a file, which only its owner may do.  Without an
 account it makes no difference.
 
-A C<detach> or C<at> worktree gets no hooks, because nothing commits in it.
-So making one writes nothing to the bare clone but the fetch and its own
-worktree entry, and it holds no branch, so any number of them can be at one
-branch at once.  Every worktree has the author of L</fetch_unlocked>, which is
-in the configuration of the bare clone.
+Making a worktree writes nothing to the bare clone but the fetch and its own
+worktree entry.  A C<detach> or C<at> worktree holds no branch, so any number
+of them can be at one branch at once.  Every worktree has the author of
+L</fetch_unlocked>, which is in the configuration of the bare clone.
 
 It adds the worktree under L</locked>, after the fetch, and the fetch of the
 head of a pull request with it.  So a fetch with C<--prune> by another job
@@ -379,7 +373,6 @@ sub worktree ( $self, $dir, %opt ) {
             return $add->( '-B', $opt{branch},   "$dir", "origin/$opt{base}" );
         }
     );
-    $self->install_hooks($dir) if !defined $opt{detach} && !defined $opt{at};
     return $dir;
 }
 
@@ -480,8 +473,25 @@ forever.  The claude run in the same worktree uses the git program too.
 The token goes to git as an HTTP header through C<GIT_CONFIG_*> variables.  It
 is never in a remote URL or in the clone's configuration.
 
-The repository's own F<git-hooks/pre-commit> and F<git-hooks/post-commit> are
-installed into the bare clone, so a commit in any worktree runs them.
+=head2 HOOKS
+
+A commit in a worktree runs the hooks of the branch of that worktree: every
+hook in its F<git-hooks/>.  The fetch sets C<core.hooksPath> of the bare clone
+to C<git-hooks>, and git takes a relative C<core.hooksPath> as relative to the
+root of the worktree that it runs a hook in.  So nothing is copied, two
+worktrees on branches whose hooks differ each run their own, and a patch or a
+commit that changes a hook changes what the next commit of that worktree runs.
+git runs only the files whose names are hook names in L<githooks(5)>, so a
+helper beside the hooks, such as F<refresh-coverage>, runs only when a hook
+runs it, by its path beside the hook (C<${0%/*}>).  A hook that is not
+executable in the branch does not run, and git says so.
+
+A hook is a file of the branch, and so a run of claude can change it.  So no
+git command of the worker runs a hook: L</git> and L</git_as_owner> give git a
+C<core.hooksPath> of F</dev/null>.  Without it, a push of the worker in the
+worktree of a run would run the F<pre-push> and F<reference-transaction> that
+the run wrote, as the worker.  The one exception is L</commit>, for a worktree
+that the worker made and no run has worked in.
 
 =head2 THE AGENT ACCOUNT
 
@@ -494,11 +504,10 @@ With L</as_agent>, that account makes the worktree of a claude run, applies a
 patch to it and removes it, so that it owns every file in it.  The group lets
 the agent write to a file that the worker owns, but not change its mode or its
 times, and the hooks of a spoke do both when they tidy a file.  The worker
-still fetches, writes the configuration and the hooks of the bare clone, and
-pushes.  Every git command of this module trusts the directory that it works
-in, with C<-c safe.directory>, because a worktree and the bare clone have
-different owners.  That trusts nothing new: the agent can already write the
-configuration and the hooks of the bare clone, through the group.
+still fetches, writes the configuration of the bare clone, and pushes.  Every
+git command of this module trusts the directory that it works in, with C<-c
+safe.directory>, because a worktree and the bare clone have different owners.  That trusts nothing new: the agent can already write the
+configuration of the bare clone, through the group.
 
 It also needs three things that this module cannot do:
 

@@ -19,11 +19,20 @@ Revision history for App-Clod
       request that it reviews.  Two jobs on one branch still wait for each
       other.  The fetch now sets the author in the bare clone once, and a
       new worktree no longer writes it.  A worktree is added, and a stale
-      one is pruned, under the flock of the bare clone.  A hook is
-      installed under that flock too.  It is written beside the old hook
-      and renamed over it, so a commit never runs a part of a hook.  The
-      hooks are still shared by all worktrees.  While two jobs run, a
-      commit runs the hooks that the later job installed.
+      one is pruned, under the flock of the bare clone.
+    - Each worktree now runs the hooks of its own branch, every hook in
+      its git-hooks/, and not only pre-commit and post-commit.  Before,
+      a new worktree copied those two into the hooks of the bare clone,
+      which all worktrees share.  So while jobs on two branches ran, a
+      commit ran the hooks of the job that started last.  The fetch now
+      sets core.hooksPath of the bare clone to git-hooks, which git takes
+      as relative to the worktree that commits, and nothing is copied.
+      No git command of the worker runs a hook, because the hooks of a
+      worktree are files that a claude run can write: a push of the
+      worker would otherwise run its pre-push.  The commit of a harness
+      update is the one exception, in a worktree that no claude run
+      works in.  It needs Dist::Conformance 0.006, whose update finds the
+      hooks installed where core.hooksPath says.
     - With run_as, the account that claude runs as now makes, patches and
       removes the worktree of each claude run.  So that account owns every
       file in the worktree.  The hooks of a spoke tidy a file with

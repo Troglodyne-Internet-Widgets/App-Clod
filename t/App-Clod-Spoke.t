@@ -104,19 +104,56 @@ subtest 'the author, in the bare clone' => sub {
     $fresh->remove_worktree($tree);
 };
 
-subtest install_hooks => sub {
-    my $dir       = $tmp->child( 'ws', 'work', 7, 'Test-Org', 'one' );
-    my $tree      = $spoke->worktree( $dir, branch => 'clod/7-hooks', base => 'main' );
-    my $installed = $spoke->mirror->child(qw{hooks pre-commit});
-    my $before    = ( stat $installed )[1];
-    $tree->child(qw{git-hooks pre-commit})->spew("#!/bin/sh\ntouch new-hook-ran\n");
-    $spoke->install_hooks($tree);
-    my @stat = stat $installed;
-    is( $installed->slurp, "#!/bin/sh\ntouch new-hook-ran\n", 'an install replaces a hook with the one of the worktree' );
-    isnt( $stat[1], $before, 'as a new file, renamed over the old one, so a commit elsewhere never runs a part of it' );
-    is( $stat[2] & oct 7777, oct 755, 'and executable' );
-    $spoke->remove_worktree($tree);
-    $spoke->install_hooks( $spoke->refresh_reference('main') );
+# Pushes $branch to the remote: main with %hooks in git-hooks/, each a shell script.
+sub hooks_branch ( $branch, %hooks ) {
+    my $dir = $tmp->child( 'hooks-seed', $branch );
+    git( q{clone}, '--quiet', "$bare", "$dir" );
+    $dir->child('git-hooks')->make_path;
+    for my $name ( sort keys %hooks ) {
+        my $file = $dir->child( 'git-hooks', $name )->spew("#!/bin/sh\n$hooks{$name}\n");
+        chmod 0755, $file or die "chmod $file: $!";
+    }
+    git( q{-C}, "$dir", qw{add -A} );
+    git( q{-C}, "$dir", qw{-c user.name=t -c user.email=t@test.test commit --quiet --no-verify -m}, "hooks of $branch" );
+    git( q{-C}, "$dir", qw{push --quiet origin},                                                    "HEAD:refs/heads/$branch" );
+    return $dir;
+}
+
+subtest 'the hooks of each worktree' => sub {
+    my $log = $tmp->child('hooks-ran');
+    hooks_branch( 'hooks-a', 'pre-commit' => "echo a-pre-commit >> $log" );
+    my $b = hooks_branch(
+        'hooks-b',
+        'pre-commit'       => "echo b-pre-commit >> $log",
+        'post-merge'       => 'exec "${0%/*}/refresh-coverage" b-post-merge',
+        'pre-push'         => "echo b-pre-push >> $log",
+        'refresh-coverage' => qq{echo "\$1" >> $log},
+    );
+    git( q{-C}, "$b", qw{-c user.name=t -c user.email=t@test.test commit --quiet --no-verify --allow-empty -m next} );
+    git( q{-C}, "$b", qw{push --quiet origin HEAD:refs/heads/hooks-b-next} );
+
+    my $first  = $spoke->worktree( $tmp->child( 'ws', 'work', 7, 'Test-Org', 'one' ), existing => 'hooks-a' );
+    my $second = $spoke->worktree( $tmp->child( 'ws', 'work', 8, 'Test-Org', 'one' ), existing => 'hooks-b' );
+    my $ran    = sub () { return [ split m{\n}, -e $log ? $log->slurp : q{} ] };
+    git( q{-C}, "$first", qw{commit --quiet --allow-empty -m first} );
+    is( $ran->(), ['a-pre-commit'], 'a commit runs the pre-commit of its own branch, also after a worktree of another branch was made' );
+    git( q{-C}, "$second", qw{commit --quiet --allow-empty -m second} );
+    is( $ran->(), [qw{a-pre-commit b-pre-commit}], 'and a commit in the other worktree runs the pre-commit of that branch' );
+    git( q{-C}, "$second", qw{reset --quiet --hard origin/hooks-b} );
+    git( q{-C}, "$second", qw{merge --quiet --ff-only origin/hooks-b-next} );
+    is( $ran->(), [qw{a-pre-commit b-pre-commit b-post-merge}], 'a merge runs the post-merge of the branch, and the helper beside it, which git does not run as a hook' );
+
+    $second->child(qw{git-hooks pre-commit})->spew("#!/bin/sh\necho changed-pre-commit >> $log\n");
+    git( q{-C}, "$second", qw{commit --quiet --allow-empty -m changed} );
+    is( $ran->()->[-1], 'changed-pre-commit', 'a change to a hook in a worktree is what its next commit runs' );
+
+    my $before = $ran->();
+    $spoke->push_branch( $second, 'hooks-b-pushed' );
+    is( $ran->(), $before, 'a push of the worker runs no hook of the worktree, which a run of claude could have written' );
+    App::Clod::Spoke::commit( $second, qw{--quiet --allow-empty -m}, 'by the worker' );
+    is( $ran->()->[-1], 'changed-pre-commit', 'but a commit of the worker through commit runs the hooks of the worktree' );
+
+    $spoke->remove_worktree($_) for $first, $second;
 };
 
 subtest 'a push when GitHub fails for a moment' => sub {
@@ -265,9 +302,10 @@ subtest 'a worktree that the agent owns' => sub {
 
     my $tree = $foreign->( sub { $agent->worktree( $link->child( 'work', 5, 'Test-Org', 'one' ), branch => 'clod/5-agent', base => 'main', agent => 1 ) } );
     is( scalar @asked, 1, 'the agent makes the worktree' );
-    my $trusts = qr{\Agit\ -c\ safe\.directory=\Q$tmp\E/ws/mirrors/\S+\ };
-    my $adds   = qr{-C\ \S+\ worktree\ add\ -B\ clod/5-agent\ };
-    like( "@{ $asked[0] // [] }", qr{$trusts$adds}, 'with git, trusting the real path of the bare clone' );
+    my $trusts   = qr{\Agit\ -c\ safe\.directory=\Q$tmp\E/ws/mirrors/\S+\ };
+    my $hookless = qr{-c\ core\.hooksPath=/dev/null\ };
+    my $adds     = qr{-C\ \S+\ worktree\ add\ -B\ clod/5-agent\ };
+    like( "@{ $asked[0] // [] }", qr{$trusts$hookless$adds}, 'with git, trusting the real path of the bare clone, and running no hook' );
     is( $foreign->( sub { $agent->git( q{-C}, "$tree", qw{rev-parse --abbrev-ref HEAD} ) } ), 'clod/5-agent', 'and the worker trusts the worktree, through a symbolic link' );
 
     $tree->child('patched')->spew("old\n");

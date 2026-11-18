@@ -1587,11 +1587,11 @@ subtest harness_fix => sub {
     my $deps  = Test::MockModule->new('App::Clod::Deps');
     my $spoke = Test::MockModule->new('App::Clod::Spoke');
     $deps->redefine( install_needed => sub ( $lib, $tree ) { push @asked, [ $lib, "$tree" ]; return qw{Plack::MIME} } );
-    my $git = $spoke->original('git');
+    my $commit = $spoke->original('commit');
     $spoke->redefine(
-        git => sub ( $self, @args ) {
-            push @committed_with, $ENV{PERL5LIB} if List::Util::any { $_ eq 'commit' } @args;
-            return $self->$git(@args);
+        commit => sub (@args) {
+            push @committed_with, $ENV{PERL5LIB};
+            return $commit->(@args);
         }
     );
     @{ $app->clod_config }{qw{agent_lib agent_own_lib}} = qw{/bogus/agent-lib /bogus/own-lib};
@@ -1680,9 +1680,15 @@ subtest harness_fix => sub {
     delete @state{qw{pull issue_comments}};
 
     # Hooks that refuse the commit of the update hand it, uncommitted, to a claude run.
-    my $hooks = $tmp->child(qw{workspace mirrors Test-Org one.git hooks})->make_path;
-    $hooks->child('pre-commit')->spew("#!/bin/sh\ntest -e fixed && exit 0\necho 'Test::Policy: the code breaks it' >&2\nexit 1\n");
-    chmod 0755, $hooks->child('pre-commit') or die $!;
+    # The hook is on the default branch, so the worktree of each job has it.
+    my $seed_one = $tmp->child(qw{seed Test-Org one});
+    my $refuser  = $seed_one->child(qw{git-hooks pre-commit});
+    $refuser->dirname->make_path;
+    $refuser->spew("#!/bin/sh\ntest -e fixed && exit 0\necho 'Test::Policy: the code breaks it' >&2\nexit 1\n");
+    chmod 0755, $refuser or die $!;
+    git( q{-C}, "$seed_one", qw{add git-hooks/pre-commit} );
+    git( q{-C}, "$seed_one", qw{-c user.name=t -c user.email=t@test.test commit --quiet --no-verify -m}, 'a hook that refuses' );
+    git( q{-C}, "$seed_one", qw{push --quiet}, $bare_one, 'main' );
     @calls = ();
     my $hooked = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
     is( $hooked->{state},                                'finished',                         'a harness fix whose commit the hooks refuse finishes' ) or diag Mojo::Util::dumper $hooked->{result};
@@ -1705,7 +1711,8 @@ subtest harness_fix => sub {
     # A git that dies here would leave the hook that refuses for the subtests after this one.
     is( eval { git( '--git-dir', $bare_one, 'show', ( $taken->{result}{branch} // 'none' ) . ':.perlcriticrc' ) } // q{}, '[Test::Policy]',             'and commits the update, through the hooks, with its fix' );
     is( calls_of('pull')->[0][2]{title},                                                                                  'Meet the harness standards', 'and its pull request has the title of a harness fix, so a second press finds it' );
-    $hooks->child('pre-commit')->remove;
+    git( q{-C}, "$seed_one", qw{-c user.name=t -c user.email=t@test.test revert --quiet --no-edit HEAD} );
+    git( q{-C}, "$seed_one", qw{push --quiet}, $bare_one, 'main' );
 
     # A change of the critic profile that the code breaks goes to a claude run,
     # though the hooks let the commit through.  The default branch has a

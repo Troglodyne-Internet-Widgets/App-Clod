@@ -13,4 +13,5 @@ runtime:
     autovivification: '0.18'
     # The flavor of the standards names Dist::Conformance::Check::RefusedIniKeys,
     # which arrived in 0.004, beside the update of CriticProfile that appends.
-    Dist::Conformance: '0.004'
+    # 0.006 installs the hooks where core.hooksPath says, which Spoke sets.
+    Dist::Conformance: '0.006'
