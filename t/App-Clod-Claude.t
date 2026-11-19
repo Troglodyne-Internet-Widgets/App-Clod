@@ -159,6 +159,48 @@ subtest 'run, with refused calls' => sub {
     is( $clean->{denied}, [], 'a run with none refused says none' );
 };
 
+# A rule, a hook of the work tree and a check of claude itself each refuse a
+# call, and the rule alone does not say which one did.  The tool result that
+# the run got does.
+subtest 'run, with the reason of each refused call' => sub {
+    my $stream = Mojo::File->new("$tmp/stream-denied-why.jsonl");
+    my $hook   = 'PreToolUse:Bash hook error: Before this commit, load test-skill with the Skill tool.';
+    my @events = (
+        { type => 'user', message => { content => [ { type => 'tool_result', tool_use_id => 'a', is_error => Mojo::JSON::true, content => "\n  $hook  \nmore of the hook" } ] } },
+        { type => 'user', message => { content => 'a prompt, not a tool result' } },
+        {
+            type    => 'user',
+            message => {
+                content => [
+                    { type => 'tool_result', tool_use_id => 'b', is_error => Mojo::JSON::true,  content => [ { type => 'text', text => q{A file redirect in this command can't be checked before it runs} } ] },
+                    { type => 'tool_result', tool_use_id => 'c', is_error => Mojo::JSON::false, content => 'ok' },
+                ]
+            }
+        },
+        {
+            type               => 'result',
+            is_error           => Mojo::JSON::false,
+            result             => 'done',
+            structured_output  => {},
+            total_cost_usd     => 0.1,
+            usage              => {},
+            permission_denials => [
+                { tool_name => 'Bash',  tool_use_id => 'a', tool_input => { command   => 'git commit -m x' } },
+                { tool_name => 'Bash',  tool_use_id => 'b', tool_input => { command   => "git commit -F - <<'EOF'\nx\nEOF" } },
+                { tool_name => 'Write', tool_use_id => 'c', tool_input => { file_path => '/bogus' } },
+            ],
+        },
+    );
+    $stream->spew( join q{}, map { Mojo::JSON::encode_json($_) . "\n" } @events );
+    my $outcome = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => "$stream" } )->run( dir => "$tmp", prompt => 'x' );
+    is(
+        $outcome->{denied},
+        [ "Bash(git commit -m x) -- $hook", "Bash(git commit -F - <<'EOF'\nx\nEOF) -- A file redirect in this command can't be checked before it runs", 'Write(/bogus)' ],
+        'each refused call says the first line of what the run was told, and a call with no error says nothing more'
+    );
+    ok( !exists $outcome->{errors}, 'and the errors of the run stay out of its outcome' );
+};
+
 subtest 'run, with no newline after the last event' => sub {
     my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child(qw{data stream-unterminated.jsonl})->to_string } );
     my @seen;
