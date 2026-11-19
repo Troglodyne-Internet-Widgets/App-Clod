@@ -124,17 +124,31 @@ sub module_of ($entry) { return $entry->{module} // $entry->{name} =~ s/-/::/gr 
 
 =func claude_schema
 
-C<(\@spokes, %allow)>.  L</schema> without its rules for each scope, for
-C<--json-schema>.  The API takes the schema as the input of a tool, and refuses
-C<allOf>, C<anyOf> or C<oneOf> at its top level, where those rules are.  The
+C<(\@spokes, %allow)>.  L</schema> without its rules for each scope and
+without any C<pattern>, for C<--json-schema>.  The API takes the schema as the
+input of a tool, and refuses C<allOf>, C<anyOf> or C<oneOf> at its top level,
+where those rules are.  Claude compiles a C<pattern> as ECMA-262, and each
+pattern of L</schema> is a perl C<qr//> as a string, which it refuses.  The
 form of every field stays, the spokes that C<repo> may name with it.  The
-triage prompt states the rules, and L</validate> holds the answer to them.
+triage prompt states the rules and the form of a name, and L</validate> holds
+the answer to them.
 
 =cut
 
 sub claude_schema ( $spokes, %allow ) {
     my $schema = schema( $spokes, %allow );
     delete $schema->{allOf};
+    my @work = ($schema);
+    while (@work) {
+        my $here = shift @work;
+        if ( ref $here eq 'HASH' ) {
+            delete $here->{pattern};
+            push @work, values %$here;
+        }
+        elsif ( ref $here eq 'ARRAY' ) {
+            push @work, @$here;
+        }
+    }
     return $schema;
 }
 

@@ -1,6 +1,12 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Triage works again.  Claude refused the schema of each triage
+      answer, with "--json-schema is not a valid JSON Schema: Invalid
+      regular expression".  Each pattern of that schema is a perl qr// as
+      a string, and claude compiles a pattern as ECMA-262.  The schema that
+      claude gets now has no pattern.  The prompt states the form of a
+      name, and validate still holds the answer to every pattern.
     - The harness update no longer commits with the own lib of the agent.
       Its hooks, perltidy and perlcritic ran as the worker with that lib on
       PERL5LIB and PATH.  Every claude run can write that lib, so a module
