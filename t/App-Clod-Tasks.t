@@ -1508,6 +1508,15 @@ subtest unfinished_note => sub {
     my $counted = qr/refused\ 3\ calls\ of\ the\ run\ \(Bash\ 2,\ Edit\ 1\)\./;
     like( $note, qr/$counted\ Job\ 7\ keeps\ them/, 'several refused calls are counted by tool, and the job that keeps them is named' );
     is( [ App::Clod::Tasks::unfinished_note( { refusals => { denied => ['Bash(x)'] } }, 7 ) ], [], 'a run that says nothing kept it from finishing gets no note' );
+    my $retried = App::Clod::Tasks::unfinished_note( { refusals => { blocked => 'b', denied => ['Edit(/bogus)'], retried => [ 'Bash(git commit)', 'Bash(git push)' ] } }, 7 );
+    like( $retried, qr/refused\ one\ call\ of\ the\ run\ \(Edit\ 1\)\./, 'a refused call that a later call got past is not counted' );
+};
+
+subtest refusals => sub {
+    my $outcome = { structured => { blocked => q{} }, denied => ['Edit(/bogus)'], retried => ['Bash(git commit)'] };
+    is( App::Clod::Tasks::refusals($outcome),                                                            { denied => ['Edit(/bogus)'], retried => ['Bash(git commit)'] }, 'the result keeps the refused calls and the ones that a later call got past apart' );
+    is( App::Clod::Tasks::refusals( { structured => { blocked => q{} }, denied => [], retried => [] } ), {},                                                              'and leaves out each list that is empty' );
+    ok( !App::Clod::Tasks::stopped( { structured => {}, denied => [], retried => ['Bash(git commit)'] } ), 'a run with only retried calls is not stopped, even with no blocked in its answer' );
 };
 
 subtest pending_threads => sub {

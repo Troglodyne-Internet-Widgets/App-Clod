@@ -1,6 +1,12 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - A refused call that the run later made again, and that then ran, is
+      now in "retried" in the result of a job, not in "denied".  The
+      permissions did not stop it.  A hook, a race or a fault of the host
+      did.  Only "denied" counts in the error of a job and in the note on
+      a pull request, so those no longer report calls that the run got
+      past.
     - Each refused call in the result of a job now says why claude refused
       it.  A hook of the spoke that wants a skill loaded first, and the
       check of claude that refuses a heredoc, refuse a call as a missing
