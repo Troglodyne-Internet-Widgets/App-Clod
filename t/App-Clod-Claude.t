@@ -201,6 +201,54 @@ subtest 'run, with the reason of each refused call' => sub {
     ok( !exists $outcome->{errors}, 'and the errors of the run stay out of its outcome' );
 };
 
+# A hook refuses a call until the run loads a skill, and the same call then
+# goes through.  The permissions did not stop it, so it is not denied.
+subtest 'run, with a refused call that a later call got past' => sub {
+    my $stream = Mojo::File->new("$tmp/stream-retried.jsonl");
+    my $hook   = 'PreToolUse:Bash hook error: Before this commit, load test-skill with the Skill tool.';
+    my $use    = sub ( $id, $tool,  %input ) { return { type => 'assistant', message => { content => [ { type => 'tool_use', id => $id, name => $tool, input => \%input } ] } } };
+    my $answer = sub ( $id, $error, $text ) { return { type => 'user', message => { content => [ { type => 'tool_result', tool_use_id => $id, is_error => $error, content => $text } ] } } };
+    my ( $yes, $no ) = ( Mojo::JSON::true, Mojo::JSON::false );
+    my @events = (
+        $use->( 'a', 'Bash', command => 'git commit -m x', description => 'Commit' ),
+        $answer->( 'a', $yes, $hook ),
+        $use->( 'b', 'Bash', description => 'Commit again', command => 'git commit -m x' ),
+        $answer->( 'b', $no, 'ok' ),
+        $use->( 'c', 'Write', file_path => '/bogus/a' ),
+        $answer->( 'c', $yes, 'refused' ),
+        $use->( 'd', 'Write', file_path => '/bogus/b' ),
+        $answer->( 'd', $no, 'ok' ),
+        $use->( 'e', 'Bash', command => 'prove -l' ),
+        $answer->( 'e', $no, 'ok' ),
+        $use->( 'f', 'Bash', command => 'prove -l' ),
+        $answer->( 'f', $yes, 'refused' ),
+        {
+            type               => 'result',
+            is_error           => $no,
+            result             => 'done',
+            structured_output  => {},
+            total_cost_usd     => 0.1,
+            usage              => {},
+            permission_denials => [
+                { tool_name => 'Bash',  tool_use_id => 'a', tool_input => { command   => 'git commit -m x', description => 'Commit' } },
+                { tool_name => 'Write', tool_use_id => 'c', tool_input => { file_path => '/bogus/a' } },
+                { tool_name => 'Bash',  tool_use_id => 'f', tool_input => { command   => 'prove -l' } },
+            ],
+        },
+    );
+    $stream->spew( join q{}, map { Mojo::JSON::encode_json($_) . "\n" } @events );
+    my $outcome = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => "$stream" } )->run( dir => "$tmp", prompt => 'x' );
+    is( $outcome->{retried}, ["Bash(git commit -m x) -- $hook"],                            'a refused call that the same call later got past is retried, whatever its description' );
+    is( $outcome->{denied},  [ 'Write(/bogus/a) -- refused', 'Bash(prove -l) -- refused' ], 'a call with other input, or one that only got through before the refusal, stays denied' );
+    ok( !( grep { exists $outcome->{$_} } qw{calls passed call_count} ), 'and the calls of the run stay out of its outcome' );
+};
+
+subtest call_key => sub {
+    is( App::Clod::Claude::call_key( 'Bash', { command => 'x', timeout => 5 } ), App::Clod::Claude::call_key( 'Bash', { timeout => 5, command => 'x', description => 'y' } ), 'the order of the input and its description do not matter' );
+    isnt( App::Clod::Claude::call_key( 'Bash', { command => 'x' } ), App::Clod::Claude::call_key( 'Bash', { command => 'x', timeout => 5 } ), 'every other field of the input does' );
+    isnt( App::Clod::Claude::call_key( 'Read', { file_path => '/bogus' } ), App::Clod::Claude::call_key( 'Edit', { file_path => '/bogus' } ), 'and so does the tool' );
+};
+
 subtest 'run, with no newline after the last event' => sub {
     my $claude = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => $here->child(qw{data stream-unterminated.jsonl})->to_string } );
     my @seen;

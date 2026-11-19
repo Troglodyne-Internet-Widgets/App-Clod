@@ -379,7 +379,15 @@ The epoch second when the quota opens again, set when a run hit the limit.
 
 Each tool call that claude refused, as L</denial> gives it, with the reason
 that claude gave the run.  In C<-p> nobody can approve a call that the
-permissions do not allow, so a refused call did not happen.
+permissions do not allow, so a refused call did not happen.  A refused call
+that a later call got past is in C<retried> instead.
+
+=item retried
+
+Each tool call that claude refused, in the same form as C<denied>, where a
+later call of the same tool with the same input succeeded.  The permissions
+did not stop it.  Something changed between the two calls: a hook wanted a
+skill loaded first, or the run met a race or a fault of the host.
 
 =item unauthorized
 
@@ -454,12 +462,14 @@ sub ends ( $text, $length ) {
 C<(\%outcome, \%event)>.  Folds one stream-json event into the outcome that
 C<run> returns.
 
-It reads four types of event: C<rate_limit_event>, C<system> with the subtype
-C<init>, C<user> and C<result>.  Of C<user>, it reads only a tool result that
-is an error, and keeps its first line until the result comes, as the reason of
-L</denial>.  Every other event leaves the outcome as it is.  That includes
-C<assistant>, which holds the conversation, and any type that a later claude
-adds.  C<on_event> still gets every event.
+It reads five types of event: C<rate_limit_event>, C<system> with the subtype
+C<init>, C<assistant>, C<user> and C<result>.  Of C<assistant>, it reads only
+each tool call, as L</call_key> gives it, in order.  Of C<user>, it reads each
+tool result.  It keeps the first line of an error, as the reason of
+L</denial>, and the last call of each key that succeeded.  When the result
+comes, it sorts the refused calls into C<denied> and C<retried>, and drops
+what it kept, so none of it is in the outcome.  Every other event leaves the outcome as it is, which includes
+any type that a later claude adds.  C<on_event> still gets every event.
 
 =cut
 
@@ -472,10 +482,24 @@ my %ABSORB = (
     system => sub ( $outcome, $event ) {
         $outcome->{session_id} = $event->{session_id} if ( $event->{subtype} // q{} ) eq 'init';
     },
+    assistant => sub ( $outcome, $event ) {
+        my $content = ( $event->{message} // {} )->{content};
+        return if ref $content ne 'ARRAY';
+        for my $use ( grep { ref $_ eq 'HASH' && ( $_->{type} // q{} ) eq 'tool_use' && defined $_->{id} } @$content ) {
+            $outcome->{calls}{ $use->{id} } = { order => ++$outcome->{call_count}, key => call_key( @{$use}{qw{name input}} ) };
+        }
+    },
     user => sub ( $outcome, $event ) {
         my $content = ( $event->{message} // {} )->{content};
         return if ref $content ne 'ARRAY';
-        $outcome->{errors}{ $_->{tool_use_id} } = first_line( $_->{content} ) for grep { ref $_ eq 'HASH' && $_->{is_error} && defined $_->{tool_use_id} } @$content;
+        for my $result ( grep { ref $_ eq 'HASH' && defined $_->{tool_use_id} } @$content ) {
+            if ( $result->{is_error} ) {
+                $outcome->{errors}{ $result->{tool_use_id} } = first_line( $result->{content} );
+            }
+            elsif ( my $call = ( $outcome->{calls} // {} )->{ $result->{tool_use_id} } ) {
+                $outcome->{passed}{ $call->{key} } = $call->{order};
+            }
+        }
     },
     result => sub ( $outcome, $event ) {
         $outcome->{result}       = $event->{result};
@@ -485,7 +509,17 @@ my %ABSORB = (
         $outcome->{unauthorized} = 1 if $outcome->{is_error} && ( $event->{api_error_status} // 0 ) == 401;
         $outcome->{turns}        = $event->{num_turns};
         my $errors = delete $outcome->{errors} // {};
-        $outcome->{denied} = [ map { denial( $_, $errors->{ $_->{tool_use_id} // q{} } ) } @{ $event->{permission_denials} // [] } ];
+        my $calls  = delete $outcome->{calls}  // {};
+        my $passed = delete $outcome->{passed} // {};
+        delete $outcome->{call_count};
+        $outcome->{$_} = [] for qw{denied retried};
+
+        for my $refused ( @{ $event->{permission_denials} // [] } ) {
+            my $id       = $refused->{tool_use_id} // q{};
+            my $after    = $passed->{ call_key( @{$refused}{qw{tool_name tool_input}} ) };
+            my $got_past = defined $after && $after > ( ( $calls->{$id} // {} )->{order} // 0 );
+            push @{ $outcome->{ $got_past ? 'retried' : 'denied' } }, denial( $refused, $errors->{$id} );
+        }
         my $usage = $event->{usage} // {};
         $outcome->{usage} = { map { $_ => $usage->{$_} // 0 } qw{input_tokens output_tokens cache_read_input_tokens cache_creation_input_tokens} };
         $outcome->{quota_reset} //= time + $UNKNOWN_RESET
@@ -516,6 +550,21 @@ sub denial ( $denial, $why = undef ) {
     my $tool  = $denial->{tool_name}  // 'a tool';
     my $call  = defined $what ? "$tool($what)" : $tool;
     return defined $why ? "$call -- $why" : $call;
+}
+
+=func call_key
+
+C<($tool, \%input)>.  A string that is the same for two calls of C<$tool> with
+the same input, whatever the order of its keys.  It leaves out the
+C<description> of the input, which claude writes anew for each call and which
+does not change what the call does.
+
+=cut
+
+sub call_key ( $tool, $input ) {
+    my %input = %{ $input // {} };
+    delete $input{description};
+    return ( $tool // q{} ) . "\0" . Mojo::JSON::encode_json( \%input );
 }
 
 =func result_text

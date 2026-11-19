@@ -2332,15 +2332,19 @@ sub stopped ($outcome) {
 =func refusals
 
 C<($outcome)>.  The part of the result of a job that says what claude refused,
-as a hash reference: C<denied>, the refused calls, when there are any, and
-C<blocked>, what the run says kept it from finishing, when it says
-something.  A job that finished keeps them too, so that a person can see them.
+as a hash reference: C<denied>, the refused calls, and C<retried>, the
+refused calls that a later call got past, when there are any, and C<blocked>,
+what the run says kept it from finishing, when it says something.  A job that
+finished keeps them too, so that a person can see them.  Only C<denied>
+counts as a refusal elsewhere: C<retried> points to a race, a fault of the
+host or a hook, and not to the permissions.  See
+L<App::Clod::Claude/retried>.
 
 =cut
 
 sub refusals ($outcome) {
     my $why = blocked($outcome) // q{};
-    return { ( @{ $outcome->{denied} // [] } ? ( denied => $outcome->{denied} ) : () ), ( $why ne q{} ? ( blocked => $why ) : () ) };
+    return { ( map { @{ $outcome->{$_} // [] } ? ( $_ => $outcome->{$_} ) : () } qw{denied retried} ), ( $why ne q{} ? ( blocked => $why ) : () ) };
 }
 
 =func refused
