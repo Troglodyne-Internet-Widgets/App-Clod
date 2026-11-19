@@ -1,6 +1,13 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Each refused call in the result of a job now says why claude refused
+      it.  A hook of the spoke that wants a skill loaded first, and the
+      check of claude that refuses a heredoc, refuse a call as a missing
+      rule does, and the list of refused calls looked the same for all
+      three.  So a call that the run made again and that then ran, as
+      most of them were, read as a gap in the allowed tools.  Every run is
+      also told to give a commit message with -m and not from a heredoc.
     - Triage works again.  Claude refused the schema of each triage
       answer, with "--json-schema is not a valid JSON Schema: Invalid
       regular expression".  Each pattern of that schema is a perl qr// as

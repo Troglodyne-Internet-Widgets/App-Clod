@@ -10,6 +10,7 @@ use Mojo::Base 'Mojolicious::Command', -signatures;
 
 use Mojo::JSON ();
 
+use App::Clod::Claude   ();
 use App::Clod::Evidence ();
 
 # How much of the text of one tool result a line keeps.
@@ -103,8 +104,7 @@ sub piece ($part) {
     return "says: $part->{text}"                                                     if $kind eq 'text';
     return "calls $part->{name}: " . Mojo::JSON::encode_json( $part->{input} // {} ) if $kind eq 'tool_use';
     return $kind                                                                     if $kind ne 'tool_result';
-    my $text = $part->{content} // q{};
-    $text = join "\n", map { $_->{text} // q{} } grep { ref $_ eq 'HASH' } @$text if ref $text eq 'ARRAY';
+    my $text = App::Clod::Claude::result_text( $part->{content} );
     $text = substr( $text, 0, $RESULT_LENGTH ) . ' [cut]' if length $text > $RESULT_LENGTH;
     return 'result' . ( $part->{is_error} ? ' (error)' : q{} ) . ": $text";
 }

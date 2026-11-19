@@ -9,6 +9,9 @@ literally:
   write a `for` or `while` loop over them.
 - Stay in the worktree. Do not `cd` out of it. Name the file in the command,
   or read it with the Read tool.
+- Do not feed a command from a heredoc, such as `git commit -F - <<'EOF'`.
+  Claude Code refuses a redirect that it cannot check, also in a command that
+  a rule allows. Give a commit message with one `-m` for each paragraph.
 
 Change a file with the Edit or Write tool. No rule allows `sed` or `awk`,
 because each of them can write a file. Read the source of a module, also one

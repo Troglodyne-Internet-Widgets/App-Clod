@@ -377,9 +377,9 @@ The epoch second when the quota opens again, set when a run hit the limit.
 
 =item denied
 
-Each tool call that claude refused, as L</denial> gives it.  In C<-p> nobody
-can approve a call that the permissions do not allow, so a refused call did
-not happen.
+Each tool call that claude refused, as L</denial> gives it, with the reason
+that claude gave the run.  In C<-p> nobody can approve a call that the
+permissions do not allow, so a refused call did not happen.
 
 =item unauthorized
 
@@ -454,10 +454,12 @@ sub ends ( $text, $length ) {
 C<(\%outcome, \%event)>.  Folds one stream-json event into the outcome that
 C<run> returns.
 
-It reads three types of event: C<rate_limit_event>, C<system> with the subtype
-C<init>, and C<result>.  Every other event leaves the outcome as it is.  That
-includes C<assistant> and C<user>, which hold the conversation, and any type
-that a later claude adds.  C<on_event> still gets every event.
+It reads four types of event: C<rate_limit_event>, C<system> with the subtype
+C<init>, C<user> and C<result>.  Of C<user>, it reads only a tool result that
+is an error, and keeps its first line until the result comes, as the reason of
+L</denial>.  Every other event leaves the outcome as it is.  That includes
+C<assistant>, which holds the conversation, and any type that a later claude
+adds.  C<on_event> still gets every event.
 
 =cut
 
@@ -470,6 +472,11 @@ my %ABSORB = (
     system => sub ( $outcome, $event ) {
         $outcome->{session_id} = $event->{session_id} if ( $event->{subtype} // q{} ) eq 'init';
     },
+    user => sub ( $outcome, $event ) {
+        my $content = ( $event->{message} // {} )->{content};
+        return if ref $content ne 'ARRAY';
+        $outcome->{errors}{ $_->{tool_use_id} } = first_line( $_->{content} ) for grep { ref $_ eq 'HASH' && $_->{is_error} && defined $_->{tool_use_id} } @$content;
+    },
     result => sub ( $outcome, $event ) {
         $outcome->{result}       = $event->{result};
         $outcome->{structured}   = $event->{structured_output};
@@ -477,7 +484,8 @@ my %ABSORB = (
         $outcome->{is_error}     = $event->{is_error} ? 1 : 0;
         $outcome->{unauthorized} = 1 if $outcome->{is_error} && ( $event->{api_error_status} // 0 ) == 401;
         $outcome->{turns}        = $event->{num_turns};
-        $outcome->{denied}       = [ map { denial($_) } @{ $event->{permission_denials} // [] } ];
+        my $errors = delete $outcome->{errors} // {};
+        $outcome->{denied} = [ map { denial( $_, $errors->{ $_->{tool_use_id} // q{} } ) } @{ $event->{permission_denials} // [] } ];
         my $usage = $event->{usage} // {};
         $outcome->{usage} = { map { $_ => $usage->{$_} // 0 } qw{input_tokens output_tokens cache_read_input_tokens cache_creation_input_tokens} };
         $outcome->{quota_reset} //= time + $UNKNOWN_RESET
@@ -487,17 +495,51 @@ my %ABSORB = (
 
 =func denial
 
-C<(\%denial)>.  One entry of C<permission_denials> of a result, as the
+C<(\%denial, $why)>.  One entry of C<permission_denials> of a result, as the
 permission rule that would have allowed it, such as C<Bash(git add -A)>: the
-tool, and its command or the file that it wanted.
+tool, and its command or the file that it wanted.  With C<$why>, the reason
+that claude gave the run follows, after C< -- >.
+
+The reason says which part of claude refused the call, and the rule alone
+cannot.  For a list of commands that no rule allows all of, claude 2.1 names
+the part: "The following part requires approval".  A hook of the work tree
+refuses with C<PreToolUse:Bash hook error> and what the hook wants first, such
+as a skill, and the run can do that and make the call again.  A check of
+claude itself refuses some commands that a rule allows, such as one fed by a
+heredoc: "A file redirect in this command can't be checked before it runs".
 
 =cut
 
-sub denial ($denial) {
+sub denial ( $denial, $why = undef ) {
     my $input = $denial->{tool_input} // {};
     my $what  = $input->{command}     // $input->{file_path} // $input->{path};
     my $tool  = $denial->{tool_name}  // 'a tool';
-    return defined $what ? "$tool($what)" : $tool;
+    my $call  = defined $what ? "$tool($what)" : $tool;
+    return defined $why ? "$call -- $why" : $call;
+}
+
+=func result_text
+
+C<($content)>.  The text of the content of a tool result.  The content is a
+string, or a list of parts, each with its text in C<text>, which come back
+one to a line.  An empty string when there is no content.
+
+=cut
+
+sub result_text ($content) {
+    return ref $content eq 'ARRAY' ? join( "\n", map { $_->{text} // q{} } grep { ref $_ eq 'HASH' } @$content ) : $content // q{};
+}
+
+=func first_line
+
+C<($content)>.  The first line of the L</result_text> of a tool result that is
+not blank, without the space around it, or undef when there is none.
+
+=cut
+
+sub first_line ($content) {
+    my ($line) = result_text($content) =~ m/^ \h* (\S [^\n]*?) \s* $/m;
+    return $line;
 }
 
 sub absorb ( $outcome, $event ) {
