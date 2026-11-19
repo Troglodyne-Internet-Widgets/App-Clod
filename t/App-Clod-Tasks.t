@@ -1593,30 +1593,42 @@ subtest harness_fix => sub {
     my $commit = $spoke->original('commit');
     $spoke->redefine(
         commit => sub (@args) {
-            push @committed_with, $ENV{PERL5LIB};
+            push @committed_with, { map { $_ => $ENV{$_} } qw{PERL5LIB PATH} };
             $umask{commit} = umask;
             return $commit->(@args);
         }
     );
-    @{ $app->clod_config }{qw{agent_lib agent_own_lib}} = qw{/bogus/agent-lib /bogus/own-lib};
-    my $bot_lib = $ENV{PERL5LIB} // q{};
+    my $libs = $tmp->child('libs');
+    my %lib  = map { $_ => $libs->child($_)->make_path } qw{agent-lib own-lib harness-lib};
+    @{ $app->clod_config }{qw{agent_lib agent_own_lib harness_lib}} = map { "$_" } @lib{qw{agent-lib own-lib harness-lib}};
+    my ( $bot_lib, $bot_path ) = map { $_ // q{} } @ENV{qw{PERL5LIB PATH}};
     @calls = ();
     my $installed = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
     is( $installed->{state}, 'finished', 'a fix in a spoke that needs modules finishes' ) or diag Mojo::Util::dumper $installed->{result};
-    like( \@asked, [ [ '/bogus/own-lib', qr{/Test-Org/one\z} ] ], 'after it installs what the spoke needs into the own lib of the agent' );
-    is( \@committed_with, [ join q{:}, grep { $_ ne q{} } $bot_lib, '/bogus/agent-lib/lib/perl5', '/bogus/own-lib/lib/perl5' ], 'and commits with the lib of the agent and then that lib after the lib of the bot, so the hooks of the spoke find the policies and the modules' );
-    like( $installed->{notes}{log}, [ { message => qr/installed\ Plack::MIME\ into\ the\ own\ lib/ } ], 'and notes what it installed' );
-    is( $umask{commit} & oct '0022',  oct '0022', 'the update and its commit leave no file that the group of the agent can write' )                             or diag sprintf '%04o', $umask{commit};
-    is( $umask{install} & oct '0020', 0,          'but what it installs into the own lib of the agent stays writable by that group, which installs there too' ) or diag sprintf '%04o', $umask{install};
+    like( \@asked, [ [ "$lib{'harness-lib'}", qr{/Test-Org/one\z} ] ], 'after it installs what the spoke needs into the harness lib, which only the worker can write' );
+    is(
+        \@committed_with,
+        [ { PERL5LIB => join( q{:}, grep { $_ ne q{} } $bot_lib, "$lib{'agent-lib'}/lib/perl5", "$lib{'harness-lib'}/lib/perl5" ), PATH => join( q{:}, grep { $_ ne q{} } $bot_path, "$lib{'agent-lib'}/bin", "$lib{'harness-lib'}/bin" ) } ],
+        'and commits with the lib of the agent and then that lib after those of the bot, so the hooks of the spoke find the policies and the modules, and with nothing of the own lib of the agent, which every run can write'
+    );
+    like( $installed->{notes}{log}, [ { message => qr/installed\ Plack::MIME\ into\ the\ harness\ lib/ } ], 'and notes what it installed' );
+    is( $umask{commit} & oct '0022',  oct '0022', 'the update and its commit leave no file that the group of the agent can write' ) or diag sprintf '%04o', $umask{commit};
+    is( $umask{install} & oct '0022', oct '0022', 'nor does what it installs' )                                                     or diag sprintf '%04o', $umask{install};
 
     ( @asked, @committed_with ) = ();
+    chmod 0777, "$lib{'harness-lib'}" or die "chmod $lib{'harness-lib'}: $!";
+    my $exposed = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( [ $exposed->{state}, \@asked, \@committed_with ], [ 'failed', [], [] ], 'a harness lib that another account can write gets nothing installed, and the update is not committed with it' );
+    like( $exposed->{result}, qr{every\ account\ can\ write\ \Q$lib{'harness-lib'}\E}, 'and the job says why' );
+    chmod 0750, "$lib{'harness-lib'}" or die "chmod $lib{'harness-lib'}: $!";
+
     $deps->redefine( install_needed => sub (@) { die "cpm: no such module\n" } );
     my $failed = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
     is( [ $failed->{state}, scalar @committed_with ], [ 'finished', 1 ], 'an install that fails still lets the commit run, and its hooks say what is missing' );
     like( $failed->{notes}{log}, [ { message => qr/could\ not\ install\ .*cpm:\ no\ such\ module/ } ], 'and the job notes why' );
     $deps->unmock_all;
     $spoke->unmock_all;
-    delete @{ $app->clod_config }{qw{agent_lib agent_own_lib}};
+    delete @{ $app->clod_config }{qw{agent_lib agent_own_lib harness_lib}};
 
     # The update of the standards above leaves something for a person each time.
     $minion->reset( { all => 1 } );

@@ -15,7 +15,8 @@ use Mojo::Util   ();
 use Mutex::Flock ();
 use POSIX        ();
 
-use App::Clod::Retry ();
+use App::Clod::Claude ();
+use App::Clod::Retry  ();
 
 # git finds no hook under /dev/null, which is not a directory.
 our @NO_HOOKS = ( q{-c}, 'core.hooksPath=/dev/null' );
@@ -131,8 +132,10 @@ sub git_as_owner ( $self, $dir, $input, @args ) {
 C<($dir, @args)>.  Runs C<git commit @args> in the worktree C<$dir> as the
 worker, with the hooks of that worktree, and returns its output.  Dies as
 L</git> does, with an error that names C<-C $dir commit @args>.  git gets no
-token header, as L</git> gives it, so neither do the hooks; they do get the
-environment of the worker.  It is for a worktree that the worker made and no
+token header, as L</git> gives it, so neither do the hooks.  They get the
+environment of the worker without the secrets that a C<claude> run does not
+get, C<@App::Clod::Claude::WITHHELD>, nor C<CLAUDE_CODE_OAUTH_TOKEN>, because
+no hook needs them.  It is for a worktree that the worker made and no
 claude run has worked in, because the hooks are the files of its branch.  So
 it dies, as L</guard> does, also when the agent could change F<git-hooks/> of
 the worktree or a file in it.  See L</HOOKS>.
@@ -149,6 +152,7 @@ sub commit ( $dir, @args ) {
             die "git @shown: refused, because $why\n";
         }
     }
+    delete local @ENV{ @App::Clod::Claude::WITHHELD, 'CLAUDE_CODE_OAUTH_TOKEN' };
     return run_git( [ 'git', trust(@shown), @shown ], \undef, @shown );
 }
 

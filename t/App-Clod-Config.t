@@ -39,6 +39,7 @@ subtest validate => sub {
     is( $config->{agent_own_lib},                                                                     undef,                               'with no agent lib, the agent has no own lib' );
     ok( ( grep { $_ eq 'Bash(clod-cpm:*)' } @{ $config->{claude}{allowed_tools} } ), 'a run that changes a repository may install a module into it' );
     is( App::Clod::Config::validate( { %minimal, agent_lib => '/bogus/agent-perl5' } )->{agent_own_lib}, '/bogus/workspace/agent-own-lib', 'and with one, its own lib is in the workspace, which the agent can write' );
+    is( App::Clod::Config::validate( { %minimal, agent_lib => '/bogus/agent-perl5' } )->{harness_lib},   '/bogus/workspace/harness-lib',   'and the harness lib of the worker is there too' );
 
     my $merged = App::Clod::Config::validate( { %minimal, claude => { model => 'test-model' } } );
     is( $merged->{claude}{model}, 'test-model', 'a section key from the file is kept' );

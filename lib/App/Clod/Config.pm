@@ -100,6 +100,7 @@ our %SCHEMA = (
         local_lib       => { type => 'string', nullable => 1, default => undef },
         agent_lib       => { type => 'string', nullable => 1, default => undef },
         agent_own_lib   => { type => 'string', nullable => 1, default => undef },
+        harness_lib     => { type => 'string', nullable => 1, default => undef },
         system_packages => {
             type                 => 'object',
             nullable             => 1,
@@ -140,6 +141,7 @@ sub validate ($raw) {
     $config->{evidence}          //= "$config->{workspace}/evidence";
     $config->{agent_own_lib}     //= "$config->{workspace}/agent-own-lib" if $config->{agent_lib};
     $config->{conformance_cache} //= App::Clod::Harness::default_cache();
+    $config->{harness_lib}       //= "$config->{workspace}/harness-lib"   if $config->{agent_lib};
 
     # By the names, without asking the disk, which may not hold either yet.
     my $cache     = Mojo::File->new( $config->{conformance_cache} )->to_abs->to_array;
@@ -453,10 +455,19 @@ and fills this in.
 A local lib that the agent installs into, with F<clod-cpm> in the bin of
 C<agent_lib>, when a change needs a module that nothing installed.  It comes
 after C<agent_lib> on C<PERL5LIB> and C<PATH>, so a module there cannot
-replace a tool or a policy.  L<App::Clod::Tasks/harness_fix> installs there
-too, what a spoke needs for the tests that its hooks run.  Default
-F<agent-own-lib> in the workspace when there is an C<agent_lib>, because the
-account of C<run_as> can write there, and none otherwise.
+replace a tool or a policy.  Default F<agent-own-lib> in the workspace when
+there is an C<agent_lib>, because the account of C<run_as> can write there,
+and none otherwise.  The worker never runs with it, because every run can
+change what is in it.
+
+=item harness_lib
+
+A local lib that only the worker can write, for what a spoke needs for the
+tests that its hooks run.  L<App::Clod::Tasks/harness_fix> installs there, and
+commits with it after C<agent_lib> on C<PERL5LIB> and C<PATH>.  Default
+F<harness-lib> in the workspace when there is an C<agent_lib>, and none
+otherwise.  The worker makes it with no write for the group, and refuses it
+when another account could change it, as L<App::Clod::Spoke/exposed> says.
 
 =item system_packages
 
