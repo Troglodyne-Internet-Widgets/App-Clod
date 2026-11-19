@@ -57,13 +57,38 @@ sub untyped ($schema) {
     return @missing;
 }
 
+# Each leaf of $data, as its JSON pointer and its value, in a stable order.
+sub leaves ($data) {
+    my ( @found, @work );
+    push @work, [ $data, '#' ];
+    while (@work) {
+        my ( $here, $at ) = @{ shift @work };
+        if ( ref $here eq 'HASH' ) {
+            push @work, map { [ $here->{$_}, "$at/$_" ] } sort keys %$here;
+        }
+        elsif ( ref $here eq 'ARRAY' ) {
+            my $i = 0;
+            push @work, map { [ $_, "$at/" . $i++ ] } @$here;
+        }
+        else {
+            push @found, "$at = $here";
+        }
+    }
+    return @found;
+}
+
+my $PATTERN = qr{/pattern \s = \s};
+
 subtest 'what the API takes' => sub {
     for my $allow ( [], [ orgs => ['Test-Org'], follow_ups => 3 ] ) {
         my $name = @$allow ? 'with creation and follow-ups' : 'without them';
         is( [ untyped( App::Clod::Triage::schema( \@spokes, @$allow ) ) ], [], "$name, every typed keyword of the schema says its type" );
         my $sent = App::Clod::Triage::claude_schema( \@spokes, @$allow );
-        is( [ grep { exists $sent->{$_} } qw{allOf anyOf oneOf} ], [],                                                           "$name, what claude gets has no allOf, anyOf or oneOf at its top level" );
-        is( $sent->{properties},                                   App::Clod::Triage::schema( \@spokes, @$allow )->{properties}, 'and every field of the answer, as the schema has it' );
+        is( [ grep { exists $sent->{$_} } qw{allOf anyOf oneOf} ], [], "$name, what claude gets has no allOf, anyOf or oneOf at its top level" );
+        my @full = leaves( App::Clod::Triage::schema( \@spokes, @$allow )->{properties} );
+        is( [ grep { m{$PATTERN} } leaves($sent) ], [], "$name, what claude gets has no pattern, which claude would compile as ECMA-262" );
+        ok( ( grep { m{$PATTERN} } @full ), 'while the schema that validate holds the answer to keeps its patterns' );
+        is( [ leaves( $sent->{properties} ) ], [ grep { !m{$PATTERN} } @full ], 'and every field of the answer, as the schema has it but for its patterns' );
     }
 };
 
