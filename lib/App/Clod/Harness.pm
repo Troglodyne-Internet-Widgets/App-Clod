@@ -18,6 +18,7 @@ use Dist::Conformance();
 use Dist::Conformance::Config();
 use Dist::Conformance::Snapshot::Directory();
 use Dist::Conformance::Snapshot::Tree();
+use Dist::Conformance::Source::Git();
 
 # perlcritic, found on the PATH, and the directories of a spoke that it reads.
 # A program and not Perl::Critic, because the policies are in the libs of the
@@ -35,6 +36,21 @@ from their C<standards>.  Dies as L<Dist::Conformance::Config/validate> does.
 
 sub default_config ($settings) {
     return Dist::Conformance::Config::validate( { flavor => $settings->{flavor}, source => $settings->{standards} } );
+}
+
+=func default_cache
+
+The directory of the clones of git sources when F<clod.conf> names none: the
+one that L<Dist::Conformance::Source::Git/cache> chooses for the account that
+runs the bot, under C<$XDG_CACHE_HOME> or F<~/.cache>.  Dies when neither
+C<XDG_CACHE_HOME> nor C<HOME> is set.
+
+=cut
+
+sub default_cache () {
+
+    # The URL is never fetched.  Only a source knows the rule for its cache.
+    return Dist::Conformance::Source::Git->new( url => 'unused' )->cache;
 }
 
 =func standards
@@ -70,13 +86,20 @@ C<($snapshot, $settings, %options)>.  The L<Dist::Conformance> of a spoke.  With
 a F<.conformance.yml>, the spoke names its own flavor and source.  Without one,
 it gets L</default_config>, and the C<source> of the options when given, such
 as the one from L</standards>.  C<cache> is the directory of the clones of git
-sources.
+sources.  It is made mode 0700, every time, because the worker runs git in
+each clone, and so runs what the configuration and the hooks of the clone
+name.  The worker runs with a umask that lets its group write, and dies here
+when it does not own the directory.
 
 =cut
 
 sub conformance ( $snapshot, $settings, %options ) {
     my %args = ( snapshot => $snapshot );
-    $args{cache} = $options{cache} if defined $options{cache};
+    if ( defined $options{cache} ) {
+        my $cache = Mojo::File->new( $options{cache} )->make_path;
+        chmod 0700, "$cache" or die "chmod $cache: $!\n";
+        $args{cache} = "$cache";
+    }
     if ( !$snapshot->contains($Dist::Conformance::Config::FILE) ) {
         $args{config} = default_config($settings);
         $args{source} = $options{source} if $options{source};

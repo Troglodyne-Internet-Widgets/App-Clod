@@ -2737,7 +2737,7 @@ marketplace pin.  The result of each spoke has its flavor, whether the spoke
 chose it, and its checks, and for a spoke that fails a check, C<fix_pr>, the
 URL of the pull request of an earlier L</harness_fix> that is still open.
 C<checks> names every check of any spoke, sorted, for the columns of the page.  The clones of the standards are in
-F<conformance> of the workspace.
+C<conformance_cache>, out of the reach of the agent.
 
 With C<system_packages> in the configuration, C<system_packages> of the result
 has the declaration of each spoke, as
@@ -2757,7 +2757,7 @@ sub harness_scan ( $job, $config ) {
     my $gh       = github($config);
     my $settings = $config->{harness};
 
-    my %options = ( cache => "$config->{workspace}/conformance" );
+    my %options = ( cache => $config->{conformance_cache} );
     $options{source} = App::Clod::Harness::standards( $settings, %options );
 
     my ( %repos, %errors, %checks, %packages, %package_errors );
@@ -2941,7 +2941,7 @@ sub harness_fix ( $job, $config, $args ) {
             $job, $config, $repo,
             { branch => $branch, base => $base },
             sub ( $spoke, $tree, $tools ) {
-                my $results = App::Clod::Harness::update( $tree, $config->{harness}, cache => "$config->{workspace}/conformance" );
+                my $results = App::Clod::Harness::update( $tree, $config->{harness}, cache => $config->{conformance_cache} );
                 my @changes = map {
                     my $check = $_->{check};
                     map { "- `$check`: $_->{action} `$_->{path}`" } @{ $_->{changes} }
@@ -3360,7 +3360,7 @@ provision.
 =cut
 
 sub agent_tools ($config) {
-    my @profiles = App::Clod::Harness::critic_profiles( $config->{harness}, cache => "$config->{workspace}/conformance" );
+    my @profiles = App::Clod::Harness::critic_profiles( $config->{harness}, cache => $config->{conformance_cache} );
     return ( @App::Clod::Deps::TOOLS, App::Clod::Deps::policies(@profiles) );
 }
 

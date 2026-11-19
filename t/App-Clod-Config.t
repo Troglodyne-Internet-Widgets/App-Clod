@@ -154,6 +154,15 @@ subtest 'the standards of the harness' => sub {
     like( dies { App::Clod::Config::validate( { %minimal, harness => { standards => { path => 'here' } } } ) }, qr/conformance/, 'and standards that are not a source die' );
 };
 
+subtest conformance_cache => sub {
+    local $ENV{XDG_CACHE_HOME} = '/bogus/cache';
+    is( App::Clod::Config::validate( {%minimal} )->{conformance_cache},                                                    '/bogus/cache/dist-conformance', 'the clones of the standards default to the cache of the account of the bot' );
+    is( App::Clod::Config::validate( { %minimal, conformance_cache => '/bogus/state/conformance' } )->{conformance_cache}, '/bogus/state/conformance',      'and go where the configuration says' );
+    like( dies { App::Clod::Config::validate( { %minimal, conformance_cache => '/bogus/workspace/conformance' } ) }, qr/in[ ]the[ ]workspace/, 'but not into the workspace, which the agent can write' );
+    like( dies { App::Clod::Config::validate( { %minimal, conformance_cache => '/bogus/workspace' } ) },             qr/in[ ]the[ ]workspace/, 'nor the workspace itself' );
+    is( App::Clod::Config::validate( { %minimal, conformance_cache => '/bogus/workspace-cache' } )->{conformance_cache}, '/bogus/workspace-cache', 'a directory beside it whose name only starts the same lives' );
+};
+
 subtest 'keys that the schema does not name' => sub {
     refused( { %minimal, spoke  => ['Test-Org/one'] }, '/: Properties not allowed: spoke.', 'a misspelled key dies' );
     refused( { %minimal, claude => { modle     => 'm' } }, '/claude: Properties not allowed: modle.', 'and so does one inside a section' );

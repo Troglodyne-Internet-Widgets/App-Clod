@@ -246,8 +246,9 @@ $conf->spew(
         }
     )
 );
-local $ENV{CLOD_CONFIG} = "$conf";
-local $ENV{GH_TOKEN}    = 'test-token';
+local $ENV{CLOD_CONFIG}    = "$conf";
+local $ENV{GH_TOKEN}       = 'test-token';
+local $ENV{XDG_CACHE_HOME} = $tmp->child('cache')->to_string;
 my $app = App::Clod->new;
 $app->log->level('fatal');
 my $minion = $app->minion;
@@ -2034,6 +2035,30 @@ subtest harness_scan => sub {
 
     $state{files}{'.conformance.yml'} = "flavor: test-gone\nsource:\n  directory: " . $here->child( 'data', 'standards' ) . "\n";
     like( run_job('harness_scan')->{result}{errors}{'Test-Org/one'}, qr/test-gone/, 'and one whose flavor cannot be read is an error of the scan' );
+};
+
+subtest 'the clones of the standards' => sub {
+    %state = ();
+    $state{files} = { 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.11.0"}]}' };
+    my $standards = $tmp->child('standards-repo');
+    git( qw{init --quiet --initial-branch=main}, "$standards" );
+    my $source = $here->child( 'data', 'standards' );
+    $source->list_tree->each( sub ( $file, $ ) { $file->copy_to( $standards->child( $file->to_rel($source) )->dirname->make_path ) } );
+    git( q{-C}, "$standards", qw{add .} );
+    git( q{-C}, "$standards", qw{-c user.name=t -c user.email=t@test.test commit --quiet -m standards} );
+
+    my $config    = $app->clod_config;
+    my $directory = $config->{harness}{standards};
+    $config->{harness}{standards} = { git => "file://$standards" };
+    my $old  = umask oct '0007';
+    my $info = run_job('harness_scan');
+    umask $old;
+    $config->{harness}{standards} = $directory;
+    is( [ sort keys %{ $info->{result}{repos} } ], \@SPOKES, 'a scan checks every spoke against standards from git' );
+    ok( !-e $tmp->child(qw{workspace conformance}), 'and clones them outside the workspace, where the agent could change what the worker runs git in' );
+    my $cache = Mojo::File->new( $config->{conformance_cache} );
+    is( $cache->list( { dir => 1 } )->size,                 1,      'into the conformance cache' );
+    is( sprintf( '%04o', $cache->stat->mode & oct '7777' ), '0700', 'which only the worker can enter, though the worker runs with a umask that lets the group write' );
 };
 
 subtest 'system packages' => sub {

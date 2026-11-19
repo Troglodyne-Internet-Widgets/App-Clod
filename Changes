@@ -15,6 +15,13 @@ Revision history for App-Clod
       the umask 0027, and its commit refuses hooks that the agent can write.
       The agent can no longer delete a branch, pack the refs or drop its
       last stash, and a new branch of a worktree tracks no upstream.
+    - The clones of the standards of the harness move out of the
+      workspace, to conformance_cache: by default the cache directory of
+      the account that runs the bot, mode 0700.  The worker runs git in
+      them, and the agent shares the workspace through a group that may
+      write there.  So the agent could change the configuration or a
+      hook of a clone, and the worker ran it.  conformance/ in the
+      workspace is no longer read, and may be deleted.
     - A run that changes a repository may now run perldoc, and every run
       may run du and df.  A hook of perl-slop asks for du and df before a
       copy, so a run that followed it was refused.
