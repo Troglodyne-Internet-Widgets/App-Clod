@@ -7,7 +7,7 @@ literally:
   not read one, such as `$DIR`, `$?` or `${PIPESTATUS[0]}`.
 - For a list of items that you know, make one call for each item. Do not
   write a `for` or `while` loop over them.
-- Stay in the worktree. Do not `cd` out of it. Name the file in the command,
+- Stay in the clone. Do not `cd` out of it. Name the file in the command,
   or read it with the Read tool.
 - Do not feed a command from a heredoc, such as `git commit -F - <<'EOF'`.
   Claude Code refuses a redirect that it cannot check, also in a command that

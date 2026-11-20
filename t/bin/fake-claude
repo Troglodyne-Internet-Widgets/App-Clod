@@ -11,6 +11,15 @@ use IPC::Run   ();
 use Mojo::File ();
 
 my $prompt = do { local $/ = undef; readline \*STDIN };
+
+# FAKE_CLAUDE_SEAL names a directory that the run cannot write while it works,
+# as the agent cannot write the top of the bare clone.
+my ( $sealed, $was ) = ( $ENV{FAKE_CLAUDE_SEAL} );
+if ($sealed) {
+    $was = ( stat $sealed )[2] & oct '7777';
+    chmod oct '0555', $sealed or die "chmod $sealed: $!";
+}
+END { chmod $was, $sealed or warn "chmod $sealed: $!" if $sealed }
 if ( my $record = $ENV{FAKE_CLAUDE_RECORD} ) {
     open my $fh, '>', $record or die "$record: $!";
     print {$fh} join( "\0", Cwd::getcwd(), $prompt, @ARGV );
@@ -50,6 +59,20 @@ close $in or die $!;
 if ( my $at = $ENV{FAKE_CLAUDE_DETACH} ) {
     my ( $out, $err );
     IPC::Run::run( [ qw{git checkout --quiet --detach}, $at ], '>', \$out, '2>', \$err ) or die "git checkout: $err";
+}
+
+# FAKE_CLAUDE_REBASE names a commit that the run rebases onto.  When the
+# rebase stops on a conflict, the run skips the commit, a few times at most.
+if ( my $onto = $ENV{FAKE_CLAUDE_REBASE} ) {
+    my ( $out, $err ) = ( q{}, q{} );
+    IPC::Run::run( [qw{git rev-parse --git-path rebase-merge}], '>', \$out, '2>', \$err ) or die "git rev-parse: $err";
+    chomp( my $state = $out );
+    IPC::Run::run( [ qw{git rebase --quiet}, $onto ], '>', \$out, '2>', \$err );
+    my $tries = 5;
+    while ( -d $state && $tries-- ) {
+        IPC::Run::run( [qw{git rebase --skip}], '>', \$out, '2>', \$err );
+    }
+    die "the rebase did not finish: $err" if -d $state;
 }
 
 # A spoke run commits, as the real one does in a worktree.  FAKE_CLAUDE_FILE

@@ -1,6 +1,19 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - Each claude run now works in a clone of its own, and not in a
+      worktree of the bare clone of the worker.  The account that claude
+      runs as makes the clone and owns all of it.  So a rebase that stops
+      on a conflict can go on with "git rebase --skip" or "--continue",
+      and the run can delete a branch or drop a stash.  In a worktree, git
+      locked packed-refs in the bare clone to delete any ref.  The agent
+      cannot write there, so a rebase that stopped could not finish.  The
+      clone reads the objects of the bare clone and copies none.  The
+      agent pushes its HEAD to a ref of its own in the bare clone, and the
+      worker pushes to GitHub from there, as before.  The worker still
+      runs no git in a directory of the agent.  The bare clone no longer
+      opens logs/ and worktrees/ to the group, because only a worktree of
+      the agent needed them.
     - An answer to a review no longer pushes a head that has no commit
       beyond the base branch of the pull request.  GitHub closes a pull
       request whose branch has no commit of its own.  A rebase that stopped

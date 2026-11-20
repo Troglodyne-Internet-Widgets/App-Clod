@@ -265,6 +265,8 @@ sub answer ( $structured, %env ) {
     %fake                                        = ( FAKE_CLAUDE_STREAM => "$stream", FAKE_CLAUDE_COMMIT => $env{commit} ? 1 : 0 );
     @fake{qw{FAKE_CLAUDE_FILE FAKE_CLAUDE_TEXT}} = @{ $env{file} } if $env{file};
     $fake{FAKE_CLAUDE_DETACH}                    = $env{detach}    if $env{detach};
+    $fake{FAKE_CLAUDE_REBASE}                    = $env{rebase}    if $env{rebase};
+    $fake{FAKE_CLAUDE_SEAL}                      = $env{seal}      if $env{seal};
     return;
 }
 
@@ -954,6 +956,36 @@ subtest spoke_address => sub {
     my $rebased = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'rebase' } );
     is( $rebased->{state},                                      'finished',                                           'a rebase that the run finished pushes' ) or diag Mojo::Util::dumper $rebased->{result};
     is( git( q{--git-dir}, $bare, qw{rev-parse clod/1-ours^} ), git( q{--git-dir}, $bare, qw{rev-parse stacked-on} ), 'and the branch on GitHub is on the base' );
+
+    # A rebase that stops on a conflict goes on with --skip, which deletes a
+    # ref.  The run cannot write the top of the bare clone, where git would
+    # lock packed-refs for that in a worktree of it.
+    {
+        my $seed = $tmp->child('conflict-seed');
+        git( qw{clone --quiet}, $bare, "$seed" );
+        my @id     = qw{-c user.name=t -c user.email=t@test.test};
+        my $change = sub ( $file, $text, $message ) {
+            $seed->child($file)->spew($text);
+            git( q{-C}, "$seed", 'add', $file );
+            git( q{-C}, "$seed", @id, qw{commit --quiet -m}, $message );
+        };
+        $change->( 'CLAUDE.md', "the base\n", 'the base moves' );
+        git( q{-C}, "$seed", qw{push --quiet origin HEAD:refs/heads/conflict-base} );
+        git( q{-C}, "$seed", qw{reset --quiet --hard HEAD^} );
+        $change->( 'CLAUDE.md', "ours\n", 'a change that conflicts' );
+        $change->( 'kept',      "kept\n", 'a change that does not' );
+        git( q{-C}, "$seed", qw{push --quiet origin HEAD:refs/heads/clod/3-conflict} );
+        @calls = ();
+        my $pull = $state{pull};
+        $state{pull} = { %$pull, head => { ref => 'clod/3-conflict', repo => { full_name => 'Test-Org/one' } }, base => { ref => 'conflict-base' } };
+        my $mirror = App::Clod::Tasks::spoke( $app->clod_config, 'Test-Org/one' )->mirror->realpath->to_string;
+        answer( { summary => 'Rebased, without the commit that conflicts.', blocked => q{}, replies => [], comment => 'Rebased.' }, rebase => 'origin/conflict-base', seal => $mirror );
+        my $skipped = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'rebase' } );
+        is( $skipped->{state}, 'finished', 'a rebase that stopped on a conflict, and that the run finished with --skip, pushes' ) or diag Mojo::Util::dumper $skipped->{result};
+        is( git( q{--git-dir}, $bare, qw{rev-parse clod/3-conflict^} ), git( q{--git-dir}, $bare, qw{rev-parse conflict-base} ), 'and the branch on GitHub is on the base' );
+        is( git( q{--git-dir}, $bare, qw{show clod/3-conflict:kept} ),  'kept',                                                  'with the commit that did not conflict' );
+        $state{pull} = $pull;
+    }
 
     @calls                  = ();
     $state{review_comments} = [];
@@ -1764,7 +1796,7 @@ subtest harness_fix => sub {
     like( $taker, { task => 'spoke_fix', notes => { repo => 'Test-Org/one', harness => 'Test-Org/one' } }, 'a spoke_fix of the issue takes it on' );
     like(
         $taker->{args}[0],
-        { title => 'Meet the harness standards', patch => qr/\+\[Test::Policy\]/, instructions => qr/staged\ in\ this\ worktree .* $hook_said .* $make_it .* $no_verify/s },
+        { title => 'Meet the harness standards', patch => qr/\+\[Test::Policy\]/, instructions => qr/staged\ in\ this\ clone .* $hook_said .* $make_it .* $no_verify/s },
         'with the staged changes as a patch, and what the hook said'
     );
 

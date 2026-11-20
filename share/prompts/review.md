@@ -1,4 +1,4 @@
-You are reviewing pull request {{origin}}, checked out in this worktree
+You are reviewing pull request {{origin}}, checked out in this clone
 (detached at its head). The base branch is origin/{{base}}; see the change with
 `git diff origin/{{base}}...HEAD`. Follow the CLAUDE.md of this repository and
 the review skills it names.
