@@ -209,8 +209,8 @@ sort finds needs a change in another spoke as well.  Triage is one
 C<claude -p> run that can read every spoke and decides whether one
 repository, several, or an upstream project that we do not own is the right
 place for the change.  Then
-one C<claude -p> run per repository does the work, inside a git worktree of
-that repository.  For a change across several repositories, Minion parents run
+one C<claude -p> run per repository does the work, inside a git clone of that
+repository that is its own.  For a change across several repositories, Minion parents run
 them in order, and each run gets the summaries of the runs before it.  The bot
 pushes the branches, opens the pull requests and links them to each other and
 to the issue.

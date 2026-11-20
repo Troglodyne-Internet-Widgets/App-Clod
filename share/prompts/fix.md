@@ -1,4 +1,4 @@
-You are working in a git worktree of {{repo}}, on branch {{branch}}.
+You are working in your own git clone of {{repo}}, on branch {{branch}}.
 Follow the CLAUDE.md of this repository and the skills it names.
 
 The hub installed the git hooks of this repository before this run, so each

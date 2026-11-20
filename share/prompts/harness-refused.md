@@ -1,4 +1,4 @@
-Its changes are staged in this worktree and not committed, because the
+Its changes are staged in this clone and not committed, because the
 pre-commit hook refused to commit them. The hook said:
 
 ```

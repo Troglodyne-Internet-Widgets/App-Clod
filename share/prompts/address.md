@@ -1,7 +1,7 @@
-You are working in a git worktree of {{repo}}, on branch {{branch}}, which is
-the head of pull request {{origin}} that this bot opened. The pull request is
-opened against {{base}}. Follow the CLAUDE.md of this repository and the skills
-it names.
+You are working in your own git clone of {{repo}}, on branch {{branch}},
+which is the head of pull request {{origin}} that this bot opened. The pull
+request is opened against {{base}}. Follow the CLAUDE.md of this repository and
+the skills it names.
 
 The hub installed the git hooks of this repository before this run, so each
 commit runs them.  Do not install them again, also where CLAUDE.md says to.

@@ -230,7 +230,7 @@ sub github ($config) { return App::Clod::GitHub->new( api => $config->{github_ap
 
 C<($config, $repo)>.  An L<App::Clod::Spoke> for that repository.  With
 C<run_as>, its C<as_agent> is L<App::Clod::Claude/as_account> of L</claude>, so
-that the worktree of a claude run belongs to the account that claude runs as.
+that the clone of a claude run belongs to the account that claude runs as.
 
 =cut
 
@@ -1105,11 +1105,12 @@ sub tools_note ($checkouts) {
 =func in_worktree
 
 C<($job, $config, $repo, \%how, $work)>.  Takes the lock of L</work_lock>, makes a
-worktree with the options in C<%how>, and a worktree of each tool spoke at its
+worktree with the options in C<%how>, or a clone with C<agent>, as
+L<App::Clod::Spoke/worktree> says, and a worktree of each tool spoke at its
 L</tool_branch>, runs C<< $work->($spoke, $tree, \%tools) >>, and removes every
-worktree and the directory of the job under F<work/> whatever happened.  A
-worktree that git will not remove is deleted with the rest and pruned from its
-bare clone, so that it holds no branch.  C<%tools> has C<add_dirs>, the tool
+worktree and clone and the directory of the job under F<work/> whatever
+happened.  A worktree that git will not remove is deleted with the rest and
+pruned from its bare clone, so that it holds no branch.  C<%tools> has C<add_dirs>, the tool
 worktrees for the run, C<note>, the L</tools_note> for its prompt,
 C<checkouts>, a hash for each worktree with C<repo>, C<spoke> and C<dir>, the
 spoke of the run first, as L</declared_rules> takes them, and C<scratch>.  The
@@ -1138,12 +1139,13 @@ The lock keeps two jobs from working on one branch, or on one pull request, at
 once.  git refuses to check out one branch in two worktrees, and two jobs that
 pushed to one branch would each push over the other, or reply twice to one
 review.  Jobs on different branches of one repository run at once.  Each has
-its own worktree, and what they share in the bare clone is safe without the
-lock: L<App::Clod::Spoke/worktree> fetches and adds the worktree under
-L<App::Clod::Spoke/locked>, the author is set once by the fetch, and each
-branch and each L</kept_ref> belongs to one job.  A commit runs the hooks of
-its own worktree, as L<App::Clod::Spoke/HOOKS> says, so nothing that one job
-installs reaches the commits of another.
+its own clone or worktree, and what they share in the bare clone is safe
+without the lock: L<App::Clod::Spoke/worktree> fetches and adds the worktree or
+the clone under L<App::Clod::Spoke/locked>, the author is set once by the
+fetch, and each branch, each L</kept_ref> and each
+L<App::Clod::Spoke/handback_ref> belongs to one job.  A commit runs the hooks
+of its own clone or worktree, as L<App::Clod::Spoke/HOOKS> says, so nothing
+that one job installs reaches the commits of another.
 
 A tool worktree is made without a lock.  It is detached, so it holds no
 branch, and nothing is pushed from it, and taking a lock would hold every run
@@ -1251,10 +1253,12 @@ sub clean_up ( $job, $config, $root, @checkouts ) {
 =func remove_work
 
 C<($root, @checkouts)>, as L</clean_up> takes them.  Removes each worktree and
-then C<$root>, and prunes the bare clone of each checkout.  A worktree that git
-will not remove is deleted with the rest, and the prune takes it out of its
-bare clone, so that it holds no branch.  So does a worktree that the run added
-under C<$root>, such as a copy of the tree without its changes.
+clone, as L<App::Clod::Spoke/remove_worktree> does, and then C<$root>, and
+prunes the bare clone of each checkout.  A worktree that git will not remove is
+deleted with the rest, and the prune takes it out of its bare clone, so that it
+holds no branch.  A worktree that the run added under C<$root>, such as a copy
+of the tree without its changes, is a worktree of the clone of the run, and
+goes with it.
 
 =cut
 
@@ -1699,7 +1703,7 @@ sub packages_note ($lacks) {
 
 =func spoke_fix
 
-Works on a new branch in a worktree of one spoke.  The spoke commits, and the
+Works on a new branch in a clone of one spoke.  The spoke commits, and the
 job pushes, opens the pull request, and assigns it to the L</reviewers> of the
 requester.  If the spoke asks a question instead,
 the job gives the origin to a person through C<hand_back>.  A job whose parent
@@ -1723,9 +1727,9 @@ has C<blocked> and C<denied>.  The work that the run did is on the branch,
 where a person can read it and finish it.
 
 L</harness_fix> gives two more arguments.  With C<patch>, the job stages
-that patch in the worktree and its index before the run, as
+that patch in the clone and its index before the run, as
 L<App::Clod::Spoke/apply_patch> does, so the run commits it with its own
-changes, through the hooks that the patched worktree has.  With C<title>, the
+changes, through the hooks that the patched clone has.  With C<title>, the
 pull request has that title, in place of the one that the run gives.
 
 =cut
@@ -1954,7 +1958,7 @@ sub pending ( $config, $gh, $item ) {
 
 C<($job, $config, $item)>.  Sorts what waits for an answer on the bot's own
 pull request, the L</pending> threads and comments, into questions and
-requests for a change.  One claude run reads a detached worktree of the branch
+requests for a change.  One claude run reads a detached clone of the branch
 with C<read_tools>, so it cannot change it.  It gives each thread, and the
 comments as one, a verdict:
 

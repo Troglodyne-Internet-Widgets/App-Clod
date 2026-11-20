@@ -72,9 +72,6 @@ subtest 'the configuration of the bare clone, sealed from the agent' => sub {
     $spoke->fetch;
     is( mode($config) & oct '0022', 0, 'after a fetch, no group and no other account can write the configuration of the bare clone' ) or diag sprintf '%04o', mode($config);
     is( mode($mirror) & oct '0022', 0, 'nor the bare clone, where they could make a configuration of their own' )                     or diag sprintf '%04o', mode($mirror);
-    my $worktrees = $mirror->child('worktrees');
-    is( mode($worktrees) & oct '1070', oct '1070', 'its group can make a worktree, and cannot rename one of the worker' ) or diag sprintf '%04o', mode($worktrees);
-    is( mode( $mirror->child('logs') ) & oct '0070', oct '0070', 'and can write the logs of the refs that it commits to' );
 
     my $tree = $spoke->worktree( $tmp->child( 'ws', 'work', 9, 'Test-Org', 'one' ), branch => 'clod/9-sealed', base => 'main' );
     my ($gitdir) = $tree->child('.git')->slurp =~ m{\Agitdir:\ ([^\n]+)};
@@ -340,14 +337,19 @@ subtest 'files_at and blob' => sub {
 };
 
 # git refuses a repository that another account owns, and its own test switch
-# makes it take every repository for one.  So the worker can only work in a
-# worktree of the agent, or in the bare clone, when it trusts that directory.
-# The switch is off for a fetch or a push, because the remote on disk stands
-# for GitHub, which no test of ownership reaches.
-subtest 'a worktree that the agent owns' => sub {
-    my @asked;
+# makes it take every repository for one.  So the agent can only clone the
+# bare clone, and push to it, when it trusts it.  The switch is off for a
+# fetch or a push of the worker, because the remote on disk stands for GitHub,
+# which no test of ownership reaches.  The agent is the same account here, so
+# a command of the agent is one that starts with env CLOD_TEST_AS_AGENT=1.
+my @AS_AGENT = qw{env CLOD_TEST_AS_AGENT=1};
+
+# A spoke whose agent is recorded in @$asked, in a workspace that is a
+# symbolic link, and a sub that runs code as if each repository were another
+# account's.
+sub agent_spoke ($asked) {
     my $link = $tmp->child('ws-link');
-    symlink "$tmp/ws", "$link" or die "symlink $link: $!";
+    if ( !-l $link ) { symlink "$tmp/ws", "$link" or die "symlink $link: $!" }
     my $agent = App::Clod::Spoke->new(
         repo         => 'Test-Org/one',
         workspace    => "$link",
@@ -355,49 +357,77 @@ subtest 'a worktree that the agent owns' => sub {
         token        => 'test-token',
         author_name  => 'test-bot',
         author_email => 'bot@test.test',
-        as_agent     => sub (@cmd) { push @asked, [@cmd]; return ( qw{env CLOD_TEST_AS_AGENT=1}, @cmd ) },
+        as_agent     => sub (@cmd) { push @$asked, [@cmd]; return ( @AS_AGENT, @cmd ) },
     );
-    my $mirror = $agent->fetch;
-    my $mock   = Test::MockModule->new('App::Clod::Spoke');
-    $mock->redefine( fetch  => sub ($self) { return $mirror } );
-    $mock->redefine( is_own => sub ($path) { return 0 } );
     my $foreign = sub ($code) {
         local $ENV{GIT_TEST_ASSUME_DIFFERENT_OWNER} = 1;
         return $code->();
     };
+    return ( $agent, $link, $foreign );
+}
 
-    my $tree = $foreign->( sub { $agent->worktree( $link->child( 'work', 5, 'Test-Org', 'one' ), branch => 'clod/5-agent', base => 'main', agent => 1 ) } );
-    is( scalar @asked, 1, 'the agent makes the worktree' );
-    my $trusts   = qr{\Agit\ -c\ safe\.directory=\Q$tmp\E/ws/mirrors/\S+\ };
-    my $hookless = qr{-c\ core\.hooksPath=/dev/null\ };
-    my $adds     = qr{-C\ \S+\ worktree\ add\ --no-track\ -B\ clod/5-agent\ };
-    like( "@{ $asked[0] // [] }", qr{$trusts$hookless$adds}, 'with git, trusting the real path of the bare clone, and running no hook' );
-    is( $foreign->( sub { $agent->git( q{-C}, "$tree", qw{rev-parse --abbrev-ref HEAD} ) } ), 'clod/5-agent', 'and the worker trusts the worktree, through a symbolic link' );
+subtest 'a clone that the agent owns' => sub {
+    my @asked;
+    my ( $agent, $link, $foreign ) = agent_spoke( \@asked );
+    my $mirror = $agent->fetch;
+    my $mock   = Test::MockModule->new('App::Clod::Spoke');
+    $mock->redefine( fetch  => sub ($self) { return $mirror } );
+    $mock->redefine( is_own => sub ($path) { return 0 } );
+
+    # Each git command of the worker that names a directory of the agent.
+    my $tree = $link->child( 'work', 5, 'Test-Org', 'one' );
+    my $real = $tmp->child( 'ws', 'work', 5, 'Test-Org', 'one' );
+    my @intruded;
+    my $run_git = $mock->original('run_git');
+    $mock->redefine(
+        run_git => sub ( $cmd, @rest ) {
+            push @intruded, "@$cmd" if $cmd->[0] ne $AS_AGENT[0] && List::Util::any { index( $_, "$tree" ) >= 0 || index( $_, "$real" ) >= 0 } @$cmd;
+            return $run_git->( $cmd, @rest );
+        }
+    );
+
+    $foreign->( sub { $agent->worktree( $tree, branch => 'clod/5-agent', base => 'main', agent => 1 ) } );
+    ok( -d $tree->child('.git'), 'the agent makes a clone, whose .git is its own, and no worktree of the bare clone' );
+    my $trusts  = qr{\Agit\ -c\ core\.hooksPath=/dev/null\ clone\ };
+    my $safe    = qr{safe\.directory='?\Q$tmp\E/ws/mirrors/Test-Org/one\.git'?};
+    my $uploads = qr{-u\ git\ -c\ $safe\ upload-pack\ };
+    my $from    = qr{\Q$tmp\E/ws/mirrors/Test-Org/one\.git\ \S+\z};
+    like( "@{ $asked[0] // [] }", qr{$trusts.*$uploads.*$from}, 'with git, trusting the real path of the bare clone, and running no hook' );
+    is( scalar( grep { $_->[0] eq 'git' } @asked ),                                              scalar @asked,                                    'and the agent runs each command of it' );
+    is( $tree->child(qw{.git objects info alternates})->slurp,                                   $mirror->realpath->child('objects') . "\n",       'the clone reads the objects of the bare clone, and copies none' );
+    is( git( q{-C}, "$tree", qw{rev-parse --abbrev-ref HEAD} ),                                  'clod/5-agent',                                   'a new branch, checked out' );
+    is( git( q{-C}, "$tree", qw{rev-parse HEAD} ),                                               git( q{--git-dir}, "$bare", qw{rev-parse main} ), 'at the base on the remote' );
+    is( [ map { git( q{-C}, "$tree", 'config', $_ ) } qw{user.name user.email core.hooksPath} ], [qw{test-bot bot@test.test git-hooks}],           'with the author, and the hooks of its branch' );
 
     $tree->child('patched')->spew("old\n");
     git( q{-C}, "$tree", qw{add patched} );
-    git( q{-C}, "$tree", qw{-c user.name=t -c user.email=t@test.test commit --quiet --no-verify -m base} );
+    git( q{-C}, "$tree", qw{commit --quiet --no-verify -m base} );
     $tree->child('patched')->spew("new\n");
     my $patch = git( q{-C}, "$tree", qw{diff --binary} ) . "\n";
     git( q{-C}, "$tree", qw{checkout --quiet -- patched} );
     $foreign->( sub { $agent->apply_patch( $tree, $patch ) } );
-    like( "@{ $asked[-1] }", qr{apply\ --index\z}, 'the agent applies a patch to its worktree' );
+    like( "@{ $asked[-1] }", qr{apply\ --index\z}, 'the agent applies a patch to its clone' );
     is( $tree->child('patched')->slurp,                       "new\n",   'to the file' );
     is( git( q{-C}, "$tree", qw{diff --cached --name-only} ), 'patched', 'and to the index' );
 
-    # The agent owns its worktree, and can point its .git anywhere.
+    # The agent owns its clone, and can point its .git anywhere.
     my $dot = $tree->child('.git');
     chmod mode($dot) | oct '0002', "$dot" or die "chmod $dot: $!";
-    like( dies { $agent->git( q{-C}, "$tree", qw{rev-parse HEAD} ) }, qr{refused}, 'the worker runs no git in a worktree that another account can change' );
-    is( $foreign->( sub { $agent->commits_since( $tree, 'origin/main' ) } ), 1, 'but counts the commits of the worktree' );
+    like( dies { $agent->git( q{-C}, "$tree", qw{rev-parse HEAD} ) }, qr{refused}, 'the worker runs no git in a clone that another account can change' );
+    is( $foreign->( sub { $agent->commits_since( $tree, 'origin/main' ) } ), 1, 'but counts the commits of the clone, which the agent pushed to the bare clone' );
     my $sha = $agent->push_branch( $tree, 'clod/5-agent' );
-    is( git( '--git-dir', "$bare", 'rev-parse', 'clod/5-agent' ), $sha, 'and pushes them, from the bare clone, with the commit that the agent names' );
+    is( git( '--git-dir', "$bare", 'rev-parse', 'clod/5-agent' ), $sha,                                      'and pushes them, from the bare clone' );
+    is( $sha,                                                     git( q{-C}, "$tree", qw{rev-parse HEAD} ), 'and they are the HEAD of the clone' );
+    my $ref = App::Clod::Spoke::handback_ref($tree);
+    like( $ref, qr{\Arefs/clod/handback/[[:xdigit:]]{40}\z}, 'which the bare clone holds under a ref of the clone' );
     chmod mode($dot) & ~oct('0002'), "$dot" or die "chmod $dot: $!";
 
     my $asked = @asked;
     $foreign->( sub { $agent->remove_worktree($tree) } );
-    is( scalar @asked, $asked + 1, 'the agent removes its worktree' );
+    is( [ map { "@$_" } @asked[ $asked .. $#asked ] ], ["rm -rf -- $tree"], 'the agent removes its clone' );
     ok( !-d $tree, 'and it is gone' );
+    is( git( '--git-dir', "$mirror", qw{for-each-ref --format=%(refname)}, $ref ), q{}, 'and so is its ref in the bare clone' );
+    is( \@intruded,                                                                [],  'and the worker ran no git in the clone, nor named it to git' );
 
     $mock->redefine( is_own => sub ($path) { return 1 } );
     my $own = $foreign->( sub { $agent->worktree( $link->child( 'work', 6, 'Test-Org', 'one' ), detach => 'main' ) } );
@@ -405,6 +435,50 @@ subtest 'a worktree that the agent owns' => sub {
     $foreign->( sub { $agent->remove_worktree($own) } );
     is( scalar @asked, $asked, 'the worker makes and removes a worktree of its own, with no agent' );
     ok( !-d $own, 'and it is gone' );
+};
+
+# A rebase that stops on a conflict deletes refs as it goes on, and git locks
+# packed-refs for that, beside the configuration of the repository.  The bare
+# clone is sealed from the agent, and here a mode of 0555 stands for that.
+subtest 'a rebase that stops, in a clone of the agent' => sub {
+    my $dir = $tmp->child('rebase-seed');
+    git( qw{clone --quiet}, "$bare", "$dir" );
+    my @id = qw{-c user.name=t -c user.email=t@test.test};
+    $dir->child('conflict')->spew("base\n");
+    git( q{-C}, "$dir", qw{add conflict} );
+    git( q{-C}, "$dir", @id, qw{commit --quiet --no-verify -m}, 'the base moves' );
+    git( q{-C}, "$dir", qw{push --quiet origin HEAD:refs/heads/rebase-base} );
+    git( q{-C}, "$dir", qw{reset --quiet --hard HEAD^} );
+    $dir->child('conflict')->spew("ours\n");
+    git( q{-C}, "$dir", qw{add conflict} );
+    git( q{-C}, "$dir", @id, qw{commit --quiet --no-verify -m}, 'a change that conflicts' );
+    $dir->child('kept')->spew("kept\n");
+    git( q{-C}, "$dir", qw{add kept} );
+    git( q{-C}, "$dir", @id, qw{commit --quiet --no-verify -m}, 'a change that does not' );
+    git( q{-C}, "$dir", qw{push --quiet origin HEAD:refs/heads/rebase-ours} );
+
+    my @asked;
+    my ( $agent, $link, $foreign ) = agent_spoke( \@asked );
+    my $fetched = $agent->fetch;
+    my $mock    = Test::MockModule->new('App::Clod::Spoke');
+    $mock->redefine( fetch  => sub ($self) { return $fetched } );
+    $mock->redefine( is_own => sub ($path) { return 0 } );
+    my $tree   = $foreign->( sub { $agent->worktree( $link->child( 'work', 12, 'Test-Org', 'one' ), existing => 'rebase-ours', agent => 1 ) } );
+    my $mirror = $agent->mirror->realpath;
+    my $was    = mode($mirror);
+    chmod oct '0555', "$mirror" or die "chmod $mirror: $!";
+
+    ok( dies { git( q{-C}, "$tree", qw{rebase origin/rebase-base} ) }, 'a rebase onto the moved base stops on the conflict' );
+    ok( lives { git( q{-C}, "$tree", qw{rebase --skip} ) },            'and the agent can skip the commit that conflicts, and finish the rebase' ) or diag $@;
+    ok( !-e $tree->child(qw{.git rebase-merge}),                       'so no rebase is in progress' );
+    my $head = $foreign->( sub { $agent->head($tree) } );
+    chmod $was, "$mirror" or die "chmod $mirror: $!";
+
+    is( git( q{--git-dir}, "$mirror", qw{rev-parse},        "$head^" ),                    git( q{--git-dir}, "$mirror", qw{rev-parse origin/rebase-base} ), 'the rebased head reaches the bare clone, on the base' );
+    is( git( q{--git-dir}, "$mirror", qw{rev-list --count}, "origin/rebase-base..$head" ), 1,                                                                'without the commit that the rebase skipped' );
+    $agent->push_branch( $tree, 'rebase-ours' );
+    is( git( q{--git-dir}, "$bare", qw{show rebase-ours:kept} ), 'kept', 'and the worker pushes it, with the commit that the rebase kept' );
+    $foreign->( sub { $agent->remove_worktree($tree) } );
 };
 
 subtest git => sub {
