@@ -120,6 +120,9 @@ subtest worktree => sub {
 
     my $sha = $spoke->push_branch( $tree, 'clod/1-test' );
     is( git( '--git-dir', "$bare", 'rev-parse', 'clod/1-test' ), $sha, 'the push puts the commit on the remote branch' );
+    is( $spoke->commits_dropped( $tree, $sha ),                  0,    'a head drops no commit of itself' );
+    git( q{-C}, "$tree", qw{checkout --quiet --detach HEAD^} );
+    is( $spoke->commits_dropped( $tree, $sha ), 1, 'and a head before it drops the commit' );
 
     $spoke->remove_worktree($tree);
     ok( !-d $tree, 'the worktree can be removed' );

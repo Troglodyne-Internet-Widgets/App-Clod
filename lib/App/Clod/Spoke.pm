@@ -589,6 +589,20 @@ sub commits_since ( $self, $dir, $base ) {
     return 0 + $self->git( q{-C}, $self->mirror->to_string, 'rev-list', '--count', "$base..$head" );
 }
 
+=method commits_dropped
+
+C<($dir, $ref)>.  The number of commits of C<$ref> that L</head> of the
+worktree does not have, which the bare clone counts.  It is not zero when the
+worktree rewrote C<$ref>, as a rebase does, and a push of L</head> to it would
+take those commits away.
+
+=cut
+
+sub commits_dropped ( $self, $dir, $ref ) {
+    my $head = $self->head($dir);
+    return 0 + $self->git( q{-C}, $self->mirror->to_string, 'rev-list', '--count', "$head..$ref" );
+}
+
 =method push_branch
 
 C<($dir, $branch)>.  Pushes L</head> of the worktree to C<$branch> with

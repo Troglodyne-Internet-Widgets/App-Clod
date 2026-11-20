@@ -45,6 +45,13 @@ open my $in, '<', $ENV{FAKE_CLAUDE_STREAM} or die "$ENV{FAKE_CLAUDE_STREAM}: $!"
 print {*STDOUT} readline $in;
 close $in or die $!;
 
+# FAKE_CLAUDE_DETACH names a commit that the run checks out, detached, as a
+# rebase leaves the worktree before its first commit is replayed.
+if ( my $at = $ENV{FAKE_CLAUDE_DETACH} ) {
+    my ( $out, $err );
+    IPC::Run::run( [ qw{git checkout --quiet --detach}, $at ], '>', \$out, '2>', \$err ) or die "git checkout: $err";
+}
+
 # A spoke run commits, as the real one does in a worktree.  FAKE_CLAUDE_FILE
 # names a file that it writes FAKE_CLAUDE_TEXT to, and adds, before it commits.
 if ( $ENV{FAKE_CLAUDE_COMMIT} ) {

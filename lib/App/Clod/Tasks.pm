@@ -2108,6 +2108,11 @@ and says in C<blocked> that something kept it from finishing pushes its
 commits, and the comment of the job says what the run said, as
 L</unfinished_note> gives it.
 
+The job pushes no head that L</unpushable> refuses: one with no commit beyond
+the base of the pull request, which would close the pull request, and one that
+drops commits of the branch when the run says that it did not finish, which is
+a rebase that stopped.  Then the job fails with the reason, and posts nothing.
+
 With C<resume> in its arguments, L</packages_install> queued the job after it
 installed those packages, or L</harness_fix> queued it for what the update of
 the standards left for a person.  Then the job runs even when nothing waits for an
@@ -2217,7 +2222,9 @@ C<($job, $config, $gh, $args, $spoke, $tree, $tools, %address)>.  The claude
 run of L</spoke_address>, in C<$tree>, where C<%address> has C<pull>,
 C<pending> and C<comments>.  If the run failed, it fails the job and returns
 undef.  Otherwise it returns the work for L</push_or_keep>, with C<onto>, the
-head of the pull request that the run started from.
+head of the pull request that the run started from.  If the run committed, and
+L</unpushable> refuses its head, it fails the job with the reason and returns
+undef.
 
 The work has C<refusals>, as L</refusals> gives them.  A run can commit
 nothing while claude refused some of its calls, or while it says in
@@ -2277,6 +2284,10 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
     my $commits = $spoke->commits_since( $tree, "origin/$branch" );
 
     my %work = ( answer => $answer, commits => $commits, usage => \%usage, onto => $pull->{head}{sha}, refusals => refusals($outcome) );
+    if ( my $wrong = $commits && unpushable( $spoke, $tree, $pull, $outcome ) ) {
+        $job->fail( { repo => $repo, error => $wrong, %{ refusals($outcome) }, summary => $answer->{summary}, %usage } );
+        return;
+    }
 
     return \%work if $commits || ( !@{ $outcome->{denied} // [] } && !stopped($outcome) );
 
@@ -2288,6 +2299,31 @@ sub address_run ( $job, $config, $gh, $args, $spoke, $tree, $tools, %address ) {
         return;
     }
     return \%work;
+}
+
+=func unpushable
+
+C<($spoke, $tree, $pull, $outcome)>.  Why the hub must not push the worktree
+C<$tree> of an answer to a review to the branch of the pull request C<$pull>,
+or undef when it may.  The hub must not push a head that has no commit beyond
+C<origin/> the base of the pull request, because GitHub closes a pull request
+whose branch has no commit of its own.  It must not push a head that drops
+commits of the branch either, when the run was L</stopped>: that is a rebase
+that the run did not finish, and the push would take the rest of the pull
+request away.  A rewrite that the run finished, and new commits on a run that
+was stopped, may be pushed.
+
+=cut
+
+sub unpushable ( $spoke, $tree, $pull, $outcome ) {
+    my ( $base, $branch ) = ( $pull->{base}{ref}, $pull->{head}{ref} );
+    my $head = $spoke->head($tree);
+    return "the run left $head, with no commit beyond origin/$base, and a push of it would close the pull request, so the hub did not push it"
+      if !$spoke->commits_since( $tree, "origin/$base" );
+    return if !stopped($outcome);
+    my $dropped = $spoke->commits_dropped( $tree, "origin/$branch" ) || return;
+    my $commits = $dropped == 1 ? '1 commit' : "$dropped commits";
+    return "the run did not finish, and its head $head drops $commits of origin/$branch, so the hub did not push it";
 }
 
 =func blocked
