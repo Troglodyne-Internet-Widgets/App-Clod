@@ -262,8 +262,9 @@ sub answer ( $structured, %env ) {
     my $stream = $tmp->child( 'stream-' . ++$STREAMS . '.jsonl' );
     my %denied = $env{denied} ? ( permission_denials => $env{denied} ) : ();
     $stream->spew( Mojo::JSON::encode_json( { type => 'result', is_error => Mojo::JSON::false, structured_output => $structured, total_cost_usd => 0.5, usage => {}, %denied } ) . "\n" );
-    %fake = ( FAKE_CLAUDE_STREAM => "$stream", FAKE_CLAUDE_COMMIT => $env{commit} ? 1 : 0 );
+    %fake                                        = ( FAKE_CLAUDE_STREAM => "$stream", FAKE_CLAUDE_COMMIT => $env{commit} ? 1 : 0 );
     @fake{qw{FAKE_CLAUDE_FILE FAKE_CLAUDE_TEXT}} = @{ $env{file} } if $env{file};
+    $fake{FAKE_CLAUDE_DETACH}                    = $env{detach}    if $env{detach};
     return;
 }
 
@@ -866,6 +867,10 @@ subtest spoke_address => sub {
     @calls = ();
     my $bare = $remote->child('Test-Org/one.git')->to_string;
     git( q{--git-dir}, $bare, qw{branch clod/1-ours main} );
+
+    # The base of the pull request moved on since the branch was made, so a
+    # rebase onto it has something to do.
+    git( q{--git-dir}, $bare, qw{update-ref refs/heads/stacked-on}, git( q{--git-dir}, $bare, qw{commit-tree main^{tree} -p main -m}, 'the base moved' ) );
     $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/1-ours', repo => { full_name => 'Test-Org/one' } }, base => { ref => 'stacked-on' }, html_url => 'https://test.test/pull/11' };
     $state{review_comments} = [ { id => 21, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'rename this' } ];
     answer( { summary => 'Renamed.', replies => [ { id => 21, body => 'Done.' }, { id => 99, body => 'not a thread' } ] }, commit => 1 );
@@ -916,6 +921,39 @@ subtest spoke_address => sub {
     my $counted    = qr/refused\ one\ call\ of\ the\ run\ \(Bash\ 1\)\./;
     my $kept_by    = qr/Job\ $partial->{id}\ keeps\ them/;
     like( [ map { $_->[2]{body} } @{ calls_of('comment') } ], [qr/$unfinished\ It\ says:\ git\ push .* $counted\ $kept_by/sx], 'and its comment says what the run said, counts the refused calls and names the job that keeps them' );
+    my $ours = git( q{--git-dir}, $bare, qw{rev-parse clod/1-ours} );
+    isnt( $ours, $partial->{result}{onto}, 'and the branch on GitHub has its commit' );
+
+    # A rebase that stopped on a conflict in the first commit leaves the
+    # worktree at the base, and a push of that would close the pull request.
+    my $stuck = 'git rebase --continue could not write packed-refs.lock, so the rebase stopped at the first commit.';
+    for my $finished ( 0, 1 ) {
+        @calls = ();
+        answer( { summary => 'Rebased.', blocked => $finished ? q{} : $stuck, replies => [], comment => 'Rebased onto stacked-on.' }, detach => 'origin/stacked-on' );
+        my $emptied = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'rebase' } );
+        my $when    = $finished ? 'says that it finished' : 'says what blocked it';
+        is( $emptied->{state}, 'failed', "a run that leaves no commit beyond the base of the pull request fails, when it $when" ) or diag Mojo::Util::dumper $emptied->{result};
+        my $beyond = qr{no\ commit\ beyond\ origin/stacked-on};
+        like( $emptied->{result}{error}, qr{$beyond .* would\ close\ the\ pull\ request}sx, 'and its error says why the hub did not push' );
+        is( git( q{--git-dir}, $bare, qw{rev-parse clod/1-ours} ),  $ours,          'and the branch on GitHub keeps its commits' );
+        is( [ map { calls_of($_) } qw{reply comment update_pull} ], [ [], [], [] ], 'and nothing is posted on the pull request' );
+    }
+
+    # A rebase that stopped after it replayed some commits has commits beyond
+    # the base, but not all of the pull request.
+    @calls = ();
+    answer( { summary => 'Rebased half.', blocked => $stuck, replies => [], comment => 'Rebased half.' }, detach => 'origin/stacked-on', commit => 1 );
+    my $half = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'rebase' } );
+    is( $half->{state}, 'failed', 'a run that rewrites the branch and says what blocked it fails' ) or diag Mojo::Util::dumper $half->{result};
+    like( $half->{result}, { error => qr{drops\ 2\ commits\ of\ origin/clod/1-ours}, blocked => $stuck }, 'and its error says what the rewrite drops, with what blocked it in its result' );
+    is( git( q{--git-dir}, $bare, qw{rev-parse clod/1-ours} ),  $ours,          'and the branch on GitHub keeps its commits' );
+    is( [ map { calls_of($_) } qw{reply comment update_pull} ], [ [], [], [] ], 'and nothing is posted on the pull request' );
+
+    @calls = ();
+    answer( { summary => 'Rebased.', blocked => q{}, replies => [], comment => 'Rebased onto stacked-on.' }, detach => 'origin/stacked-on', commit => 1 );
+    my $rebased = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one', instructions => 'rebase' } );
+    is( $rebased->{state},                                      'finished',                                           'a rebase that the run finished pushes' ) or diag Mojo::Util::dumper $rebased->{result};
+    is( git( q{--git-dir}, $bare, qw{rev-parse clod/1-ours^} ), git( q{--git-dir}, $bare, qw{rev-parse stacked-on} ), 'and the branch on GitHub is on the base' );
 
     @calls                  = ();
     $state{review_comments} = [];

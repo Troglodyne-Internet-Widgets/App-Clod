@@ -25,7 +25,9 @@ not run the pre-commit hook, so nothing checks the result for you:
 3. In your answer, say what you ran and what it printed.
 
 Do not push, also not after a rebase. The hub pushes the branch, a rewritten
-one as well, with `--force-with-lease`.
+one as well, with `--force-with-lease`. If a rebase stops and you cannot finish
+it, say so in `blocked`: the hub does not push a rewrite that you did not
+finish.
 
 {{instructions}}
 

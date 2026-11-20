@@ -1,6 +1,17 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - An answer to a review no longer pushes a head that has no commit
+      beyond the base branch of the pull request.  GitHub closes a pull
+      request whose branch has no commit of its own.  A rebase that stopped
+      on a conflict in its first commit left the worktree at the base, and
+      the push of that closed the pull request.  The job now fails, its
+      result says why, and it posts nothing on the pull request.
+    - An answer to a review that says in "blocked" that it did not finish
+      no longer pushes a head that drops commits of the branch.  That is a
+      rebase that stopped part of the way, and the push removed the rest of
+      the pull request.  A rebase that the run finished still pushes.  New
+      commits still push when the run did not finish.
     - A refused call that the run later made again, and that then ran, is
       now in "retried" in the result of a job, not in "denied".  The
       permissions did not stop it.  A hook, a race or a fault of the host
