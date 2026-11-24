@@ -27,6 +27,12 @@ my $here = Mojo::File->new(__FILE__)->dirname->to_abs;
 my $tmp  = Mojo::File->new( File::Temp->newdir->dirname )->child( 'clod-tasks-' . $$ )->make_path;
 END { $tmp->remove_tree if $tmp }
 
+# The scratch directory of each run goes here, where the END above removes what a failure leaves.
+my $scratch_base = $tmp->child('scratch')->make_path->realpath;
+$App::Clod::Tasks::SCRATCH_BASE = "$scratch_base";
+my $SCRATCH_PATH = qr{\Q$scratch_base\E/clod-scratch\.[[:alnum:]]+};
+my $SCRATCH_RE   = qr{\A$SCRATCH_PATH\z};
+
 my $BOT    = 'test-bot';
 my $BOT_RE = quotemeta $BOT;
 my @SPOKES = qw{Test-Org/one Test-Org/two};
@@ -296,10 +302,31 @@ sub record_of ($file) {
 
 my %item = ( repo => 'Test-Org/one', number => 7, kind => 'fix', is_pr => 0, title => 'Fix the thing!', requester => 'trusted' );
 
-# The scratch directory of the run of a job, from the info of the job.
-sub scratch_of ($info) {
-    return $tmp->child( 'workspace', 'work', $info->{id}, $App::Clod::Tasks::SCRATCH )->to_abs->to_string;
+# The scratch directory of a run, from what the fake claude recorded: the first directory added to its session.
+sub scratch_of ($record) {
+    return $record->{flags}{'--add-dir'}[0];
 }
+
+# What is left under the base of the scratch directories.
+sub scratch_left () {
+    return [ map { "$_" } Mojo::File->new($App::Clod::Tasks::SCRATCH_BASE)->list( { dir => 1, hidden => 1 } )->each ];
+}
+
+subtest scratch_of => sub {
+    my $root = $tmp->child('scratch-of')->make_path;
+    my $link = $root->child($App::Clod::Tasks::SCRATCH);
+    is( App::Clod::Tasks::scratch_of($root), undef, 'a job with no link has no scratch directory' );
+    symlink "$tmp/elsewhere", $link or die "symlink: $!";
+    is( App::Clod::Tasks::scratch_of($root), undef, 'nor one whose link names a path that make_scratch does not make, so nothing removes that path' );
+    unlink $link or die "unlink: $!";
+    symlink "$App::Clod::Tasks::SCRATCH_BASE/clod-scratch.Ab12/../../bogus", $link or die "symlink: $!";
+    is( App::Clod::Tasks::scratch_of($root), undef, 'nor one that begins as make_scratch makes it and then leaves it' );
+    unlink $link or die "unlink: $!";
+    my $made = "$App::Clod::Tasks::SCRATCH_BASE/clod-scratch.Ab12Cd34Ef";
+    symlink $made, $link or die "symlink: $!";
+    is( App::Clod::Tasks::scratch_of($root), $made, 'a link to a path that make_scratch makes names it' );
+    $root->remove_tree;
+};
 
 subtest inbox_poll => sub {
     %state = ();
@@ -872,7 +899,7 @@ subtest spoke_address => sub {
 
     # The base of the pull request moved on since the branch was made, so a
     # rebase onto it has something to do.
-    git( q{--git-dir}, $bare, qw{update-ref refs/heads/stacked-on}, git( q{--git-dir}, $bare, qw{commit-tree main^{tree} -p main -m}, 'the base moved' ) );
+    git( q{--git-dir}, $bare, qw{update-ref refs/heads/stacked-on}, git( q{--git-dir}, $bare, qw{-c user.name=t -c user.email=t@test.test commit-tree main^{tree} -p main -m}, 'the base moved' ) );
     $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/1-ours', repo => { full_name => 'Test-Org/one' } }, base => { ref => 'stacked-on' }, html_url => 'https://test.test/pull/11' };
     $state{review_comments} = [ { id => 21, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'rename this' } ];
     answer( { summary => 'Renamed.', replies => [ { id => 21, body => 'Done.' }, { id => 99, body => 'not a thread' } ] }, commit => 1 );
@@ -1030,9 +1057,10 @@ subtest spoke_address => sub {
     is( $described->{state},                                        'finished',                                                             'an answer with a description finishes' ) or diag Mojo::Util::dumper $described->{result};
     is( [ map { [ $_->@[ 1, 2 ] ] } @{ calls_of('update_pull') } ], [ [ '/repos/Test-Org/one/pulls/11', { body => "New summary.$hub" } ] ], 'and replaces the summary in the description of the pull request, and keeps what the hub wrote below it' );
     my $address = record_of("$tmp/address-record");
-    is( $address->{flags}{'--add-dir'}, [ scratch_of($described) ], 'the run gets a scratch directory' );
-    my $scratch = scratch_of($described);
+    is( $address->{flags}{'--add-dir'}, [ match $SCRATCH_RE ], 'the run gets a scratch directory of its own, outside the directory of its job' );
+    my $scratch = scratch_of($address);
     like( $address->{prompt}, qr/use\ the\ directory\ \Q$scratch\E\./, 'and its prompt names it' );
+    is( scratch_left(), [], 'and it is gone after the run' );
 
     $state{pull} = { %{ $state{pull} }, body => 'Written by a person.' };
     @calls = ();
@@ -1182,8 +1210,8 @@ subtest 'tool spokes and the spoke prompt' => sub {
     is( $fix->{state}, 'finished', 'a fix with a tool spoke finishes' ) or diag Mojo::Util::dumper $fix->{result};
     my $commands = App::Clod::Tasks::prompt('commands');
     is( $told->{flags}{'--append-system-prompt'}, ["$commands\n\nTest on a guest.\n\nFix with care."], 'a spoke run is told the spoke prompt, then the system prompt of its task' );
-    my $scratch = scratch_of($fix);
-    is( $told->{flags}{'--add-dir'}, [ $scratch, $dir ], 'it gets a worktree of the tool spoke of its own, after its scratch directory' );
+    my $scratch = scratch_of($told);
+    is( $told->{flags}{'--add-dir'}, [ match($SCRATCH_RE), $dir ], 'it gets a worktree of the tool spoke of its own, after its scratch directory' );
     like( $told->{prompt}, qr/-\ Test-Org\/two\ in\ \Q$dir\E,\ at\ main\n/, 'and its prompt says where, at which branch' );
     like( $told->{prompt}, qr/use\ the\ directory\ \Q$scratch\E\./,         'and where to write what it does not commit' );
     is( $head_of->(), { $scratch => 0, $dir => $main }, 'with no earlier job in the tool spoke, the worktree is at its default branch, and the scratch directory is there and empty' );
@@ -1208,16 +1236,17 @@ subtest 'tool spokes and the spoke prompt' => sub {
     @fake{qw{FAKE_CLAUDE_RECORD FAKE_CLAUDE_HEADS}} = ( $record_file, $heads );
     my $after = run_id( $minion->enqueue( spoke_fix => [ { item => \%item, repo => 'Test-Org/one', instructions => 'x' } ], { parents => [$between] } ) );
     my $later = $tmp->child( 'workspace', 'work', $after->{id}, 'Test-Org', 'two' )->to_string;
-    is( $after->{state}, 'finished',                                     'a fix after an earlier spoke that changed nothing finishes' ) or diag Mojo::Util::dumper $after->{result};
-    is( $head_of->(),    { scratch_of($after) => 0, $later => $recipe }, 'a tool worktree is at the branch of the nearest earlier job that changed the tool spoke' );
+    is( $after->{state}, 'finished',                                                        'a fix after an earlier spoke that changed nothing finishes' ) or diag Mojo::Util::dumper $after->{result};
+    is( $head_of->(),    { scratch_of( record_of($record_file) ) => 0, $later => $recipe }, 'a tool worktree is at the branch of the nearest earlier job that changed the tool spoke' );
     like( record_of($record_file)->{prompt}, qr/at\ clod\/1-recipe\n/, 'and the prompt names that branch' );
 
     answer( { title => 't', summary => 's' } );
     @fake{qw{FAKE_CLAUDE_RECORD FAKE_CLAUDE_EXIT}} = ( $record_file, 1 );
     my $failed = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'x' } );
-    is( $failed->{state},                              'failed',                                                                                                 'a run that fails fails the job' );
-    is( record_of($record_file)->{flags}{'--add-dir'}, [ scratch_of($failed), $tmp->child( 'workspace', 'work', $failed->{id}, 'Test-Org', 'two' )->to_string ], 'after it had a tool worktree' );
+    is( $failed->{state},                              'failed',                                                                                                'a run that fails fails the job' );
+    is( record_of($record_file)->{flags}{'--add-dir'}, [ match($SCRATCH_RE), $tmp->child( 'workspace', 'work', $failed->{id}, 'Test-Org', 'two' )->to_string ], 'after it had a tool worktree' );
     ok( !-e $tmp->child( 'workspace', 'work', $failed->{id} ), 'which is gone after the failure too' );
+    is( scratch_left(), [], 'and so is its scratch directory' );
 
     answer( { title => 't', summary => 's' }, commit => 1 );
     $state{refuse_pull} = 1;
@@ -1228,8 +1257,8 @@ subtest 'tool spokes and the spoke prompt' => sub {
 
     answer( { title => 't', summary => 's' } );
     $fake{FAKE_CLAUDE_RECORD} = $record_file;
-    my $own = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
-    is( record_of($record_file)->{flags}{'--add-dir'}, [ scratch_of($own) ], 'a run in the tool spoke itself gets no second copy of it, only its scratch directory' );
+    run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
+    is( record_of($record_file)->{flags}{'--add-dir'}, [ match $SCRATCH_RE ], 'a run in the tool spoke itself gets no second copy of it, only its scratch directory' );
 
     answer( { event => 'COMMENT', body => 'Fine.', comments => [] } );
     $fake{FAKE_CLAUDE_RECORD} = $record_file;
@@ -1375,12 +1404,16 @@ subtest 'the rules that a repository declares in clod.json' => sub {
         'bin/broken'  => [ program => "#!/bin/sh\necho 'no hypervisor' >&2\nexit 1\n" ],
     );
     my $lines = sub () { return [ split m{\n}, -e $cleaned ? $cleaned->slurp : q{} ] };
+
+    # The line of a cleanup that ran in the worktree under $where, with a scratch directory that was there.
+    my $cleaned_in = sub ($where) { return match qr{\A\Q$where\E/Test-Org/two\|$SCRATCH_PATH\|dir\z} };
     answer( { title => 't', summary => 's' } );
     my $cleans = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/two', instructions => 'x' } );
     my $root   = $tmp->child( 'workspace', 'work', $cleans->{id} )->realpath;
-    is( $cleans->{state}, 'finished',                                'a fix in a repository that declares a cleanup finishes' ) or diag Mojo::Util::dumper $cleans->{result};
-    is( $lines->(),       ["$root/Test-Org/two|$root/.scratch|dir"], 'the cleanup ran once, from the top of the worktree, with the scratch directory of the run while it was still there' );
+    is( $cleans->{state}, 'finished',               'a fix in a repository that declares a cleanup finishes' ) or diag Mojo::Util::dumper $cleans->{result};
+    is( $lines->(),       [ $cleaned_in->($root) ], 'the cleanup ran once, from the top of the worktree, with the scratch directory of the run while it was still there' );
     ok( !-e $root, 'and the directory of the job is gone after it' );
+    is( scratch_left(), [], 'and so is the scratch directory, with the copy of the tree that the cleanup added in it' );
     my $listed = git( q{-C}, App::Clod::Tasks::spoke( $config, 'Test-Org/two' )->mirror->to_string, qw{worktree list --porcelain} );
     unlike( $listed, qr{/work/\Q$cleans->{id}\E/}, 'with a copy of the tree that the run added under it, which its bare clone no longer lists' ) or diag $listed;
     my @said = map { $_->{message} } @{ $cleans->{notes}{log} // [] };
@@ -1400,10 +1433,12 @@ subtest 'the rules that a repository declares in clod.json' => sub {
     $tasks->unmock_all;
     my $left = $tmp->child( 'workspace', 'work', $killed->{id} )->realpath;
     ok( -d $left->child( 'Test-Org', 'two' ), 'a run whose worker was killed leaves its worktree' );
+    is( scratch_left(), [ App::Clod::Tasks::scratch_of($left) ], 'and its scratch directory, which the directory of its job links to' );
     $minion->add_task( test_sweep => sub ($job) { $job->finish( [ App::Clod::Tasks::sweep_work( $job, $config ) ] ) } );
-    is( run_job('test_sweep')->{result}, ["$killed->{id}"],                         'the sweep removes the directory of a job that no longer runs, and says which' );
-    is( $lines->(),                      ["$left/Test-Org/two|$left/.scratch|dir"], 'after it runs the cleanup of its worktree' );
+    is( run_job('test_sweep')->{result}, ["$killed->{id}"],        'the sweep removes the directory of a job that no longer runs, and says which' );
+    is( $lines->(),                      [ $cleaned_in->($left) ], 'after it runs the cleanup of its worktree' );
     ok( !-e $left, 'and nothing of it is left' );
+    is( scratch_left(), [], 'not even its scratch directory' );
 
     # A retry of the job finds the directory of its last attempt.
     $cleaned->remove;
@@ -1416,7 +1451,8 @@ subtest 'the rules that a repository declares in clod.json' => sub {
     answer( { title => 't', summary => 's' } );
     is( run_id( $again->{id} )->{state}, 'finished', 'a retry of a job whose last attempt left its directory finishes' );
     my $where = $tmp->child( 'workspace', 'work', $again->{id} );
-    is( $lines->(), [ ("$where/Test-Org/two|$where/.scratch|dir") x 2 ], 'it ran the cleanup of the last attempt first, and then its own' );
+    is( $lines->(),     [ ( $cleaned_in->($where) ) x 2 ], 'it ran the cleanup of the last attempt first, and then its own' );
+    is( scratch_left(), [],                                'and removed the scratch directories of both' );
 
     $commit->( 'main', 'clod.json' => [ text => '{"run":"bin/provision"}' ] );
     answer( { title => 't', summary => 's' } );

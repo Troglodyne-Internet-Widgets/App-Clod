@@ -7,6 +7,14 @@ Revision history for App-Clod
       dist.ini, Makefile.PL, Build.PL or cpanfile by default.  Any other
       spoke gets no checks, so the Overview tab asks for no harness fix of
       it.  The Harness tab says why it was not checked.
+    - The scratch directory of a claude run is now under /tmp, and the
+      account that claude runs as makes it and owns it.  It was in the
+      directory of the job, which the worker owns.  A test that runs git
+      through App::Clod::Spoke then failed in a run with "another account
+      owns", because the guard of Spoke refuses a directory under one that
+      another account owns.  So a run could not commit to App-Clod itself.
+      The directory of the job keeps .scratch as a link to it, so the
+      cleanup and the sweep after a killed worker still find it.
     - Each claude run now works in a clone of its own, and not in a
       worktree of the bare clone of the worker.  The account that claude
       runs as makes the clone and owns all of it.  So a rebase that stops
