@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!perl
 use 5.040;
 no autovivification;
 use warnings FATAL => 'all';

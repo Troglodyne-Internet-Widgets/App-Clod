@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!perl
 use 5.040;
 no autovivification;
 use warnings FATAL => 'all';
@@ -6,63 +6,78 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
-use Mojolicious::Lite -signatures;
+use Mojolicious();
 
 use App::Clod::GitHub();
 
 # A fake of the GitHub API, served in this process.
 my %seen;
-app->log->level('fatal');
-under sub ($c) { $seen{auth} = $c->req->headers->authorization; 1 };
-get '/notifications' => sub ($c) {
-    if ( ( $c->req->headers->if_modified_since // q{} ) eq 'then' ) {
-        return $c->rendered(304);
+my $app = Mojolicious->new;
+$app->log->level('fatal');
+my $api = $app->routes->under( sub ($c) { $seen{auth} = $c->req->headers->authorization; 1 } );
+$api->get(
+    '/notifications' => sub ($c) {
+        if ( ( $c->req->headers->if_modified_since // q{} ) eq 'then' ) {
+            return $c->rendered(304);
+        }
+        my $headers = $c->res->headers;
+        $headers->header( 'X-Poll-Interval' => 90 );
+        $headers->header( 'Last-Modified'   => 'now' );
+        $headers->header( 'X-OAuth-Scopes'  => 'repo, notifications' );
+        my $page = $c->param('page') // 1;
+        $c->res->headers->link( '<' . $c->url_for('/notifications')->to_abs->query( page => 2 ) . '>; rel="next"' ) if $page == 1;
+        return $c->render( json => [ { id => "t$page" } ] );
     }
-    my $headers = $c->res->headers;
-    $headers->header( 'X-Poll-Interval' => 90 );
-    $headers->header( 'Last-Modified'   => 'now' );
-    $headers->header( 'X-OAuth-Scopes'  => 'repo, notifications' );
-    my $page = $c->param('page') // 1;
-    $c->res->headers->link( '<' . $c->url_for('/notifications')->to_abs->query( page => 2 ) . '>; rel="next"' ) if $page == 1;
-    return $c->render( json => [ { id => "t$page" } ] );
-};
-get '/repos/Test-Org/one/contents/*file' => sub ($c) {
-    return $c->render( json => { message => 'Not Found' }, status => 404 ) if $c->param('file') ne 'there.txt';
-    $seen{accept} = $c->req->headers->accept;
-    $seen{ref}    = $c->param('ref');
-    return $c->render( text => 'raw content' );
-};
-get '/repos/Test-Org/one/git/trees/*ref' => sub ($c) {
-    return $c->render( json => { tree => [ { path => 'a', sha => 'sha-a' }, { path => 'b/c', sha => 'sha-c' } ] } );
-};
-get '/search/issues' => sub ($c) {
-    $seen{q} = $c->param('q');
-    my $count = $c->param('q') =~ m{many} ? $App::Clod::GitHub::SEARCH_MAX : 1;
-    return $c->render( json => { items => [ map { { number => $_ } } 1 .. $count ] } );
-};
-post '/graphql' => sub ($c) {
-    $seen{graphql} = $c->req->json;
-    return $c->render( json => { errors => [ { message => 'Could not resolve to a node' }, { message => 'and one more' } ] } ) if $c->req->json->{variables}{id} eq 'PR_gone';
-    return $c->render( json => { data   => { pullRequest => { isDraft => Mojo::JSON::true } } } );
-};
-get '/repos/Test-Org/one/compare/*range' => sub ($c) {
-    my $url = $c->req->url;
-    $seen{range} = $url->path->to_string;
-    return $c->render( json => { message  => 'Not Found' }, status => 404 ) if $c->param('range') =~ m{refs/tags/9\.999};
-    return $c->render( json => { ahead_by => 1, commits => [ { sha => 'abc' } ] } );
-};
-get '/repos/Test-Org/one' => sub ($c) { return $c->render( json => { message => 'Bad credentials' }, status => 401 ) };
+);
+$api->get(
+    '/repos/Test-Org/one/contents/*file' => sub ($c) {
+        return $c->render( json => { message => 'Not Found' }, status => 404 ) if $c->param('file') ne 'there.txt';
+        $seen{accept} = $c->req->headers->accept;
+        $seen{ref}    = $c->param('ref');
+        return $c->render( text => 'raw content' );
+    }
+);
+$api->get(
+    '/repos/Test-Org/one/git/trees/*ref' => sub ($c) {
+        return $c->render( json => { tree => [ { path => 'a', sha => 'sha-a' }, { path => 'b/c', sha => 'sha-c' } ] } );
+    }
+);
+$api->get(
+    '/search/issues' => sub ($c) {
+        $seen{q} = $c->param('q');
+        my $count = index( $c->param('q'), 'many' ) >= 0 ? $App::Clod::GitHub::SEARCH_MAX : 1;
+        return $c->render( json => { items => [ map { { number => $_ } } 1 .. $count ] } );
+    }
+);
+$api->post(
+    '/graphql' => sub ($c) {
+        $seen{graphql} = $c->req->json;
+        return $c->render( json => { errors => [ { message => 'Could not resolve to a node' }, { message => 'and one more' } ] } ) if $c->req->json->{variables}{id} eq 'PR_gone';
+        return $c->render( json => { data   => { pullRequest => { isDraft => Mojo::JSON::true } } } );
+    }
+);
+$api->get(
+    '/repos/Test-Org/one/compare/*range' => sub ($c) {
+        my $url = $c->req->url;
+        $seen{range} = $url->path->to_string;
+        return $c->render( json => { message  => 'Not Found' }, status => 404 ) if index( $c->param('range'), 'refs/tags/9.999' ) >= 0;
+        return $c->render( json => { ahead_by => 1, commits => [ { sha => 'abc' } ] } );
+    }
+);
+$api->get( '/repos/Test-Org/one' => sub ($c) { return $c->render( json => { message => 'Bad credentials' }, status => 401 ) } );
 
 # Answers each request with the next status of its queue, and then with 200.
 my %flaky;
-any '/flaky' => sub ($c) {
-    $seen{flaky}{ $c->req->method }++;
-    my $status = shift @{ $flaky{ $c->req->method } // [] } // 200;
-    return $c->render( json => { message => "status $status" }, status => $status );
-};
+$api->any(
+    '/flaky' => sub ($c) {
+        $seen{flaky}{ $c->req->method }++;
+        my $status = shift @{ $flaky{ $c->req->method } // [] } // 200;
+        return $c->render( json => { message => "status $status" }, status => $status );
+    }
+);
 
 my $gh = App::Clod::GitHub->new( token => 'test-token' );
-$gh->ua->server->app(app);
+$gh->ua->server->app($app);
 my $server = $gh->ua->server->url;
 $gh->api( $server->to_string =~ s{/\z}{}r );
 

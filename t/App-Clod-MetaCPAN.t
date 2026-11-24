@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!perl
 use 5.040;
 no autovivification;
 use warnings FATAL => 'all';
@@ -6,22 +6,25 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
-use Mojolicious::Lite -signatures;
+use Mojolicious();
 
 use App::Clod::MetaCPAN();
 
 # A fake of the MetaCPAN API, served in this process.
 my %seen;
-app->log->level('fatal');
-get '/release/versions/:dist' => sub ($c) {
-    $seen{dist} = $c->param('dist');
-    return $c->render( json => { message  => 'Internal Server Error' }, status => 500 ) if $c->param('dist') eq 'Broken-Dist';
-    return $c->render( json => { releases => [], total => 0 } ) if $c->param('dist') eq 'Never-Released';
-    return $c->render( json => { releases => [ { name => 'Test-Dist-0.002', version => '0.002', status => 'latest' }, { name => 'Test-Dist-0.001', version => '0.001', status => 'backpan' } ], total => 2 } );
-};
+my $app = Mojolicious->new;
+$app->log->level('fatal');
+$app->routes->get(
+    '/release/versions/:dist' => sub ($c) {
+        $seen{dist} = $c->param('dist');
+        return $c->render( json => { message  => 'Internal Server Error' }, status => 500 ) if $c->param('dist') eq 'Broken-Dist';
+        return $c->render( json => { releases => [], total => 0 } ) if $c->param('dist') eq 'Never-Released';
+        return $c->render( json => { releases => [ { name => 'Test-Dist-0.002', version => '0.002', status => 'latest' }, { name => 'Test-Dist-0.001', version => '0.001', status => 'backpan' } ], total => 2 } );
+    }
+);
 
 my $cpan = App::Clod::MetaCPAN->new;
-$cpan->ua->server->app(app);
+$cpan->ua->server->app($app);
 my $server = $cpan->ua->server->url;
 $cpan->api( $server->to_string =~ s{/\z}{}r );
 
