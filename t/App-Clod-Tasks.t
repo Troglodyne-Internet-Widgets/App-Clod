@@ -193,7 +193,7 @@ $r->post('/repos/:o/:n/issues')->to(
 $r->post('/graphql')->to(
     cb => sub ($c) {
         push @calls, [ 'graphql', path_of($c), $c->req->json ];
-        return search_pulls($c)                                                                         if $c->req->json->{query} =~ m{search\(};
+        return search_pulls($c)                                                                         if index( $c->req->json->{query}, 'search(' ) >= 0;
         return $c->render( json => { errors => [ { message => 'Pull request is in clean status' } ] } ) if $state{refuse_graphql};
         $c->render( json => { data => {} } );
     }
@@ -1049,7 +1049,7 @@ subtest spoke_address => sub {
     $state{refuse_update_pull} = 1;
     my $unchanged = run_job( spoke_address => { item => $pr, repo => 'Test-Org/one' } );
     is( $unchanged->{state}, 'finished', 'a description that GitHub refuses does not fail the job' );
-    ok( ( grep { $_->{message} =~ m/could\ not\ change\ the\ description/ } @{ $unchanged->{notes}{log} } ), 'and its log says why' ) or diag Mojo::Util::dumper $unchanged->{notes}{log};
+    ok( ( grep { index( $_->{message}, 'could not change the description' ) >= 0 } @{ $unchanged->{notes}{log} } ), 'and its log says why' ) or diag Mojo::Util::dumper $unchanged->{notes}{log};
     is( [ map { $_->[2]{body} } @{ calls_of('comment') } ], ['Said so.'], 'and the comment is posted all the same' );
     delete @state{qw{issue_comments reviews refuse_update_pull}};
 
@@ -1316,7 +1316,7 @@ subtest 'the rules that a repository declares in clod.json' => sub {
     );
     my @notes = map { $_->{message} } @{ $own->{notes}{log} // [] };
     is(
-        [ grep { m{clod\.json} } @notes ],
+        [ grep { index( $_, 'clod.json' ) >= 0 } @notes ],
         [
             'gives the run no rule for ../etc/x of clod.json, because it is not a plain path inside the repository',
             'gives the run no rule for bin/missing of clod.json, because it names no executable file on main',
@@ -1385,7 +1385,7 @@ subtest 'the rules that a repository declares in clod.json' => sub {
     unlike( $listed, qr{/work/\Q$cleans->{id}\E/}, 'with a copy of the tree that the run added under it, which its bare clone no longer lists' ) or diag $listed;
     my @said = map { $_->{message} } @{ $cleans->{notes}{log} // [] };
     like(
-        [ grep { m{cleanup} } @said ],
+        [ grep { index( $_, 'cleanup' ) >= 0 } @said ],
         [ map { qr{\A\Q$_->[0]\E .* \Q$_->[1]\E} } [ 'runs no cleanup ../x of clod.json', 'not a plain path' ], [ 'the cleanup bin/broken of Test-Org/two failed: ', 'no hypervisor' ] ],
         'the job notes a path that it leaves out, and a cleanup that failed, and the next cleanup still runs'
     );
@@ -1678,7 +1678,7 @@ subtest harness_fix => sub {
         }
     );
     my $libs = $tmp->child('libs');
-    my %lib  = map { $_ => $libs->child($_)->make_path } qw{agent-lib own-lib harness-lib};
+    my %lib  = map { local ($_) = $_; $_ => $libs->child($_)->make_path } qw{agent-lib own-lib harness-lib};
     @{ $app->clod_config }{qw{agent_lib agent_own_lib harness_lib}} = map { "$_" } @lib{qw{agent-lib own-lib harness-lib}};
     my ( $bot_lib, $bot_path ) = map { $_ // q{} } @ENV{qw{PERL5LIB PATH}};
     @calls = ();
@@ -2062,14 +2062,14 @@ subtest 'the agent lib' => sub {
     my $deps = Test::MockModule->new('App::Clod::Deps');
     $deps->redefine(
         missing => sub ( $lib, @modules ) {
-            return grep { m{Autovivification} } @modules;
+            return grep { index( $_, 'Autovivification' ) >= 0 } @modules;
         }
     );
     $deps->redefine( outdated         => sub ($lib) { return [ { module => 'Perl::Tidy', version => '1', latest => '2' } ] } );
     $deps->redefine( install          => sub ( $lib, @modules ) { push @did, "install $lib @modules"; return } );
     $deps->redefine( install_programs => sub ($lib) { push @did, "programs $lib";                     return } );
     $deps->redefine( stale_programs   => sub ($lib) { return 'clod-cpm' } );
-    $deps->redefine( upgrade          => sub ($lib) { push @did, "upgrade $lib"; return $lib =~ m{agent} ? [ { module => 'Perl::Tidy' } ] : [] } );
+    $deps->redefine( upgrade          => sub ($lib) { push @did, "upgrade $lib"; return index( $lib, 'agent' ) >= 0 ? [ { module => 'Perl::Tidy' } ] : [] } );
     my $tasks = Test::MockModule->new('App::Clod::Tasks');
     $tasks->redefine( restart_unit => sub ($unit) { push @restarted, $unit; return } );
     my $claude = Test::MockModule->new('App::Clod::Claude');
@@ -2631,8 +2631,8 @@ subtest upstream_sweep => sub {
     my ($nothing) = grep { $_->{number} == 7 } @{ $swept->{pulls} };
     is( [ @{$nothing}{qw{review ci}} ], [ undef, undef ], 'a pull request with no review decision and no checks has neither' );
     my @searches = map { $_->[2]{variables}{q} } @{ calls_of('graphql') };
-    is( [ List::Util::uniq(@searches) ],         [ 'is:pr is:open author:trusted', 'is:pr is:open author:other' ], 'one search for each authorized user' );
-    is( scalar( grep { m{trusted} } @searches ), 4,                                                                'which reads every page' );
+    is( [ List::Util::uniq(@searches) ],                          [ 'is:pr is:open author:trusted', 'is:pr is:open author:other' ], 'one search for each authorized user' );
+    is( scalar( grep { index( $_, 'trusted' ) >= 0 } @searches ), 4,                                                                'which reads every page' );
 
     @calls                                  = ();
     $state{upstream}{trusted}[2]{mergeable} = 'MERGEABLE';
