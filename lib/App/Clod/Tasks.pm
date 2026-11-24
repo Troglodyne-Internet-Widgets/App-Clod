@@ -1189,7 +1189,8 @@ under C<$SCRATCH_BASE>, as the account that claude runs as, and returns its
 path.  C<$SCRATCH> in C<$root>, the directory of the job, becomes a symbolic
 link to it, so that L</scratch_of> finds it there, also after a worker that
 was killed.  The name of the link begins with a dot, so it is no name of an
-owner on GitHub, and no checkout has it.
+owner on GitHub, and no checkout has it.  When the link cannot be made, it
+removes the directory again, as L</remove_work> does, and dies.
 
 The account of the run owns the directory, and root owns F</tmp> above it.
 The directory of the job is not a place for it, because the worker owns that
@@ -1203,9 +1204,12 @@ C<TMPDIR>.
 our $SCRATCH_BASE = '/tmp';
 
 sub make_scratch ( $config, $root ) {
-    chomp( my $dir = claude($config)->as_account_run( qw{mktemp -d}, "$SCRATCH_BASE/clod-scratch.XXXXXXXXXX" ) );
-    symlink $dir, $root->child($SCRATCH) or die "cannot link the scratch directory $dir from $root: $!\n";
-    return $dir;
+    my $claude = claude($config);
+    chomp( my $dir = $claude->as_account_run( qw{mktemp -d}, "$SCRATCH_BASE/clod-scratch.XXXXXXXXXX" ) );
+    return $dir if symlink $dir, $root->child($SCRATCH);
+    my $why = $!;
+    warn "could not remove $dir: $@" if !eval { $claude->as_account_run( qw{rm -rf --}, $dir ); 1 };
+    die "cannot link the scratch directory $dir from $root: $why\n";
 }
 
 =func scratch_of
@@ -1307,7 +1311,10 @@ and goes with the two.
 
 The account that claude runs as removes the scratch directory with C<rm -rf>,
 as it removes its clone, because C<mktemp -d> lets no other account into it.
-A failure is a warning, and the rest is still removed.
+It removes C<$SCRATCH> in C<$root> the same way when that is a directory and
+not a link.  A job of an older release has such a directory, and Claude Code
+made a directory in it, for its own temporary files, that only that account
+can enter.  A failure is a warning, and the rest is still removed.
 
 =cut
 
@@ -1316,7 +1323,8 @@ sub remove_work ( $config, $root, @checkouts ) {
         next if eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 };
         warn "could not remove $made->{dir}: $@";
     }
-    if ( my $scratch = scratch_of($root) ) {
+    my $old = $root->child($SCRATCH);
+    for my $scratch ( scratch_of($root) // (), ( -d $old && !-l $old ? "$old" : () ) ) {
         warn "could not remove $scratch: $@" if !eval { claude($config)->as_account_run( qw{rm -rf --}, $scratch ); 1 };
     }
     $root->remove_tree;

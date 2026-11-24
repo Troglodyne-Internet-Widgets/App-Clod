@@ -1,6 +1,14 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - A retry or a sweep of a job that an older release ran now removes
+      its directory.  That directory has .scratch as a real directory, and
+      Claude Code made a directory in it that only the account of claude
+      can enter.  The worker could not remove it, and a retry of the job
+      failed with "cannot link the scratch directory".  The account of
+      claude now removes such a .scratch with rm -rf.  When the link to a
+      new scratch directory cannot be made, the directory is removed too,
+      and does not stay under /tmp.
     - The harness scan checks only a spoke that is a Perl distribution.
       A spoke is one when its default branch has .conformance.yml, or one
       of the markers of the harness section at the top of its tree:

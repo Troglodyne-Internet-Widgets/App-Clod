@@ -328,6 +328,29 @@ subtest scratch_of => sub {
     $root->remove_tree;
 };
 
+subtest 'make_scratch and remove_work' => sub {
+    my $config = $app->clod_config;
+    my $root   = $tmp->child('scratch-work')->make_path;
+
+    # Records each command that runs as the account of claude, and runs it.
+    my @as_account;
+    my $claude = Test::MockModule->new('App::Clod::Claude');
+    $claude->redefine( as_account_run => sub ( $self, @cmd ) { push @as_account, "@cmd"; return $claude->original('as_account_run')->( $self, @cmd ) } );
+
+    $root->child($App::Clod::Tasks::SCRATCH)->spew('in the way');
+    like( dies { App::Clod::Tasks::make_scratch( $config, $root ) }, qr/\Acannot\ link\ the\ scratch\ directory\ .*:\ File\ exists/, 'a scratch directory that cannot be linked from the directory of the job dies' );
+    is( scratch_left(),  [],                                       'and is removed again, so that nothing under /tmp outlives the job' );
+    is( $as_account[-1], match qr/\Arm\ -rf\ --\ $SCRATCH_PATH\z/, 'by the account that made it' );
+    $root->child($App::Clod::Tasks::SCRATCH)->remove;
+
+    # The scratch directory of a job of an older release, in the directory of the job.
+    $root->child( $App::Clod::Tasks::SCRATCH, 'claude-bogus' )->make_path;
+    @as_account = ();
+    App::Clod::Tasks::remove_work( $config, $root );
+    is( \@as_account, [ 'rm -rf -- ' . $root->child($App::Clod::Tasks::SCRATCH) ], 'remove_work removes an old scratch directory that is no link as the account of claude, which alone can enter what Claude Code made in it' );
+    ok( !-e $root, 'and then the directory of the job' );
+};
+
 subtest inbox_poll => sub {
     %state = ();
     @calls = ();
