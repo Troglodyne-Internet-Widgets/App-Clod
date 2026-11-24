@@ -872,7 +872,7 @@ subtest spoke_address => sub {
 
     # The base of the pull request moved on since the branch was made, so a
     # rebase onto it has something to do.
-    git( q{--git-dir}, $bare, qw{update-ref refs/heads/stacked-on}, git( q{--git-dir}, $bare, qw{commit-tree main^{tree} -p main -m}, 'the base moved' ) );
+    git( q{--git-dir}, $bare, qw{update-ref refs/heads/stacked-on}, git( q{--git-dir}, $bare, qw{-c user.name=t -c user.email=t@test.test commit-tree main^{tree} -p main -m}, 'the base moved' ) );
     $state{pull}            = { user => { login => $BOT }, head => { ref => 'clod/1-ours', repo => { full_name => 'Test-Org/one' } }, base => { ref => 'stacked-on' }, html_url => 'https://test.test/pull/11' };
     $state{review_comments} = [ { id => 21, user => { login => 'trusted' }, path => 'CLAUDE.md', line => 1, body => 'rename this' } ];
     answer( { summary => 'Renamed.', replies => [ { id => 21, body => 'Done.' }, { id => 99, body => 'not a thread' } ] }, commit => 1 );
