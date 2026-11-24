@@ -1117,15 +1117,14 @@ spoke of the run first, as L</declared_rules> takes them, and C<scratch>.  The
 spoke's own repository gets no second worktree when it is a tool spoke.  If
 another job holds the lock, the job retries later.
 
-C<scratch> is the absolute path of an empty directory, C<$SCRATCH> in the
-directory of the job, for the files that a run that changes the spoke writes
-and does not commit, such as the output of a command.  L</fix_run> and
-L</address_run> add it to the session, name it in the prompt, from
-F<share/prompts/scratch.md>, and make it the C<TMPDIR> of the run.  Claude Code checks the target of a redirect such
-as C<< > /tmp/out >> against the directories of the session, so a run with no
-person to ask cannot write to F</tmp>.  A run that only reads does not get it.
-It is removed with the rest.  Its name begins with a dot, so it is no name of
-an owner on GitHub, and no checkout has it.
+C<scratch> is the absolute path of an empty directory that L</make_scratch>
+makes, for the files that a run that changes the spoke writes and does not
+commit, such as the output of a command.  L</fix_run> and L</address_run> add
+it to the session, name it in the prompt, from F<share/prompts/scratch.md>,
+and make it the C<TMPDIR> of the run.  Claude Code checks the target of a
+redirect such as C<< > /tmp/out >> against the directories of the session, so
+a run with no person to ask cannot write to F</tmp>.  A run that only reads
+does not get it.  It is removed with the rest.
 
 Before it removes anything, it runs the L</clean_up> of the worktrees, so that
 what a run made outside them goes too, also when the run failed.  A directory
@@ -1173,14 +1172,57 @@ sub in_worktree ( $job, $config, $repo, $how, $work ) {
             $checkout{spoke}->worktree( $checkout{dir}, detach => $checkout{branch} );
         }
         my @checkouts = @made[ 1 .. $#made ];
-        my $scratch   = $root->child($SCRATCH)->make_path;
-        $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ), checkouts => [@made], scratch => $scratch->to_abs->to_string } );
+        my $scratch   = make_scratch( $config, $root );
+        $work->( $spoke, $tree, { add_dirs => [ map { "$_->{dir}" } @checkouts ], note => tools_note( \@checkouts ), checkouts => [@made], scratch => $scratch } );
     };
     my $err = $@;
     clean_up( $job, $config, $root, @made );
-    remove_work( $root, @made );
+    remove_work( $config, $root, @made );
     die $err if $err;
     return @out;
+}
+
+=func make_scratch
+
+C<($config, $root)>.  Makes the scratch directory of a run with C<mktemp -d>
+under C<$SCRATCH_BASE>, as the account that claude runs as, and returns its
+path.  C<$SCRATCH> in C<$root>, the directory of the job, becomes a symbolic
+link to it, so that L</scratch_of> finds it there, also after a worker that
+was killed.  The name of the link begins with a dot, so it is no name of an
+owner on GitHub, and no checkout has it.
+
+The account of the run owns the directory, and root owns F</tmp> above it.
+The directory of the job is not a place for it, because the worker owns that
+directory and each one above it.  L<App::Clod::Spoke/exposed> refuses a git
+command under a directory that another account owns, and the tests of a
+spoke that run that code run as the account of the run, under its
+C<TMPDIR>.
+
+=cut
+
+our $SCRATCH_BASE = '/tmp';
+
+sub make_scratch ( $config, $root ) {
+    chomp( my $dir = claude($config)->as_account_run( qw{mktemp -d}, "$SCRATCH_BASE/clod-scratch.XXXXXXXXXX" ) );
+    symlink $dir, $root->child($SCRATCH) or die "cannot link the scratch directory $dir from $root: $!\n";
+    return $dir;
+}
+
+=func scratch_of
+
+C<($root)>.  The scratch directory that L</make_scratch> linked from the
+directory of the job C<$root>, or undef when there is no link, or when the
+link names a path that L</make_scratch> does not make.  The account of the
+run can write C<$root>, so the link is checked before anything removes what
+it names.
+
+=cut
+
+sub scratch_of ($root) {
+    my $dir    = readlink $root->child($SCRATCH) // return;
+    my $prefix = "$SCRATCH_BASE/clod-scratch.";
+    return if index( $dir, $prefix ) != 0;
+    return substr( $dir, length $prefix ) =~ m{\A[[:alnum:]]+\z} ? $dir : undef;
 }
 
 =func work_lock
@@ -1209,8 +1251,10 @@ sub work_lock ( $repo, $how ) {
 C<($job, $config, $root, @checkouts)>, the directory of a job under F<work/>
 and its C<checkouts>, as L</in_worktree> makes them.  Runs each program that
 the F<clod.json> of a checkout names in C<cleanup>, from the top of that
-checkout, as the account that claude runs as, with the absolute path of
-C<$SCRATCH> in C<$root> as its one argument.  A program is for what a run of
+checkout, as the account that claude runs as, with the scratch directory of
+the run, as L</scratch_of> finds it, as its one argument.  When the run got no
+scratch directory, the argument is the path of C<$SCRATCH> in C<$root>, where
+nothing is.  A program is for what a run of
 that repository makes outside the directory of the job, such as a guest on a
 hypervisor, and finds what to remove in the scratch directory.  It runs after
 every run, whether the run passed, failed or timed out, and it must succeed
@@ -1233,7 +1277,7 @@ sub clean_up ( $job, $config, $root, @checkouts ) {
     return if !@declaring;
     my $gh      = github($config);
     my $claude  = claude($config);
-    my $scratch = $root->child($SCRATCH)->to_abs->to_string;
+    my $scratch = scratch_of($root) // $root->child($SCRATCH)->to_abs->to_string;
     for my $checkout (@declaring) {
         my $repo  = $checkout->{repo};
         my @paths = eval { declared_paths( $job, $checkout->{spoke}, default_branch( $gh, $repo ), 'cleanup' ) };
@@ -1252,20 +1296,28 @@ sub clean_up ( $job, $config, $root, @checkouts ) {
 
 =func remove_work
 
-C<($root, @checkouts)>, as L</clean_up> takes them.  Removes each worktree and
-clone, as L<App::Clod::Spoke/remove_worktree> does, and then C<$root>, and
-prunes the bare clone of each checkout.  A worktree that git will not remove is
-deleted with the rest, and the prune takes it out of its bare clone, so that it
-holds no branch.  A worktree that the run added under C<$root>, such as a copy
-of the tree without its changes, is a worktree of the clone of the run, and
-goes with it.
+C<($config, $root, @checkouts)>, as L</clean_up> takes them.  Removes each
+worktree and clone, as L<App::Clod::Spoke/remove_worktree> does, then the
+scratch directory that L</scratch_of> finds, then C<$root>, and prunes the bare
+clone of each checkout.  A worktree that git will not remove is deleted with
+the rest, and the prune takes it out of its bare clone, so that it holds no
+branch.  A worktree that the run added in its scratch directory, such as a
+copy of the tree without its changes, is a worktree of the clone of the run,
+and goes with the two.
+
+The account that claude runs as removes the scratch directory with C<rm -rf>,
+as it removes its clone, because C<mktemp -d> lets no other account into it.
+A failure is a warning, and the rest is still removed.
 
 =cut
 
-sub remove_work ( $root, @checkouts ) {
+sub remove_work ( $config, $root, @checkouts ) {
     for my $made (@checkouts) {
         next if eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 };
         warn "could not remove $made->{dir}: $@";
+    }
+    if ( my $scratch = scratch_of($root) ) {
+        warn "could not remove $scratch: $@" if !eval { claude($config)->as_account_run( qw{rm -rf --}, $scratch ); 1 };
     }
     $root->remove_tree;
     foreach my $made (@checkouts) { $made->{spoke}->prune_worktrees }
@@ -1314,7 +1366,7 @@ sub sweep_root ( $job, $config, $root ) {
         +{ repo => $repo, spoke => spoke( $config, $repo ), dir => $_ }
     } sort { $a cmp $b } grep { local ($_) = $_; -e $_->child('.git') } $root->list_tree( { dir => 1, max_depth => 2 } )->each;
     clean_up( $job, $config, $root, @checkouts );
-    remove_work( $root, @checkouts );
+    remove_work( $config, $root, @checkouts );
     return;
 }
 
@@ -2522,14 +2574,14 @@ sub hand_back ( $job, $config, $gh, $item, $path, @paragraphs ) {
         my ($text) = grep { defined } map { local ($_) = $_; $gh->file( $repo, $_ ) } @App::Clod::CodeOwners::LOCATIONS;
         $owners = App::Clod::CodeOwners::owners( App::Clod::CodeOwners::parse($text), $path ) if defined $text;
     }
-    my @teams = grep { m{/} } @$owners;
+    my @teams = grep { index( $_, q{/} ) >= 0 } @$owners;
 
     my $person;
     if ( $item->{is_pr} ) {
         my $author = $gh->pull( $repo, $number )->{user}{login} // q{};
         $person = $author ne q{} && $author ne $config->{bot} ? $author : $item->{requester};
     }
-    ($person) = grep { !m{/} } @$owners if !$person;
+    ($person) = grep { index( $_, q{/} ) < 0 } @$owners if !$person;
     if ( !$person ) {
         my $info = $gh->repo($repo);
         $person = $info->{owner}{type} eq 'User' ? $info->{owner}{login} : $item->{requester};
