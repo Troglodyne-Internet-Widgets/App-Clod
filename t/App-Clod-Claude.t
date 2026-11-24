@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!perl
 use 5.040;
 no autovivification;
 use warnings FATAL => 'all';
@@ -191,7 +191,7 @@ subtest 'run, with the reason of each refused call' => sub {
             ],
         },
     );
-    $stream->spew( join q{}, map { Mojo::JSON::encode_json($_) . "\n" } @events );
+    $stream->spew( join q{}, map { local ($_) = $_; Mojo::JSON::encode_json($_) . "\n" } @events );
     my $outcome = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => "$stream" } )->run( dir => "$tmp", prompt => 'x' );
     is(
         $outcome->{denied},
@@ -236,7 +236,7 @@ subtest 'run, with a refused call that a later call got past' => sub {
             ],
         },
     );
-    $stream->spew( join q{}, map { Mojo::JSON::encode_json($_) . "\n" } @events );
+    $stream->spew( join q{}, map { local ($_) = $_; Mojo::JSON::encode_json($_) . "\n" } @events );
     my $outcome = App::Clod::Claude->new( bin => $fake, env => { FAKE_CLAUDE_STREAM => "$stream" } )->run( dir => "$tmp", prompt => 'x' );
     is( $outcome->{retried}, ["Bash(git commit -m x) -- $hook"],                            'a refused call that the same call later got past is retried, whatever its description' );
     is( $outcome->{denied},  [ 'Write(/bogus/a) -- refused', 'Bash(prove -l) -- refused' ], 'a call with other input, or one that only got through before the refusal, stays denied' );

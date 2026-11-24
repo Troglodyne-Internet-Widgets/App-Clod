@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!perl
 use 5.040;
 no autovivification;
 use warnings FATAL => 'all';
@@ -214,7 +214,7 @@ subtest 'the secrets of the worker, kept from the hooks of its commit' => sub {
         App::Clod::Spoke::commit( $tree, qw{--quiet --allow-empty -m}, 'by the worker' );
         is( [ grep { exists $ENV{$_} } sort keys %secret ], [ sort keys %secret ], 'the worker keeps its secrets after the commit' );
     }
-    my %env = map { split m{=}, $_, 2 } grep { m{=} } split m{\n}, $seen->slurp;
+    my %env = map { split m{=}, $_, 2 } grep { index( $_, q{=} ) >= 0 } split m{\n}, $seen->slurp;
     is( [ grep { exists $env{$_} } sort keys %secret ], [], 'but the hooks of the commit get none of them, as they need none' );
     $spoke->remove_worktree($tree);
 };
@@ -483,7 +483,7 @@ subtest 'a rebase that stops, in a clone of the agent' => sub {
 
 subtest git => sub {
     like( dies { $spoke->git(qw{rev-parse --verify no-such-ref}) }, qr/\Agit\ rev-parse\ --verify\ no-such-ref:\ fatal:\ [^\n]+\n\z/, 'a failing git command dies with its error, on one line, with no file or line' );
-    ok( !( grep { m{test-token} } git( '--git-dir', $spoke->mirror->to_string, 'config', '--list' ) ), 'the token is not in the clone\'s configuration' );
+    ok( !( grep { index( $_, 'test-token' ) >= 0 } git( '--git-dir', $spoke->mirror->to_string, 'config', '--list' ) ), 'the token is not in the clone\'s configuration' );
 };
 
 done_testing;
