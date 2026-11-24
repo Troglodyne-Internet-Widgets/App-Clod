@@ -1,6 +1,12 @@
 Revision history for App-Clod
 
 0.002 (not yet released)
+    - The harness scan checks only a spoke that is a Perl distribution.
+      A spoke is one when its default branch has .conformance.yml, or one
+      of the markers of the harness section at the top of its tree:
+      dist.ini, Makefile.PL, Build.PL or cpanfile by default.  Any other
+      spoke gets no checks, so the Overview tab asks for no harness fix of
+      it.  The Harness tab says why it was not checked.
     - The scratch directory of a claude run is now under /tmp, and the
       account that claude runs as makes it and owns it.  It was in the
       directory of the job, which the worker owns.  A test that runs git

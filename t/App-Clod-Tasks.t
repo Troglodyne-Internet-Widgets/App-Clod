@@ -2141,7 +2141,7 @@ subtest restart_unit => sub {
 
 subtest harness_scan => sub {
     %state = ();
-    $state{files} = { 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.10.0"}]}' };
+    $state{files} = { 'dist.ini' => "name = Test-Dist\n", 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.10.0"}]}' };
     my $info = run_job('harness_scan');
     is( [ sort keys %{ $info->{result}{repos} } ], \@SPOKES,                                         'every spoke is scanned' );
     is( $info->{result}{marketplace}{status},      'fail',                                           'and the marketplace pin is checked' );
@@ -2162,11 +2162,23 @@ subtest harness_scan => sub {
 
     $state{files}{'.conformance.yml'} = "flavor: test-gone\nsource:\n  directory: " . $here->child( 'data', 'standards' ) . "\n";
     like( run_job('harness_scan')->{result}{errors}{'Test-Org/one'}, qr/test-gone/, 'and one whose flavor cannot be read is an error of the scan' );
+
+    delete @{ $state{files} }{qw{.conformance.yml dist.ini}};
+    $state{open_pulls} = [ { title => 'Meet the harness standards', user => { login => $BOT }, html_url => 'https://test.test/pull/33' } ];
+    my $other = run_job('harness_scan')->{result};
+    like( $other->{repos}{'Test-Org/one'}, { unchecked => qr/\Anot\ a\ Perl\ distribution/, checks => [] }, 'a spoke with no marker of a Perl distribution is not checked, and says why' );
+    ok( !exists $other->{repos}{'Test-Org/one'}{fix_pr}, 'and names no harness fix, because it fails nothing' );
+    is( $other->{checks}, [], 'and adds no column to the page' );
+    delete $state{open_pulls};
+
+    $app->clod_config->{harness}{markers} = ['CLAUDE.md'];
+    is( { map { $_->{check} => $_->{status} } @{ run_job('harness_scan')->{result}{repos}{'Test-Org/one'}{checks} } }->{ClaudeMd}, 'pass', 'a spoke with a marker that the configuration names is checked' );
+    $app->clod_config->{harness}{markers} = [qw{dist.ini Makefile.PL Build.PL cpanfile}];
 };
 
 subtest 'the clones of the standards' => sub {
     %state = ();
-    $state{files} = { 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.11.0"}]}' };
+    $state{files} = { 'dist.ini' => "name = Test-Dist\n", 'CLAUDE.md' => 'perl-slop:reading-perl', '.claude-plugin/plugin.json' => '{"version":"0.11.0"}', '.claude-plugin/marketplace.json' => '{"plugins":[{"name":"perl-slop","version":"0.11.0"}]}' };
     my $standards = $tmp->child('standards-repo');
     git( qw{init --quiet --initial-branch=main}, "$standards" );
     my $source = $here->child( 'data', 'standards' );
