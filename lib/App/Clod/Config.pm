@@ -82,6 +82,7 @@ our %SCHEMA = (
                 required_workflows => list_of($TEXT),
                 flavor             => { type => 'string', minLength => 1, default => 'troglodyne-compat' },
                 standards          => { type => 'object', nullable  => 1, default => undef },
+                markers            => list_of( $TEXT, default => [qw{dist.ini Makefile.PL Build.PL cpanfile}] ),
             }
         ),
         loccount => section(
@@ -141,7 +142,7 @@ sub validate ($raw) {
     $config->{evidence}          //= "$config->{workspace}/evidence";
     $config->{agent_own_lib}     //= "$config->{workspace}/agent-own-lib" if $config->{agent_lib};
     $config->{conformance_cache} //= App::Clod::Harness::default_cache();
-    $config->{harness_lib}       //= "$config->{workspace}/harness-lib"   if $config->{agent_lib};
+    $config->{harness_lib}       //= "$config->{workspace}/harness-lib" if $config->{agent_lib};
 
     # By the names, without asking the disk, which may not hold either yet.
     my $cache     = Mojo::File->new( $config->{conformance_cache} )->to_abs->to_array;
@@ -332,7 +333,13 @@ is reviewed with the repository.
 =item harness
 
 C<plugin>, C<plugin_repo>, C<marketplace>, C<marketplace_repo>,
-C<required_workflows>, C<flavor> and C<standards>.  See L<App::Clod::Harness>.
+C<required_workflows>, C<flavor>, C<standards> and C<markers>.  See
+L<App::Clod::Harness>.
+
+C<markers> are the files that make a spoke a Perl distribution.  The harness
+scan checks only a spoke that has one of them, or a F<.conformance.yml>, at
+the top of its default branch.  Default F<dist.ini>, F<Makefile.PL>,
+F<Build.PL> and F<cpanfile>.
 
 C<flavor> is the flavor of a spoke without a F<.conformance.yml>.  Default
 C<troglodyne-compat>.  C<standards> is where that flavor comes from, as the

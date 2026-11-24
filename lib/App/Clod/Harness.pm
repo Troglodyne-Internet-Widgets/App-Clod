@@ -125,6 +125,22 @@ sub workflows ( $snapshot, $settings ) {
     return ( 'pass', 'all present' );
 }
 
+=func unchecked
+
+C<($snapshot, $settings)>.  Why the spoke gets no checks, or undef when it
+gets them.  A spoke gets them when it names its flavor in its own
+F<.conformance.yml>, or when the top of its tree has one of the C<markers> of
+the settings, the files of a Perl distribution.  The standards are those of a
+Perl distribution, and a repository of another kind can only fail them.
+
+=cut
+
+sub unchecked ( $snapshot, $settings ) {
+    my @markers = ( $Dist::Conformance::Config::FILE, @{ $settings->{markers} } );
+    foreach my $marker (@markers) { return if $snapshot->contains($marker) }
+    return 'not a Perl distribution: it has none of ' . join q{, }, @markers;
+}
+
 =func check
 
 C<($snapshot, $settings, %options)>, as L</conformance> takes them.  Returns

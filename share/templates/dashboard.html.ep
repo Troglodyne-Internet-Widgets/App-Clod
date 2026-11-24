@@ -323,6 +323,7 @@
       document.getElementById('harness-head').innerHTML = `<tr><th>Spoke</th><th class="small">Flavor</th>${checks.map(c => `<th class="text-center small">${esc(c)}</th>`).join('')}</tr>`;
       const repos = Object.keys(d.repos || {}).sort();
       document.getElementById('harness-body').innerHTML = repos.map(r => {
+        if (d.repos[r].unchecked) return `<tr><th>${esc(r)}</th><td colspan="${checks.length + 1}" class="text-body-secondary small">${esc(d.repos[r].unchecked)}</td></tr>`;
         const byName = Object.fromEntries(d.repos[r].checks.map(c => [c.check, c]));
         const flavor = d.repos[r].chosen ? esc(d.repos[r].flavor) : `${esc(d.repos[r].flavor)} <span class="text-body-secondary">(default)</span>`;
         return `<tr><th>${esc(r)}</th><td class="small">${flavor}</td>${checks.map(c => {

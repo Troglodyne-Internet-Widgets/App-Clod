@@ -2522,14 +2522,14 @@ sub hand_back ( $job, $config, $gh, $item, $path, @paragraphs ) {
         my ($text) = grep { defined } map { local ($_) = $_; $gh->file( $repo, $_ ) } @App::Clod::CodeOwners::LOCATIONS;
         $owners = App::Clod::CodeOwners::owners( App::Clod::CodeOwners::parse($text), $path ) if defined $text;
     }
-    my @teams = grep { m{/} } @$owners;
+    my @teams = grep { index( $_, q{/} ) >= 0 } @$owners;
 
     my $person;
     if ( $item->{is_pr} ) {
         my $author = $gh->pull( $repo, $number )->{user}{login} // q{};
         $person = $author ne q{} && $author ne $config->{bot} ? $author : $item->{requester};
     }
-    ($person) = grep { !m{/} } @$owners if !$person;
+    ($person) = grep { index( $_, q{/} ) < 0 } @$owners if !$person;
     if ( !$person ) {
         my $info = $gh->repo($repo);
         $person = $info->{owner}{type} eq 'User' ? $info->{owner}{login} : $item->{requester};
@@ -2780,6 +2780,9 @@ Hourly.  Runs L<App::Clod::Harness> over every spoke and checks the
 marketplace pin.  The result of each spoke has its flavor, whether the spoke
 chose it, and its checks, and for a spoke that fails a check, C<fix_pr>, the
 URL of the pull request of an earlier L</harness_fix> that is still open.
+A spoke that is not a Perl distribution, as L<App::Clod::Harness/unchecked>
+decides, has C<unchecked>, the reason, and no checks, so the page asks for
+no fix of it.
 C<checks> names every check of any spoke, sorted, for the columns of the page.  The clones of the standards are in
 C<conformance_cache>, out of the reach of the agent.
 
@@ -2814,7 +2817,8 @@ sub harness_scan ( $job, $config ) {
                 if   ($declared) { $packages{$repo}       = $declared }
                 else             { $package_errors{$repo} = $@ =~ s{\s+\z}{}r }
             }
-            my $result = App::Clod::Harness::check( $snapshot, $settings, %options );
+            my $unchecked = App::Clod::Harness::unchecked( $snapshot, $settings );
+            my $result    = defined $unchecked ? { unchecked => $unchecked, checks => [] } : App::Clod::Harness::check( $snapshot, $settings, %options );
             $checks{ $_->{check} } = 1 for @{ $result->{checks} };
             $repos{$repo} = { branch => $branch, %$result };
             if ( List::Util::any { $_->{status} eq 'fail' } @{ $result->{checks} } ) {

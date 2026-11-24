@@ -110,6 +110,16 @@ subtest workflows => sub {
     is( [ App::Clod::Harness::workflows( snapshot(%flows), { required_workflows => ['lint.yml'] } ) ], [ 'fail', 'missing: lint.yml' ], 'one that is not fails' );
 };
 
+subtest unchecked => sub {
+    my %marked = ( %settings, markers => [qw{dist.ini Makefile.PL}] );
+    is( App::Clod::Harness::unchecked( snapshot( 'README.md'        => q{} ),                     \%marked ), 'not a Perl distribution: it has none of .conformance.yml, dist.ini, Makefile.PL', 'a spoke with no marker gets no checks, and the reason names what it lacks' );
+    is( App::Clod::Harness::unchecked( snapshot( 'lib/dist.ini'     => q{} ),                     \%marked ), match qr/\Anot\ a\ Perl\ distribution/,                                            'nor does one with a marker that is not at the top of its tree' );
+    is( App::Clod::Harness::unchecked( snapshot( 'dist.ini'         => q{} ),                     \%marked ), undef,                                                                             'a spoke with the first marker gets them' );
+    is( App::Clod::Harness::unchecked( snapshot( 'Makefile.PL'      => q{} ),                     \%marked ), undef,                                                                             'and so does one with any other' );
+    is( App::Clod::Harness::unchecked( snapshot( '.conformance.yml' => "flavor: test-chosen\n" ), \%marked ), undef,                                                                             'and so does one that names its own flavor, with no marker' );
+    is( App::Clod::Harness::unchecked( snapshot( 'cpanfile'         => q{} ),                     \%marked ), match qr/\Anot\ a\ Perl\ distribution/,                                            'a file that the configuration does not name is no marker' );
+};
+
 subtest update => sub {
     my $tmp  = File::Temp->newdir;
     my $tree = Mojo::File->new( $tmp->dirname )->child('spoke')->make_path;
