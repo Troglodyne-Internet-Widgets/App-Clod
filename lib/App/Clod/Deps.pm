@@ -29,6 +29,11 @@ our @TOOLS = qw{Perl::Critic Perl::Tidy Devel::NYTProf Dist::Zilla::App::Command
 C<($checkout)>.  The modules that the distribution in C<$checkout> needs, as
 C<dzil listdeps> names them, without C<perl>.
 
+Returns a list of Str, the names of the modules.  Dies as L</run> does when
+C<dzil listdeps> fails.
+
+    my @modules = App::Clod::Deps::listdeps($checkout);
+
 =cut
 
 sub listdeps ($checkout) {
@@ -42,6 +47,11 @@ C<$lib>, with cpm and no tests, whether or not the perl has it already.  It
 installs with C<umask 0027>, so the group of the lib may read what it installs
 and not change it.  A
 module can carry a version range in the syntax of cpm, such as C<Foo~1.2>.
+
+Returns nothing.  It does nothing when C<@modules> is empty.  Dies with the
+error of L</run> when cpm fails.  It puts the umask back first.
+
+    App::Clod::Deps::install( $lib, 'Mojolicious', 'Minion~10.0' );
 
 =cut
 
@@ -64,6 +74,11 @@ with a lock on F<.lock> in C<$lib>, because every worker shares the lib.  The
 lock is inside the lib, because the directory above it can be one that the
 agent can write too, such as the workspace.  Dies as L</run> does.
 
+Returns a list of Str, the modules that it installed.  The list is empty when
+nothing was missing.
+
+    my @installed = App::Clod::Deps::install_needed( $lib, $checkout );
+
 =cut
 
 sub install_needed ( $lib, $checkout ) {
@@ -81,6 +96,10 @@ C<($lib)>.  Puts each program of F<share/agent-bin>, such as F<clod-cpm>, in
 the F<bin> of the agent lib C<$lib>, for its group to read and run, and replaces what is
 there.
 
+Returns nothing.
+
+    App::Clod::Deps::install_programs($lib) if App::Clod::Deps::stale_programs($lib);
+
 =cut
 
 sub install_programs ($lib) {
@@ -95,6 +114,10 @@ sub install_programs ($lib) {
 
 C<($lib)>.  The names of the programs of F<share/agent-bin> that the bin of
 the agent lib C<$lib> lacks, or has another version of.
+
+Returns a list of Str, empty when the bin is up to date.
+
+    my @stale = App::Clod::Deps::stale_programs($lib);
 
 =cut
 
@@ -116,6 +139,10 @@ which C<policy_long_name> of L<Perl::Critic::Utils> turns into its module, a
 short name too.  A section C<[-X]> turns X off.  Dies with the error of
 Config::Tiny when a profile does not parse.
 
+Returns a list of Str, the names of the modules of the policies.
+
+    my @policies = App::Clod::Deps::policies( Mojo::File->new('.perlcriticrc')->slurp );
+
 =cut
 
 sub policies (@profiles) {
@@ -136,6 +163,10 @@ C<($lib, @modules)>.  The modules of C<@modules> that the local lib C<$lib>
 does not have a file of, in its directory for this architecture or in the one
 for every architecture.
 
+Returns a list of Str, in the order of C<@modules>.
+
+    my @missing = App::Clod::Deps::missing( $lib, @App::Clod::Deps::TOOLS );
+
 =cut
 
 sub missing ( $lib, @modules ) {
@@ -150,6 +181,11 @@ of, each a hash with C<module>, C<version>, the one installed, C<latest>, and
 C<dist>, the path of the release on CPAN.  The modules of the core of the perl
 are not in it.
 
+Returns ArrayRef[HashRef], empty when every module is current.  Dies as
+L</run> does when C<cpan-outdated> fails.
+
+    my $outdated = App::Clod::Deps::outdated($lib);
+
 =cut
 
 sub outdated ($lib) {
@@ -161,6 +197,11 @@ sub outdated ($lib) {
 
 C<($lib)>.  Installs the newest release of each module that L</outdated> finds
 in C<$lib>, and returns what it found.
+
+Returns ArrayRef[HashRef], as L</outdated> returns it.  Dies as L</outdated>
+and L</install> do.
+
+    my $upgraded = App::Clod::Deps::upgrade($lib);
 
 =cut
 
@@ -203,6 +244,10 @@ when it reports a violation, is not taken for one that failed.
 
 =back
 
+Returns Str, what the command printed on its standard output.
+
+    my $out = App::Clod::Deps::run( { dir => $checkout, timeout => 600 }, 'dzil', 'listdeps' );
+
 =cut
 
 sub run ( $how, @cmd ) {
@@ -230,6 +275,8 @@ sub run ( $how, @cmd ) {
 1;
 
 =head1 SYNOPSIS
+
+=for test_synopsis my ( $lib, $checkout );
 
     use App::Clod::Deps ();
 

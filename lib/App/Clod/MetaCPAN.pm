@@ -45,6 +45,11 @@ C<($path)>.  The decoded JSON of the answer.  It dies with "no response" and
 the transport error when no answer came, and with the status and the message
 for an answer of 400 or more.
 
+Returns HashRef or ArrayRef or undef.  It is the JSON that MetaCPAN sent, and
+undef when the body is not JSON.
+
+    my $release = $cpan->get('/release/App-Clod');
+
 =cut
 
 sub get ( $self, $path ) {
@@ -65,6 +70,11 @@ C<($dist)>.  The version of each release of the distribution, newest first.
 That includes a release that was deleted from CPAN and is on BackPAN only,
 because PAUSE never takes that version of the distribution again.  A
 distribution that MetaCPAN does not know has none.
+
+Returns ArrayRef[Str], empty for a distribution that MetaCPAN does not know.
+Dies as L</get> dies.
+
+    my $versions = $cpan->versions('App-Clod');
 
 =cut
 

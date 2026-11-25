@@ -167,6 +167,10 @@ has own_lib => undef;
 The C<PATH> and C<PERL5LIB> that claude runs with, as a hash, from L</lib>
 and L</own_lib>, and C<CLOD_OWN_LIB> with an L</own_lib>.
 
+Returns Str, each name and value of the hash in turn, in list context.
+
+    my %env = $claude->run_env;
+
 =cut
 
 sub run_env ($self) {
@@ -182,6 +186,10 @@ sub run_env ($self) {
 
 The argument list, for C<%run> as C<run> takes it.  Separate so that a test can
 read it.
+
+Returns ArrayRef[Str], the program and its arguments.
+
+    my $cmd = $claude->command( dir => $dir, prompt => $prompt );
 
 =cut
 
@@ -206,6 +214,10 @@ C<($dir)>.  The C<--settings> of a run in the work tree C<$dir>, as JSON: a
 C<PermissionRequest> hook, F<clod-skill-edits>, that lets the run edit the
 skills of C<$dir>.  See L</THE SKILLS OF A WORK TREE>.
 
+Returns Str, the settings as JSON.
+
+    my $json = $claude->skill_settings($dir);
+
 =cut
 
 sub skill_settings ( $self, $dir ) {
@@ -221,6 +233,10 @@ when there is no L</run_as>, the C<PATH> and C<PERL5LIB> of L</run_env>, and no
 other C<PERL5LIB>.  None of C<@WITHHELD>.  With an account, L</as_account>
 passes C<PATH> and C<PERL5LIB> to F</usr/bin/env> instead, because sudo resets
 the environment.
+
+Returns Str, each name and value of the environment in turn, in list context.
+
+    local %ENV = $claude->child_env;
 
 =cut
 
@@ -239,6 +255,10 @@ sub child_env ($self) {
 C<(@cmd)>.  The argument list that runs C<@cmd> as L</run_as>, through sudo as
 L</run_as> describes, or C<@cmd> itself when there is no such account.
 
+Returns Str, each word of the argument list, in list context.
+
+    my @cmd = $claude->as_account(qw{git status});
+
 =cut
 
 sub as_account ( $self, @cmd ) {
@@ -254,6 +274,10 @@ C<(@args)>.  Runs C<claude @args> as L</as_account> does, for a command of
 claude that is not a session, such as C<plugin list>, and returns what it
 printed.  Dies with what it printed on its standard error if it fails.
 
+Returns Str, the standard output of claude.
+
+    my $json = $claude->cli(qw{plugin list --json});
+
 =cut
 
 sub cli ( $self, @args ) { return $self->as_account_run( $self->bin, @args ) }
@@ -264,6 +288,10 @@ C<(@cmd)>.  Runs C<@cmd> as L</as_account> does, with the C<env> of claude and
 none of C<@WITHHELD>, and returns what it printed.  Dies with what it printed
 on its standard error if it fails.
 
+Returns Str, the standard output of C<@cmd>.
+
+    my $out = $claude->as_account_run(qw{git status});
+
 =cut
 
 sub as_account_run ( $self, @cmd ) { return $self->as_account_in( q{.}, 600, @cmd ) }
@@ -273,6 +301,10 @@ sub as_account_run ( $self, @cmd ) { return $self->as_account_in( q{.}, 600, @cm
 C<($dir, $seconds, @cmd)>.  Runs C<@cmd> in the directory C<$dir> as
 L</as_account_run> does, and stops it after C<$seconds>.  Returns what it
 printed, and dies with what it printed on its standard error if it fails.
+
+Returns Str, the standard output of C<@cmd>.
+
+    my $out = $claude->as_account_in( $dir, 60, qw{git status} );
 
 =cut
 
@@ -301,6 +333,10 @@ because it applies only in that directory, and its record outlives the
 directory.  Each plugin comes once.  An install that names no scope, from an
 older Claude Code, has the scope C<user>.
 
+Returns ArrayRef[HashRef], the plugins, sorted by C<id>.
+
+    my @behind = grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
+
 =cut
 
 our %PROJECT_SCOPES = map { $_ => 1 } qw{project local};
@@ -326,6 +362,10 @@ What C<claude plugin list --json> prints, decoded: each install of a plugin,
 of every scope, with C<id>, C<version>, C<scope> and, for an install for one
 project, C<projectPath>.
 
+Returns ArrayRef[HashRef], the installs.
+
+    my $installs = $claude->installed;
+
 =cut
 
 sub installed ($self) { return Mojo::JSON::decode_json( $self->cli(qw{plugin list --json}) ) }
@@ -336,8 +376,12 @@ C<(@dirs)>, absolute paths.  Uninstalls each plugin that Claude Code
 installed for the project in one of C<@dirs>, with
 C<claude plugin uninstall --scope>, in that directory.  The uninstall finds
 the install by the directory that it runs in, and the record stays after the
-directory is gone.  Returns the ids that it uninstalled.  Dies when an
-uninstall fails.
+directory is gone.  Dies when an uninstall fails.
+
+Returns Str, each id that it uninstalled, in list context.  It returns an
+empty list when it uninstalled nothing.
+
+    my @gone = $claude->forget_plugins($dir);
 
 =cut
 
@@ -360,6 +404,10 @@ newer version than the one that is installed.  The versions compare as
 versions, so 0.10 is newer than 0.9.  A version that is no version string is
 behind when it differs from the one offered.
 
+Returns Bool, true when the plugin is behind.
+
+    say $plugin->{id} if App::Clod::Claude::is_behind($plugin);
+
 =cut
 
 sub is_behind ($plugin) {
@@ -378,6 +426,10 @@ not allow it, and a run with no person to ask is refused.  A rule for rtk
 itself comes back alone.  rtk names a few commands otherwise, as
 C<%RTK_NAMES> lists them: it rewrites C<tail -20 FILE> to C<rtk read FILE
 --tail-lines 20>, so C<Bash(tail:*)> also gives C<Bash(rtk read:*)>.
+
+Returns Str, each rule, in list context.
+
+    my @rules = App::Clod::Claude::rtk_too('Bash(git:*)');
 
 =cut
 
@@ -446,6 +498,12 @@ with C<claude ended without a result.>
 
 =back
 
+Returns HashRef, the outcome, with the keys above.
+
+Dies when C<dir> or C<prompt> is missing, or when C<dir> is not a directory.
+
+    my $outcome = $claude->run( dir => $dir, prompt => 'Fix the failing test.' );
+
 =cut
 
 sub run ( $self, %run ) {
@@ -491,6 +549,10 @@ C<($text, $length)>.  Returns C<$text> if it holds no more than twice
 C<$length> characters.  Otherwise returns its first and its last C<$length>
 characters, with a line between them that says how many were left out.
 
+Returns Str, the text, or its two ends.
+
+    my $short = App::Clod::Claude::ends( $stderr, 2000 );
+
 =cut
 
 sub ends ( $text, $length ) {
@@ -512,6 +574,10 @@ L</denial>, and the last call of each key that succeeded.  When the result
 comes, it sorts the refused calls into C<denied> and C<retried>, and drops
 what it kept, so none of it is in the outcome.  Every other event leaves the outcome as it is, which includes
 any type that a later claude adds.  C<on_event> still gets every event.
+
+Returns nothing.
+
+    App::Clod::Claude::absorb( \%outcome, $event );
 
 =cut
 
@@ -584,6 +650,10 @@ as a skill, and the run can do that and make the call again.  A check of
 claude itself refuses some commands that a rule allows, such as one fed by a
 heredoc: "A file redirect in this command can't be checked before it runs".
 
+Returns Str, the rule, and the reason when there is one.
+
+    my $line = App::Clod::Claude::denial( { tool_name => 'Bash', tool_input => { command => 'git push' } }, $why );
+
 =cut
 
 sub denial ( $denial, $why = undef ) {
@@ -601,6 +671,10 @@ the same input, whatever the order of its keys.  It leaves out the
 C<description> of the input, which claude writes anew for each call and which
 does not change what the call does.
 
+Returns Str, the key.
+
+    my $key = App::Clod::Claude::call_key( 'Bash', { command => 'git status' } );
+
 =cut
 
 sub call_key ( $tool, $input ) {
@@ -615,6 +689,10 @@ C<($content)>.  The text of the content of a tool result.  The content is a
 string, or a list of parts, each with its text in C<text>, which come back
 one to a line.  An empty string when there is no content.
 
+Returns Str, the text.
+
+    my $text = App::Clod::Claude::result_text( [ { type => 'text', text => 'All tests pass.' } ] );
+
 =cut
 
 sub result_text ($content) {
@@ -625,6 +703,10 @@ sub result_text ($content) {
 
 C<($content)>.  The first line of the L</result_text> of a tool result that is
 not blank, without the space around it, or undef when there is none.
+
+Returns Str or undef: the line, or undef when every line is blank.
+
+    my $reason = App::Clod::Claude::first_line( $result->{content} );
 
 =cut
 

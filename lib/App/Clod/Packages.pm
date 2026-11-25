@@ -40,6 +40,10 @@ C<VERSION_CODENAME>, each left out when the file does not have it, as
 L<Dist::Conformance::Check::SystemPackages/os_release> reads the file.  Dies
 when the file cannot be read.
 
+Returns a list of keys and values, to assign to a hash.
+
+    my %os = App::Clod::Packages::os_release();
+
 =cut
 
 sub os_release () {
@@ -54,6 +58,10 @@ sub os_release () {
 C<($packager, $name)>.  True when the host has the package C<$name> of
 C<$packager> installed.  Dies for a packager that is not a key of
 C<%INSTALLED>.
+
+Returns Bool.
+
+    say 'ffmpeg is there' if App::Clod::Packages::installed( deb => 'ffmpeg' );
 
 =cut
 
@@ -70,12 +78,16 @@ C<dpkg-query> fails, and says C<no packages found matching>.  Dies when
 C<dpkg-query> fails for any other reason, such as not being there, so that
 a host that cannot answer does not look like one that lacks every package.
 
+Returns Bool, 1 or 0.
+
+    my $has = App::Clod::Packages::deb_installed('libmagic-dev');
+
 =cut
 
 sub deb_installed ($name) {
     my $status = eval { App::Clod::Deps::run( { timeout => $PROGRAM_SECONDS }, @DPKG_QUERY, qw{-W -f ${Status}}, $name ) };
     if ( !defined $status ) {
-        return 0 if $@ =~ m{no\ packages\ found\ matching};
+        return 0 if index( $@, 'no packages found matching' ) >= 0;
         die $@;
     }
     return $status eq 'install ok installed' ? 1 : 0;
@@ -87,6 +99,10 @@ C<($packager, $source)>, a source as
 L<Dist::Conformance::Check::SystemPackages/resolve> returns it.  True when the
 host has that archive.  Dies for a packager that is not a key of
 C<%HAS_SOURCE>.
+
+Returns Bool.
+
+    my $has = App::Clod::Packages::has_source( deb => { name => 'test-test' } );
 
 =cut
 
@@ -100,6 +116,10 @@ sub has_source ( $packager, $source ) {
 C<($source)>.  True when apt has F<NAME.sources> in C<$APT_SOURCES>, as the
 installer writes it.
 
+Returns Bool, 1 or 0.
+
+    my $has = App::Clod::Packages::deb_has_source( { name => 'test-test' } );
+
 =cut
 
 sub deb_has_source ($source) { return -e "$APT_SOURCES/$source->{name}.sources" ? 1 : 0 }
@@ -109,6 +129,10 @@ sub deb_has_source ($source) { return -e "$APT_SOURCES/$source->{name}.sources" 
 C<($packager, $file)>.  The packages of C<$packager> that have the file
 C<$file>, an absolute path, as the packager says.  None when no package has
 it.  Dies for a packager that is not a key of C<%OWNERS>.
+
+Returns a list of Str, the names of the packages.
+
+    my @packages = App::Clod::Packages::owners( deb => '/usr/bin/ffmpeg' );
 
 =cut
 
@@ -124,12 +148,16 @@ without their architecture.  A line of a diversion names no package that has
 the file, so it is left out.  None when dpkg says C<no path found matching>.
 Dies when C<dpkg-query> fails for any other reason.
 
+Returns a list of Str, each package once.
+
+    my @packages = App::Clod::Packages::deb_owners('/usr/bin/ffmpeg');
+
 =cut
 
 sub deb_owners ($file) {
     my $said = eval { App::Clod::Deps::run( { timeout => $PROGRAM_SECONDS }, @DPKG_QUERY, '-S', $file ) };
     if ( !defined $said ) {
-        return if $@ =~ m{no\ path\ found\ matching};
+        return if index( $@, 'no path found matching' ) >= 0;
         die $@;
     }
     my @lists = map { m{\A (.+?) :[ ] \Q$file\E \z} ? $1 : () } grep { !m{\Adiversion[ ]} } split m{\n}, $said;
@@ -144,6 +172,11 @@ directory of the C<PATH> of L<App::Clod::Claude/run_env>, with each symbolic
 link resolved.  Undef when there is none.  A directory of the C<PATH> that is
 not absolute is passed over, because the run resolves it in the worktree.
 Whether the file is executable is what the worker can tell.
+
+Returns Str or undef: the absolute path of the file, or undef when no
+directory of the C<PATH> has it.
+
+    my $file = App::Clod::Packages::program_file( $claude, 'ffmpeg' );
 
 =cut
 
@@ -174,6 +207,10 @@ F<clod.conf>.  Without such an account, it runs as the worker, with only the
 C<PATH> of this process in its environment, so that the token does not reach
 it at least.
 
+Returns Str or undef: why the command failed, or undef when it exits 0.
+
+    say App::Clod::Packages::program_error( $claude, 'ffmpeg -version' ) // 'ffmpeg runs';
+
 =cut
 
 sub program_error ( $claude, $line ) {
@@ -189,6 +226,10 @@ sub program_error ( $claude, $line ) {
 C<($installer, $sources_file, @names)>.  Runs C<sudo -n $installer @names>,
 with C<--sources-file $sources_file> first when it is defined, and returns what
 it printed, its standard error too.  Dies with that when it fails.
+
+Returns Str, what the installer printed.
+
+    say App::Clod::Packages::install( $installer, undef, 'ffmpeg' );
 
 =cut
 

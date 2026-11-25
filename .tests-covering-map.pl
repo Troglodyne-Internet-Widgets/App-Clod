@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!perl
 use 5.014;
 use strict;
 use warnings FATAL => 'all';
@@ -54,6 +54,7 @@ my %NO_TESTS = map { $_ => 1 } qw{
   dist.ini weaver.ini prereqs.yml prereqs.json MANIFEST.SKIP cpanfile
   .perltidyrc .perlcriticrc .perlcriticrc.compat .pod_stopwords .preferred_modules.ini .preferred_binaries.ini
   .mailmap .gitignore .gitattributes .tests-covering-map.pl
+  .conformance.yml .perl-slop.json .claude/settings.json
 };
 
 return sub {

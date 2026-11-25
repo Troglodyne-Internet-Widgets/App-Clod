@@ -27,6 +27,11 @@ my $STALE_INBOX = 900;
 
 Renders the health page.
 
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the page.
+
+    my $rendered = $c->page;
+
 =cut
 
 sub page ($self) { return $self->render( template => 'dashboard', $self->clod_config->%{qw{bot grafana_url}} ) }
@@ -38,6 +43,11 @@ items, and C<running>, the commit that the page runs, as C<{sha, short}>, or
 undef when it runs from no checkout.  C<activity> is the result of the last
 L<App::Clod::Tasks/activity_sweep>, with C<unassigned>, C<opened_7d>,
 C<merged_7d> and C<checked_at>, and it is undef until one has finished.
+
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.
+
+    my $rendered = $c->overview;
 
 =cut
 
@@ -75,6 +85,10 @@ C<link> to F<#releases>, the Releases tab, and each spoke whose check failed
 is an item.  So is each spoke whose count failed in the last
 L<App::Clod::Tasks/loc_sweep>.
 A failed job that somebody ignored is not an item.
+
+Returns ArrayRef[HashRef], the items.
+
+    my $items = $c->action_items( App::Clod::Budget::summary($minion), App::Clod::Outage::summary($minion) );
 
 =cut
 
@@ -193,6 +207,11 @@ dependency, and each test of a dependency that fails, with all of the
 packages of its spoke there.  While a job for a button waits or runs, the item names it, and has
 no button.
 
+Returns HashRef, each item, as a list.  The list is empty when there is no
+C<$check>.
+
+    my @items = $c->self_items( $minion, App::Clod::Tasks::last_result( $minion, 'self_check' ) );
+
 =cut
 
 sub self_items ( $self, $minion, $check ) {
@@ -209,7 +228,7 @@ sub self_items ( $self, $minion, $check ) {
         push @why,   'its checkout is at ' . substr( $at->{head}, 0, 7 ) . ', which it does not run yet'                                                             if !$at->{behind} && $at->{head} ne ( $running->{sha} // q{} );
         push @items, button_item( $minion, 'self_update', 'The bot is out of date: ' . join( q{, and }, @why ) . q{.}, { label => 'Update', act => 'self/update' } ) if @why;
     }
-    my @behind = grep { App::Clod::Claude::is_behind($_) } @{ $check->{plugins} // [] };
+    my @behind = grep { local ($_) = $_; App::Clod::Claude::is_behind($_) } @{ $check->{plugins} // [] };
     push @items, button_item( $minion, 'plugin_update', 'Plugins have a newer version: ' . join( q{, }, map { "$_->{id} $_->{version} to $_->{latest}" } @behind ) . q{.}, { label => 'Update plugins', act => 'plugins/update' } ) if @behind;
     push @items, { level => 'warning', text => "The bot cannot tell whether its plugins are up to date: $check->{plugin_error}" } if $check->{plugin_error};
     my @old = @{ $check->{deps} // [] };
@@ -243,6 +262,10 @@ sub self_items ( $self, $minion, $check ) {
 C<(@words)>.  The words as a list in a sentence: C<a>, C<a and b>, or
 C<a, b and c>.
 
+Returns Str or undef: the sentence, or undef when C<@words> is empty.
+
+    my $text = App::Clod::Controller::Dashboard::listed(qw{gcc make perl});
+
 =cut
 
 sub listed (@words) {
@@ -258,6 +281,11 @@ it, with the fingerprint of its key, shortened, as in
 C<libxml2 (libxml2-dev) and ffmpeg (ffmpeg, from the archive jellyfin, key 0123...4567)>,
 so that the person who presses the button sees whom it gives the trust of
 root.
+
+Returns Str or undef: the text, or undef when C<@needs> is empty, as
+L</listed> returns it.
+
+    my $text = App::Clod::Controller::Dashboard::needed( { name => 'libxml2', package => 'libxml2-dev' } );
 
 =cut
 
@@ -280,6 +308,10 @@ no button.  The same goes for a L<App::Clod::Tasks/self_check>,
 which the job queues when it finishes, because C<$text> comes from the check
 before it.
 
+Returns HashRef, the item.
+
+    my $item = App::Clod::Controller::Dashboard::button_item( $minion, 'self_update', 'The bot is out of date.', { label => 'Update', act => 'self/update' } );
+
 =cut
 
 sub button_item ( $minion, $task, $text, $button, $repo = undef ) {
@@ -298,6 +330,10 @@ C<($minion, $repo)>.  The id of a job that brings C<$repo> to the harness
 standards and waits or runs: a L<App::Clod::Tasks/harness_fix>, or the claude
 run that it queued for what the update left for a person, which has the note
 C<harness>.  Undef when there is none.
+
+Returns Int or undef: the id of the job, or undef when there is none.
+
+    my $id = App::Clod::Controller::Dashboard::harness_job( $minion, 'Owner/Name' );
 
 =cut
 
@@ -324,6 +360,10 @@ takes the item off the list.
 While an install for the job waits or runs, the item names it and has no
 button.  After the install, the item names the job that resumes the work
 while that job waits or runs, and then is gone.
+
+Returns HashRef, each item, as a list.
+
+    my @items = App::Clod::Controller::Dashboard::waiting_items($minion);
 
 =cut
 
@@ -370,6 +410,11 @@ sub waiting_items ($minion) {
 Queues an L<App::Clod::Tasks/self_update>, unless one waits or runs, and says
 which.
 
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.
+
+    my $rendered = $c->self_update;
+
 =cut
 
 sub self_update ($self) {
@@ -382,6 +427,11 @@ sub self_update ($self) {
 Queues an L<App::Clod::Tasks/plugin_update>, unless one waits or runs, and says
 which.
 
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.
+
+    my $rendered = $c->plugin_update;
+
 =cut
 
 sub plugin_update ($self) {
@@ -393,6 +443,11 @@ sub plugin_update ($self) {
 
 Queues an L<App::Clod::Tasks/deps_upgrade>, unless one waits or runs, and says
 which.
+
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.
+
+    my $rendered = $c->deps_upgrade;
 
 =cut
 
@@ -408,6 +463,10 @@ The URL of the open pull request of a harness fix of C<$repo>: the one that a
 L<App::Clod::Tasks/harness_fix> opened after that scan, or else the
 C<fix_pr> that the scan found.  Undef when there is none, which is also the
 case once the scan finds that one that it saw is closed.
+
+Returns Str or undef: the URL, or undef when there is none.
+
+    my $url = App::Clod::Controller::Dashboard::harness_pull( $minion, 'Owner/Name', $scan );
 
 =cut
 
@@ -426,6 +485,10 @@ sub harness_pull ( $minion, $repo, $scan ) {
 
 C<($url)>.  The label of a link to a pull request: C<#12> for its number.
 
+Returns Str, the label, or C<$url> itself when it names no pull request.
+
+    my $label = App::Clod::Controller::Dashboard::pull_label('https://test.test/Owner/Name/pull/12');
+
 =cut
 
 sub pull_label ($url) {
@@ -437,6 +500,12 @@ sub pull_label ($url) {
 
 Retries the failed job C<id>.  A job that is not there, or did not fail, is a
 404.
+
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.  After a 404, which L</failed_job> renders, it returns
+nothing.
+
+    my $rendered = $c->retry;
 
 =cut
 
@@ -453,6 +522,12 @@ stays in Minion, and stops being an action item.  The job must have failed, or
 its branch must need system packages, as L</waiting_job> finds.  Any other job
 is a 404.
 
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.  After a 404, which L</failed_job> renders, it returns
+nothing.
+
+    my $rendered = $c->ignore;
+
 =cut
 
 sub ignore ($self) {
@@ -466,6 +541,10 @@ sub ignore ($self) {
 
 The failed job of the C<id> of the route.  If there is none, it renders a 404
 and returns undef.
+
+Returns Minion::Job or undef: the job, or undef when there is none.
+
+    my $job = $c->failed_job // return;
 
 =cut
 
@@ -483,6 +562,11 @@ its failing checks from the last harness scan, and C<by>, the
 L<App::Clod/viewer> who pressed the button.  A spoke that fails no check is
 a 404.  If a fix waits or runs already, as L</harness_job> finds it, it
 queues no second one, and says which.
+
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON or the 404.
+
+    my $rendered = $c->harness_fix;
 
 =cut
 
@@ -513,6 +597,11 @@ other job is a 404.  So the button installs what the hub read from the
 branch of that job, and no name that a request names.  If an install for the
 job waits or runs already, it queues no second one, and says which.
 
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON or the 404.
+
+    my $rendered = $c->packages_install;
+
 =cut
 
 sub packages_install ($self) {
@@ -531,6 +620,11 @@ sub packages_install ($self) {
 
 C<($id)>.  The part of L</packages_install> for C<job>: it queues the install
 of the packages of job C<$id>, with C<resume>.
+
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON or the 404.
+
+    my $rendered = $c->resume_install(42);
 
 =cut
 
@@ -552,6 +646,11 @@ that needs system packages, as L<App::Clod::Tasks/waits_for_packages> says,
 and its work has not resumed.  Undef for any other job, and for an C<$id>
 that is not a number.
 
+Returns HashRef or undef: the info of the job, as L<Minion::Job/info> gives
+it, or undef.
+
+    my $info = App::Clod::Controller::Dashboard::waiting_job( $minion, 42 );
+
 =cut
 
 sub waiting_job ( $minion, $id ) {
@@ -567,6 +666,11 @@ sub waiting_job ( $minion, $id ) {
 
 The last hundred items, each with its child jobs, and the issues assigned to
 the bot, marked with whether a job has them.
+
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.
+
+    my $rendered = $c->work;
 
 =cut
 
@@ -608,6 +712,11 @@ also has C<repo_url>, the repository that it made, and C<release_url>, the
 issue for its first release.  A C<file_issues> job has C<issue_urls>, the
 follow-up issues that it filed.
 
+Returns HashRef, the child job.  For a job that is gone from Minion, it has
+only C<id> and the C<state> C<removed>.
+
+    my $child = $c->child_job(42);
+
 =cut
 
 sub child_job ( $self, $id ) {
@@ -631,6 +740,11 @@ sub child_job ( $self, $id ) {
 
 The result of the last harness scan.
 
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.
+
+    my $rendered = $c->harness;
+
 =cut
 
 sub harness ($self) {
@@ -643,6 +757,11 @@ sub harness ($self) {
 The result of the last L<App::Clod::Tasks/upstream_sweep>: the open pull
 requests of the authorized users in repositories that are not ours.  Before
 the first sweep, no pull request, no error, and no C<checked_at>.
+
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.
+
+    my $rendered = $c->upstream;
 
 =cut
 
@@ -657,6 +776,11 @@ The result of the last L<App::Clod::Tasks/release_sweep>: the distributions
 among the spokes whose work is not all on CPAN.  Before the first sweep, no
 distribution, no error, and no C<checked_at>.
 
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.
+
+    my $rendered = $c->releases;
+
 =cut
 
 sub releases ($self) {
@@ -669,6 +793,11 @@ sub releases ($self) {
 The result of the last L<App::Clod::Tasks/loc_sweep>: the lines of each
 spoke, and their history.  Before the first sweep, no repository, no error,
 no spoke without a reference worktree, no history, and no C<checked_at>.
+
+Returns Bool, what L<Mojolicious::Controller/render> returns: true when it
+rendered the JSON.
+
+    my $rendered = $c->loc;
 
 =cut
 

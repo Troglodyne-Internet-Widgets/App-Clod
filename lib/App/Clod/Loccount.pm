@@ -36,6 +36,10 @@ loccount fails or does not finish in L</timeout>.  On success loccount can
 still complain on its error output about a file that its lexer did not
 follow, and those files are still counted, so that output is dropped then.
 
+Returns HashRef, as L</parse> returns it.
+
+    my $count = $loccount->count('/path/to/tree');
+
 =cut
 
 sub count ( $self, $dir ) {
@@ -83,6 +87,10 @@ C<cost> in dollars, and the C<salary> and C<overhead> that the cost assumes.
 loccount prints the estimates as text even with C<-j>, so they are read from
 that text by their labels.  It dies when the output has no estimate of the
 physical or of the logical lines, as when loccount changed what it prints.
+
+Returns HashRef, with the keys above.
+
+    my $count = App::Clod::Loccount::parse($out);
 
 =cut
 

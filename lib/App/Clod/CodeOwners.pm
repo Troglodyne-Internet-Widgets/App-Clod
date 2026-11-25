@@ -13,6 +13,10 @@ our @LOCATIONS = qw{.github/CODEOWNERS CODEOWNERS docs/CODEOWNERS};
 C<($text)>.  The rules of a CODEOWNERS file, in file order, each with
 C<pattern>, C<owners> and C<regex>.
 
+Returns ArrayRef[HashRef], empty for an empty or undefined text.
+
+    my $rules = App::Clod::CodeOwners::parse($text);
+
 =cut
 
 sub parse ($text) {
@@ -30,6 +34,8 @@ sub parse ($text) {
 
 Returns the owners of the path as an array reference, empty if no rule matches.
 
+    my $owners = App::Clod::CodeOwners::owners( $rules, 'lib/Foo.pm' );
+
 =cut
 
 # The last rule that matches wins, as GitHub does it.
@@ -45,6 +51,10 @@ sub owners ( $rules, $path ) {
 =func pattern_regex
 
 The regular expression for one CODEOWNERS pattern.
+
+Returns RegexpRef.
+
+    my $regex = App::Clod::CodeOwners::pattern_regex('/docs/*.md');
 
 =cut
 

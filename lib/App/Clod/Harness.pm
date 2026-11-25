@@ -32,6 +32,10 @@ C<($settings)>, the C<harness> section of F<clod.conf>.  The validated
 F<.conformance.yml> of a spoke that has none: the C<flavor> of the settings,
 from their C<standards>.  Dies as L<Dist::Conformance::Config/validate> does.
 
+Returns HashRef, the configuration with its defaults filled in.
+
+    my $config = App::Clod::Harness::default_config( $config->{harness} );
+
 =cut
 
 sub default_config ($settings) {
@@ -44,6 +48,10 @@ The directory of the clones of git sources when F<clod.conf> names none: the
 one that L<Dist::Conformance::Source::Git/cache> chooses for the account that
 runs the bot, under C<$XDG_CACHE_HOME> or F<~/.cache>.  Dies when neither
 C<XDG_CACHE_HOME> nor C<HOME> is set.
+
+Returns Str, the path of the directory.
+
+    my $cache = $config->{harness}{cache} // App::Clod::Harness::default_cache();
 
 =cut
 
@@ -60,6 +68,10 @@ L</default_config>, which a scan builds once and gives to every spoke that has
 no F<.conformance.yml>, so a git source is fetched once.  C<cache> is the
 directory of its clone.
 
+Returns a Dist::Conformance::Source object.  Dies as L</conformance> does.
+
+    my $standards = App::Clod::Harness::standards( $settings, cache => $cache );
+
 =cut
 
 sub standards ( $settings, %options ) {
@@ -72,6 +84,10 @@ sub standards ( $settings, %options ) {
 C<($tree, $fetch)>: what L<App::Clod::GitHub/tree> returns, and a sub that
 returns the content of a path.  A L<Dist::Conformance::Snapshot::Tree> of the
 files of the tree, without the entries for its directories.
+
+Returns a Dist::Conformance::Snapshot::Tree object.
+
+    my $snapshot = App::Clod::Harness::snapshot( $gh->tree( $repo, 'main' ), sub ($path) { $gh->file( $repo, $path, 'main' ) } );
 
 =cut
 
@@ -90,6 +106,11 @@ sources.  It is made mode 0700, every time, because the worker runs git in
 each clone, and so runs what the configuration and the hooks of the clone
 name.  The worker runs with a umask that lets its group write, and dies here
 when it does not own the directory.
+
+Returns a Dist::Conformance object.  Dies when it cannot change the mode of
+C<cache>, and as L</default_config> does.
+
+    my $conformance = App::Clod::Harness::conformance( $snapshot, $settings, cache => $cache );
 
 =cut
 
@@ -113,6 +134,11 @@ C<($snapshot, $settings)>.  C<(status, detail)>: whether each workflow of
 C<required_workflows> exists under F<.github/workflows>.  With none required,
 it is info, and lists the ones present.
 
+Returns a list of two Str: the status, C<pass>, C<fail> or C<info>, and the
+detail.
+
+    my ( $status, $detail ) = App::Clod::Harness::workflows( $snapshot, $settings );
+
 =cut
 
 sub workflows ( $snapshot, $settings ) {
@@ -133,6 +159,10 @@ F<.conformance.yml>, or when the top of its tree has one of the C<markers> of
 the settings, the files of a Perl distribution.  The standards are those of a
 Perl distribution, and a repository of another kind can only fail them.
 
+Returns Str or undef, undef when the spoke gets the checks.
+
+    my $why = App::Clod::Harness::unchecked( $snapshot, $settings );
+
 =cut
 
 sub unchecked ( $snapshot, $settings ) {
@@ -149,6 +179,10 @@ F<.conformance.yml>, and a list of C<{check, status, detail}>.  The list is
 every check of the flavor, as L<Dist::Conformance/check> returns it, and then
 C<workflows>.  Dies when the configuration or the flavor cannot be read, or the
 source cannot be fetched.
+
+Returns HashRef, with the keys C<flavor>, C<chosen> and C<checks>.
+
+    my $result = App::Clod::Harness::check( $snapshot, $settings, source => $standards );
 
 =cut
 
@@ -169,6 +203,12 @@ C<conformance update> does there, and returns what
 L<Dist::Conformance/update> returns: for each check, its C<changes> and what
 is C<manual>, left for a person.  It writes the files of the standards into
 the checkout, and commits nothing.
+
+Returns ArrayRef[HashRef], one hash for each check, with C<check>, C<changes>
+and C<manual>.  Dies when the checks cannot be made, as
+L<Dist::Conformance/update> dies, and as L</conformance> does.
+
+    my $results = App::Clod::Harness::update( $tree, $settings, cache => $cache );
 
 =cut
 
@@ -195,6 +235,11 @@ finds the policies on the C<PERL5LIB> of the caller, and the paths in a
 profile are of the checkout.  Dies as L<App::Clod::Deps/run> does when
 perlcritic fails, for example over a policy that is not installed.
 
+Returns HashRef[ArrayRef[Str]], empty when the checkout has no Perl files or
+the new profile brings no violation.
+
+    my $new = App::Clod::Harness::new_violations( $tree, "$tree/.perlcriticrc", $old_profile );
+
 =cut
 
 sub new_violations ( $tree, $profile, $old ) {
@@ -216,6 +261,11 @@ C<($tree, @args)>.  Each violation that C<@PERLCRITIC> with C<@args> reports
 in C<$tree>, as a line of the policy, the file, the line and the column,
 separated by tabs.
 
+Returns a list of Str, one line for each violation.  Dies as
+L<App::Clod::Deps/run> does when perlcritic fails.
+
+    my @lines = App::Clod::Harness::violations( $tree, '--profile', "$tree/.perlcriticrc", 'lib/Foo.pm' );
+
 =cut
 
 sub violations ( $tree, @args ) {
@@ -230,6 +280,10 @@ C<@SOURCES> of the checkout, as L</new_violations> finds them, and rewrites
 each in place.  Returns the files that it changed, relative to the checkout
 and sorted.  It finds perltidy on the C<PATH> of the caller.  Dies as
 L<App::Clod::Deps/run> does when perltidy fails.
+
+Returns a list of Str, empty when it changed nothing.
+
+    my @changed = App::Clod::Harness::tidy( $tree, "$tree/.perltidyrc" );
 
 =cut
 
@@ -252,6 +306,11 @@ C<($settings, %options)>, as L</standards> takes them.  The texts of the critic
 profiles of the standards, each F<templates/perlcriticrc*> of them, so that
 L<App::Clod::Deps/policies> can name the policies that the agent must have.
 
+Returns a list of Str, the texts of the profiles, sorted by file name.  Dies
+as L</standards> does.
+
+    my @policies = App::Clod::Deps::policies( App::Clod::Harness::critic_profiles( $settings, cache => $cache ) );
+
 =cut
 
 sub critic_profiles ( $settings, %options ) {
@@ -265,6 +324,11 @@ C<($plugin_json, $marketplace_json, $plugin)>, the texts of the plugin's
 F<.claude-plugin/plugin.json> and the marketplace's
 F<.claude-plugin/marketplace.json>.  Fails when the pin is older than the
 plugin.
+
+Returns HashRef, with C<plugin>, C<latest>, C<pinned>, C<status> and
+C<detail>.  The C<status> is C<fail> when it cannot read both versions.
+
+    my $result = App::Clod::Harness::marketplace_check( $plugin_json, $marketplace_json, 'perl-slop' );
 
 =cut
 

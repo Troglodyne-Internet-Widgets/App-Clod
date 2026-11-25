@@ -23,6 +23,8 @@ my $DAY = 86_400;
 Returns the F<share> directory as a L<Mojo::File>: the one beside F<lib> in a
 checkout, else the installed one.
 
+    my $prompts = App::Clod::share_dir()->child('prompts');
+
 =cut
 
 sub share_dir {
@@ -36,6 +38,10 @@ sub share_dir {
 
 The git checkout that this code runs from, as a L<Mojo::File>: the directory
 above F<lib>, if it holds F<.git>.  Undef for an installed distribution.
+
+Returns a Mojo::File object or undef.
+
+    my $dir = App::Clod::checkout() // die "This clod is not a git checkout\n";
 
 =cut
 
@@ -52,6 +58,11 @@ code runs from no checkout, or git cannot say.  L</startup> asks once, so the
 helper C<running> is the commit that the process loaded, and a pull changes it
 only after a restart.
 
+Returns HashRef or undef.
+
+    my $commit = App::Clod::running_commit();
+    say "running $commit->{short}" if $commit;
+
 =cut
 
 sub running_commit {
@@ -64,7 +75,13 @@ sub running_commit {
 
 =method startup
 
-The Mojolicious entry point.
+The Mojolicious entry point.  Mojolicious calls it once, from C<new>.
+
+Returns nothing.  Dies when F<clod.conf> does not validate, as
+L<App::Clod::Config/validate> dies.
+
+    # What Mojolicious->new does with the new application:
+    $app->startup;
 
 =cut
 
@@ -119,6 +136,10 @@ C<($c, $auth)>.  True when the request passes the C<auth> configuration: a
 non-empty trusted header, or HTTP basic credentials whose password hashes to
 C<password_sha256>.  Otherwise it renders a 401 and returns false.
 
+Returns Bool.
+
+    my $authed = $app->routes->under( '/' => sub ($c) { App::Clod::authorized( $c, $config->{auth} ) } );
+
 =cut
 
 sub authorized ( $c, $auth ) {
@@ -143,6 +164,10 @@ sub authorized ( $c, $auth ) {
 C<($c, $auth)>.  Who is logged in to the page: the value of the trusted header,
 or the user of the basic credentials.  Undef when L</authorized> would refuse
 the request.  The helper C<viewer> calls it with the C<auth> configuration.
+
+Returns Str or undef.
+
+    my $who = App::Clod::viewer( $c, $config->{auth} ) // 'nobody';
 
 =cut
 

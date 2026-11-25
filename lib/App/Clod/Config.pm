@@ -124,6 +124,10 @@ the JSON pointer of its key, on a missing, unknown or malformed key.  The
 caller's hash is not changed, and nothing in the result is shared with the
 schema or with another result.
 
+Returns HashRef, the checked configuration with its defaults.
+
+    my $config = App::Clod::Config::validate($raw);
+
 =cut
 
 sub validate ($raw) {

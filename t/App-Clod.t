@@ -6,11 +6,13 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
-use Digest::SHA ();
-use File::Temp  ();
-use Mojo::File  ();
-use Mojo::Util  ();
-use Test::Mojo  ();
+use Digest::SHA      ();
+use File::Temp       ();
+use IPC::Run         ();
+use Mojo::File       ();
+use Mojo::Util       ();
+use Test::Mojo       ();
+use Test::MockModule ();
 
 use App::Clod();
 
@@ -29,6 +31,23 @@ sub app_with ($auth) {
 
 subtest share_dir => sub {
     ok( -e App::Clod::share_dir()->child( 'prompts', 'triage.md' ), 'the share directory of the checkout is found' );
+};
+
+subtest running_commit => sub {
+    my $repo = Mojo::File->new( "$tmp", 'checkout' )->make_path;
+    my ( $head, $err );
+    for my $cmd ( [qw{init --quiet}], [ qw{-c user.name=Tester -c user.email=tester@test.test commit --quiet --allow-empty -m}, 'one' ], [qw{rev-parse HEAD}] ) {
+        IPC::Run::run( [ qw{git -C}, "$repo", @$cmd ], '<', \undef, '>', \$head, '2>', \$err ) or die "git @$cmd: $err";
+    }
+    chomp $head;
+
+    my $clod = Test::MockModule->new('App::Clod');
+    $clod->redefine( checkout => sub () { return $repo } );
+    is( App::Clod::running_commit(), { sha => $head, short => substr( $head, 0, 7 ) }, 'the commit that the checkout is at, and its short sha' );
+    $clod->redefine( checkout => sub () { return Mojo::File->new( "$tmp", 'ws' )->make_path } );
+    is( App::Clod::running_commit(), undef, 'undef for a directory where git cannot say' );
+    $clod->redefine( checkout => sub () { return } );
+    is( App::Clod::running_commit(), undef, 'and for no checkout, as an installed distribution has' );
 };
 
 subtest 'startup, with basic auth' => sub {

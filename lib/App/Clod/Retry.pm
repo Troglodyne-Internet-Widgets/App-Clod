@@ -19,6 +19,10 @@ C<< $transient->($error) >> is true, it waits the next of C<@DELAYS>, warns
 with C<$what> and the error, and calls it again.  When the delays run out, or
 the error is not transient, it dies with the last error.
 
+Returns Any, each value that C<< $try->() >> returns, in list context.
+
+    my @out = App::Clod::Retry::attempt( 'git push', sub ($error) { $error =~ m{timed\ out} }, sub { push_it() } );
+
 =cut
 
 sub attempt ( $what, $transient, $try ) {
@@ -38,6 +42,8 @@ sub attempt ( $what, $transient, $try ) {
 1;
 
 =head1 SYNOPSIS
+
+=for test_synopsis use 5.040;
 
     use App::Clod::Retry ();
 
