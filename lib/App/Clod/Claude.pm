@@ -290,17 +290,24 @@ sub as_account_in ( $self, $dir, $seconds, @cmd ) {
 
 The plugins that claude has installed for its account, each a hash with
 C<id>, such as C<perl-slop@troglodyne-marketplace>, C<version>, the version
-that is installed, and C<latest>, the version that its marketplace offers, or
-undef when the marketplace does not say.  It first refreshes the
-marketplaces, as C<claude plugin marketplace update> does.  The list of
-installed plugins does not say which version is the newest, and the manifest
-of each marketplace does.
+that is installed, C<latest>, the version that its marketplace offers, or
+undef when the marketplace does not say, and C<scope>, such as C<user>.  It
+first refreshes the marketplaces, as C<claude plugin marketplace update> does.
+The list of installed plugins does not say which version is the newest, and
+the manifest of each marketplace does.
+
+An install for one project, of the scope C<project> or C<local>, is left out,
+because it applies only in that directory, and its record outlives the
+directory.  Each plugin comes once.  An install that names no scope, from an
+older Claude Code, has the scope C<user>.
 
 =cut
 
+our %PROJECT_SCOPES = map { $_ => 1 } qw{project local};
+
 sub plugins ($self) {
     $self->cli(qw{plugin marketplace update});
-    my $installed = Mojo::JSON::decode_json( $self->cli(qw{plugin list --json}) );
+    my $installed = $self->installed;
     my $known     = Mojo::JSON::decode_json( $self->as_account_run( qw{/bin/sh -c}, 'cat "$HOME/.claude/plugins/known_marketplaces.json"' ) );
     my %offered;
     for my $market ( sort keys %$known ) {
@@ -308,7 +315,42 @@ sub plugins ($self) {
         my $manifest = eval { Mojo::JSON::decode_json( $self->as_account_run( 'cat', "$dir/.claude-plugin/marketplace.json" ) ) } // next;
         $offered{"$_->{name}\@$market"} = $_->{version} for grep { ref $_ eq 'HASH' && defined $_->{name} } @{ $manifest->{plugins} // [] };
     }
-    return [ map { { id => $_->{id}, version => $_->{version}, latest => $offered{ $_->{id} } } } sort { $a->{id} cmp $b->{id} } @$installed ];
+    my %seen;
+    my @account = grep { !$seen{ $_->{id} }++ } sort { $a->{id} cmp $b->{id} } grep { !$PROJECT_SCOPES{ $_->{scope} // q{} } } @$installed;
+    return [ map { { id => $_->{id}, version => $_->{version}, latest => $offered{ $_->{id} }, scope => $_->{scope} // 'user' } } @account ];
+}
+
+=method installed
+
+What C<claude plugin list --json> prints, decoded: each install of a plugin,
+of every scope, with C<id>, C<version>, C<scope> and, for an install for one
+project, C<projectPath>.
+
+=cut
+
+sub installed ($self) { return Mojo::JSON::decode_json( $self->cli(qw{plugin list --json}) ) }
+
+=method forget_plugins
+
+C<(@dirs)>, absolute paths.  Uninstalls each plugin that Claude Code
+installed for the project in one of C<@dirs>, with
+C<claude plugin uninstall --scope>, in that directory.  The uninstall finds
+the install by the directory that it runs in, and the record stays after the
+directory is gone.  Returns the ids that it uninstalled.  Dies when an
+uninstall fails.
+
+=cut
+
+our $UNINSTALL_SECONDS = 60;
+
+sub forget_plugins ( $self, @dirs ) {
+    return if !@dirs;
+    my %dir  = map  { $_ => 1 } @dirs;
+    my @here = grep { $PROJECT_SCOPES{ $_->{scope} // q{} } && $dir{ $_->{projectPath} // q{} } } @{ $self->installed };
+    for my $plugin (@here) {
+        $self->as_account_in( $plugin->{projectPath}, $UNINSTALL_SECONDS, $self->bin, qw{plugin uninstall --scope}, @{$plugin}{qw{scope id}} );
+    }
+    return map { $_->{id} } @here;
 }
 
 =func is_behind

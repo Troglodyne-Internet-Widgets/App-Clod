@@ -1300,7 +1300,9 @@ sub clean_up ( $job, $config, $root, @checkouts ) {
 
 =func remove_work
 
-C<($config, $root, @checkouts)>, as L</clean_up> takes them.  Removes each
+C<($config, $root, @checkouts)>, as L</clean_up> takes them.  First
+uninstalls the plugins that Claude Code installed for the project in each
+checkout, as L<App::Clod::Claude/forget_plugins> does.  Then it removes each
 worktree and clone, as L<App::Clod::Spoke/remove_worktree> does, then the
 scratch directory that L</scratch_of> finds, then C<$root>, and prunes the bare
 clone of each checkout.  A worktree that git will not remove is deleted with
@@ -1319,6 +1321,8 @@ can enter.  A failure is a warning, and the rest is still removed.
 =cut
 
 sub remove_work ( $config, $root, @checkouts ) {
+    my @dirs = grep { -d } map { local ($_) = $_; $_->{dir}->to_abs->to_string } @checkouts;
+    warn "could not uninstall the plugins of the project in @dirs: $@" if !eval { claude($config)->forget_plugins(@dirs); 1 };
     for my $made (@checkouts) {
         next if eval { $made->{spoke}->remove_worktree( $made->{dir} ); 1 };
         warn "could not remove $made->{dir}: $@";
@@ -3545,7 +3549,9 @@ sub restart_unit ($unit) {
 
 From the dashboard.  Updates each plugin that L<App::Clod::Claude/is_behind>
 finds behind its marketplace, with C<claude plugin update>, for the account
-that claude runs as.  The next run of claude loads the new version, so
+that claude runs as, in the scope that L<App::Clod::Claude/plugins> gives.
+Without a scope, Claude Code would pick one from the directory of the
+worker.  The next run of claude loads the new version, so
 nothing restarts.  It queues a L</recheck>.  Its result has C<updated>, the
 ids.
 
@@ -3553,7 +3559,7 @@ ids.
 
 sub plugin_update ( $job, $config ) {
     my $claude  = claude($config);
-    my @updated = map { local ($_) = $_; $claude->cli( qw{plugin update}, $_->{id} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
+    my @updated = map { local ($_) = $_; $claude->cli( qw{plugin update --scope}, @{$_}{qw{scope id}} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
     recheck($job);
     return $job->finish( { updated => \@updated } );
 }

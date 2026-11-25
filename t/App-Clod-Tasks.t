@@ -334,8 +334,9 @@ subtest 'make_scratch and remove_work' => sub {
 
     # Records each command that runs as the account of claude, and runs it.
     my @as_account;
+    my $run    = \&App::Clod::Claude::as_account_run;
     my $claude = Test::MockModule->new('App::Clod::Claude');
-    $claude->redefine( as_account_run => sub ( $self, @cmd ) { push @as_account, "@cmd"; return $claude->original('as_account_run')->( $self, @cmd ) } );
+    $claude->redefine( as_account_run => sub ( $self, @cmd ) { push @as_account, "@cmd"; return $run->( $self, @cmd ) } );
 
     $root->child($App::Clod::Tasks::SCRATCH)->spew('in the way');
     like( dies { App::Clod::Tasks::make_scratch( $config, $root ) }, qr/\Acannot\ link\ the\ scratch\ directory\ .*:\ File\ exists/, 'a scratch directory that cannot be linked from the directory of the job dies' );
@@ -534,9 +535,22 @@ subtest triage => sub {
 subtest spoke_fix => sub {
     %state = ();
     @calls = ();
+
+    # Each directory whose plugins are forgotten, and whether it was still there.
+    my @forgotten;
+    my $forget = Test::MockModule->new('App::Clod::Claude');
+    $forget->redefine(
+        forget_plugins => sub ( $, @dirs ) {
+            push @forgotten, map { [ $_, -d $_ ? 1 : 0 ] } @dirs;
+            return;
+        }
+    );
+
     answer( { title => 'A title', summary => 'What changed.' }, commit => 1 );
     my $info = run_job( spoke_fix => { item => \%item, repo => 'Test-Org/one', instructions => 'do it' } );
-    is( $info->{state}, 'finished', 'the fix finishes' ) or diag Mojo::Util::dumper $info->{result};
+    is( $info->{state}, 'finished',                                             'the fix finishes' ) or diag Mojo::Util::dumper $info->{result};
+    is( \@forgotten,    [ [ match(qr{/work/$info->{id}/Test-Org/one\z}), 1 ] ], 'the plugins that Claude Code installed for the project in the clone are uninstalled while the clone is still there, so that no record of them outlives it' );
+    $forget->unmock('forget_plugins');
     like( $info->{result}, { repo => 'Test-Org/one', commits => 1, pr => 101, branch => qr{\Aclod/\d+-fix-the-thing\z} }, 'it reports the branch, the commit and the pull request' );
     ok( git( '--git-dir', $remote->child('Test-Org/one.git')->to_string, 'rev-parse', '--verify', $info->{result}{branch} ), 'the branch was pushed' );
     my $pull = calls_of('pull')->[0][2];
@@ -1989,7 +2003,7 @@ subtest 'self_check and self_update' => sub {
     $app->helper( running => sub { $running } );
     my $claude = Test::MockModule->new('App::Clod::Claude');
     my @updated;
-    $claude->redefine( plugins => sub ($) { [ { id => 'kit@m', version => '1.0', latest => '1.1' }, { id => 'ok@m', version => '2', latest => '2' } ] } );
+    $claude->redefine( plugins => sub ($) { [ { id => 'kit@m', version => '1.0', latest => '1.1', scope => 'user' }, { id => 'ok@m', version => '2', latest => '2', scope => 'user' } ] } );
     $claude->redefine( cli     => sub ( $, @args ) { push @updated, [@args]; return q{} } );
 
     my $check = run_job('self_check');
@@ -2055,8 +2069,8 @@ subtest 'self_check and self_update' => sub {
     delete $app->clod_config->{local_lib};
 
     my $plugins = run_job('plugin_update');
-    is( $plugins->{result}{updated}, ['kit@m'],                     'the plugins that are behind are updated' );
-    is( \@updated,                   [ [qw{plugin update kit@m}] ], 'with claude plugin update, and the others are not' );
+    is( $plugins->{result}{updated}, ['kit@m'],                                  'the plugins that are behind are updated' );
+    is( \@updated,                   [ [qw{plugin update --scope user kit@m}] ], 'with claude plugin update in the scope of the install, and not in one that Claude Code guesses from the directory of the worker, and the others are not' );
 
     my $checks = $minion->jobs( { tasks => ['self_check'], states => ['inactive'] } );
     is( $checks->total, 1, 'each action queues a new check, so its action item does not wait half an hour, and no second while one waits' );
