@@ -1,0 +1,12 @@
+flavor: troglodyne-compat
+source:
+  git: https://github.com/Troglodyne-Internet-Widgets/perl-slop-plugin.git
+  path: skills/packaging-perl
+checks:
+  CriticProfile:
+    overrides:
+      # The tests run the fakes in t/bin directly, as the programs that they
+      # stand in for, and no kernel starts a program whose first line is
+      # #!perl until an install rewrites it.  Everything else keeps #!perl.
+      logicLAB::RequireSheBang:
+        formats: '#!perl || #!/usr/bin/env perl'

@@ -314,6 +314,7 @@ subtest plugins => sub {
         case "$*" in
           'plugin marketplace update') echo refreshed >> "$HOME/log" ;;
           'plugin list --json') grep -q refreshed "$HOME/log" || exit 3; cat "$HOME/installed.json" ;;
+          'plugin uninstall --scope '*) echo "$PWD $*" >> "$HOME/uninstalled" ;;
           *) exit 2 ;;
         esac
         SH
@@ -322,15 +323,38 @@ subtest plugins => sub {
     my $meta   = $market->child('.claude-plugin')->make_path;
     $meta->child('marketplace.json')->spew( Mojo::JSON::encode_json( { plugins => [ { name => 'kit', version => '0.14.0' }, { name => 'other', version => '9' } ] } ) );
     $home->child(qw{.claude plugins known_marketplaces.json})->spew( Mojo::JSON::encode_json( { 'test-market' => { installLocation => "$market" }, 'gone-market' => { installLocation => "$home/nowhere" } } ) );
-    $home->child('installed.json')->spew( Mojo::JSON::encode_json( [ { id => 'kit@test-market', version => '0.13.0' }, { id => 'lost@gone-market', version => '1.0' } ] ) );
+
+    # One install for the account, and the installs that runs in two clones left.
+    my $clone = $home->child('clone')->make_path->to_string;
+    my $other = $home->child('other')->make_path->to_string;
+    $home->child('installed.json')->spew(
+        Mojo::JSON::encode_json(
+            [
+                { id => 'kit@test-market',  version => '0.12.0', scope => 'project', projectPath => $clone },
+                { id => 'kit@test-market',  version => '0.13.0', scope => 'user' },
+                { id => 'kit@test-market',  version => '0.12.0', scope => 'local', projectPath => $other },
+                { id => 'lost@gone-market', version => '1.0' },
+                { id => 'kit@test-market',  version => '0.12.0', scope => 'project', projectPath => "$home/gone" },
+            ]
+        )
+    );
 
     local $ENV{HOME} = "$home";
     my $plugins = App::Clod::Claude->new( bin => "$bin" )->plugins;
     is(
         $plugins,
-        [ { id => 'kit@test-market', version => '0.13.0', latest => '0.14.0' }, { id => 'lost@gone-market', version => '1.0', latest => undef } ],
-        'each installed plugin, with the version that its marketplace offers, after a refresh'
+        [ { id => 'kit@test-market', version => '0.13.0', latest => '0.14.0', scope => 'user' }, { id => 'lost@gone-market', version => '1.0', latest => undef, scope => 'user' } ],
+        'each plugin installed for the account, once, with the version that its marketplace offers and its scope, after a refresh, and not an install for a project'
     );
+
+    my @forgot = App::Clod::Claude->new( bin => "$bin" )->forget_plugins( $clone, $other );
+    is( \@forgot, [ 'kit@test-market', 'kit@test-market' ], 'forget_plugins uninstalls each install for a project in the directories that it is given' );
+    is(
+        [ split m{\n},                                                $home->child('uninstalled')->slurp ],
+        [ "$clone plugin uninstall --scope project kit\@test-market", "$other plugin uninstall --scope local kit\@test-market" ],
+        'in its scope, in the directory of the project, where claude finds it, and not for the account or a directory that it was not given'
+    );
+    is( [ App::Clod::Claude->new( bin => '/bogus/claude' )->forget_plugins() ], [], 'and with no directory, it asks claude nothing' );
     like( dies { App::Clod::Claude->new( bin => "$bin" )->cli(qw{no such}) }, qr/\A\S+\ no\ such:\ failed\n\z/, 'a command of claude that fails dies' );
 };
 

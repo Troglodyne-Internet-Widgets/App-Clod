@@ -95,7 +95,7 @@ info_level = 30
 [PreferredModules]
 config = .preferred_modules.ini
 [logicLAB::RequireSheBang]
-formats = #!perl
+formats = #!perl || #!/usr/bin/env perl
 # Performance
 [logicLAB::ProhibitShellDispatch]
 [ProhibitPipeOpen]

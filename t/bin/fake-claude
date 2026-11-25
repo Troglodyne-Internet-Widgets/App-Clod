@@ -10,6 +10,13 @@ use Cwd        ();
 use IPC::Run   ();
 use Mojo::File ();
 
+# claude plugin is a command of the CLI and not a run, so it records nothing,
+# and commits nothing.  No plugin is installed.
+if ( ( $ARGV[0] // q{} ) eq 'plugin' ) {
+    print "[]\n" if "@ARGV" eq 'plugin list --json';
+    exit 0;
+}
+
 my $prompt = do { local $/ = undef; readline \*STDIN };
 
 # FAKE_CLAUDE_SEAL names a directory that the run cannot write while it works,
