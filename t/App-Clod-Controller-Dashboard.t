@@ -207,6 +207,14 @@ subtest 'an update of the bot' => sub {
     $minion->job($check)->remove;
 };
 
+subtest listed => sub {
+    is( App::Clod::Controller::Dashboard::listed(),                  q{},                  'no words are an empty string, which a caller can put in a sentence' );
+    is( App::Clod::Controller::Dashboard::listed('gcc'),             'gcc',                'one word is itself' );
+    is( App::Clod::Controller::Dashboard::listed(qw{gcc make}),      'gcc and make',       'two take an and' );
+    is( App::Clod::Controller::Dashboard::listed(qw{gcc make perl}), 'gcc, make and perl', 'and more take commas before the and' );
+    is( App::Clod::Controller::Dashboard::needed(),                  q{},                  'so needed of no needs is an empty string too' );
+};
+
 subtest 'system packages' => sub {
     my %act = ( 'X-Clod-Action' => 'yes' );
     job( harness_scan => { checked_at => time, repos => {}, checks => [ 'CLAUDE.md', 'git hooks' ], system_packages => {}, system_package_errors => { 'Test-Org/two' => "metamerge.yml is not valid:\n  /x_system_packages/deb/0: String does not match" } } );
