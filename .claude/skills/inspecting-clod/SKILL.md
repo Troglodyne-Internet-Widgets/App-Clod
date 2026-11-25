@@ -25,10 +25,47 @@ Run each `clod` command as `$user`, with `CLOD_CONFIG` set to its
 `clod.conf`.  The clod recipe of trog-provisioner writes `$home/clod-run.sh`,
 which does this:
 
-    ssh $host sudo $home/clod-run.sh minion job -l 20
+    ssh $host 'cd $home && sudo $home/clod-run.sh minion job -l 20'
+
+Run it from a directory that `$user` can read, such as `$home`.  The script
+keeps the directory of the caller.  From your own home directory, a tool that
+looks up its directory fails with "Permission denied".
 
 The script does not load `clod.env`.  So a command that it runs has no GitHub
-token and no Claude token, and it cannot change anything on GitHub.
+token and no Claude token.  That does not make every command safe.  A command
+that runs jobs still runs them, in the wrong environment.
+
+## Read, do not run
+
+The service already runs the worker of the bot.  These commands are for
+reading:
+
+    clod minion job -w                        # the workers
+    clod minion job -l 20                     # the jobs, newest first
+    clod minion job $id                       # one job
+
+Do not run `clod minion worker`, `clod daemon` or `clod prefork` through the
+script.  Each one starts a process that takes jobs from the real queue.  A
+job that it takes runs without the tokens and in your directory.  So the job
+fails or returns a wrong result, and the dashboard shows that result.
+`minion worker` does not list the workers.  It starts one.
+
+A command that changes the queue, such as `minion job -e`, a retry or a
+remove, is for the user to decide.  Use the dashboard, or ask the user first.
+
+If you started a worker by mistake, do these steps:
+
+1. List the workers with `clod minion job -w`, and find each process with
+   `ps`.  The worker of the service has init as its parent.  Yours has
+   `runuser` as its parent and your directory as its directory.  The command
+   `readlink /proc/$pid/cwd` shows the directory.
+2. Stop yours with `kill -TERM $pid`.  It finishes the job that it holds
+   first.
+3. Make sure that `clod minion job -w` lists only the worker of the service.
+4. Find each job that your worker ran.  `clod minion job $id` names the
+   worker of a job.  Tell the user about each one.  If one was a
+   `self_check`, ask the user to queue a new one.  The dashboard shows the
+   last check that finished until another one finishes.
 
 If the host key of `$host` is not known, stop and ask the user.  Show them the
 fingerprint that `ssh-keyscan $host | ssh-keygen -lf -` prints.  Do not accept
