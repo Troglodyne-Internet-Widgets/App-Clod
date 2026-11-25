@@ -262,13 +262,14 @@ sub self_items ( $self, $minion, $check ) {
 C<(@words)>.  The words as a list in a sentence: C<a>, C<a and b>, or
 C<a, b and c>.
 
-Returns Str or undef: the sentence, or undef when C<@words> is empty.
+Returns Str: the sentence, or an empty string when C<@words> is empty.
 
     my $text = App::Clod::Controller::Dashboard::listed(qw{gcc make perl});
 
 =cut
 
 sub listed (@words) {
+    return q{} if !@words;
     my $last = pop @words;
     return @words ? join( q{, }, @words ) . " and $last" : $last;
 }
@@ -282,7 +283,7 @@ C<libxml2 (libxml2-dev) and ffmpeg (ffmpeg, from the archive jellyfin, key 0123.
 so that the person who presses the button sees whom it gives the trust of
 root.
 
-Returns Str or undef: the text, or undef when C<@needs> is empty, as
+Returns Str: the text, or an empty string when C<@needs> is empty, as
 L</listed> returns it.
 
     my $text = App::Clod::Controller::Dashboard::needed( { name => 'libxml2', package => 'libxml2-dev' } );

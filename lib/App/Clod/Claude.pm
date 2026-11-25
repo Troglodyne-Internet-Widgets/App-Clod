@@ -561,26 +561,6 @@ sub ends ( $text, $length ) {
     return substr( $text, 0, $length ) . "\n[$over characters left out]\n" . substr( $text, -$length );
 }
 
-=method absorb
-
-C<(\%outcome, \%event)>.  Folds one stream-json event into the outcome that
-C<run> returns.
-
-It reads five types of event: C<rate_limit_event>, C<system> with the subtype
-C<init>, C<assistant>, C<user> and C<result>.  Of C<assistant>, it reads only
-each tool call, as L</call_key> gives it, in order.  Of C<user>, it reads each
-tool result.  It keeps the first line of an error, as the reason of
-L</denial>, and the last call of each key that succeeded.  When the result
-comes, it sorts the refused calls into C<denied> and C<retried>, and drops
-what it kept, so none of it is in the outcome.  Every other event leaves the outcome as it is, which includes
-any type that a later claude adds.  C<on_event> still gets every event.
-
-Returns nothing.
-
-    App::Clod::Claude::absorb( \%outcome, $event );
-
-=cut
-
 my %ABSORB = (
     rate_limit_event => sub ( $outcome, $event ) {
         my $info = $event->{rate_limit_info} // {};
@@ -714,6 +694,26 @@ sub first_line ($content) {
     my ($line) = result_text($content) =~ m/^ \h* (\S [^\n]*?) \s* $/m;
     return $line;
 }
+
+=func absorb
+
+C<(\%outcome, \%event)>.  Folds one stream-json event into the outcome that
+C<run> returns.
+
+It reads five types of event: C<rate_limit_event>, C<system> with the subtype
+C<init>, C<assistant>, C<user> and C<result>.  Of C<assistant>, it reads only
+each tool call, as L</call_key> gives it, in order.  Of C<user>, it reads each
+tool result.  It keeps the first line of an error, as the reason of
+L</denial>, and the last call of each key that succeeded.  When the result
+comes, it sorts the refused calls into C<denied> and C<retried>, and drops
+what it kept, so none of it is in the outcome.  Every other event leaves the outcome as it is, which includes
+any type that a later claude adds.  C<on_event> still gets every event.
+
+Returns nothing.
+
+    App::Clod::Claude::absorb( \%outcome, $event );
+
+=cut
 
 sub absorb ( $outcome, $event ) {
     my $absorb = defined $event->{type} ? $ABSORB{ $event->{type} } : undef;
