@@ -45,6 +45,10 @@ has attempt => 0;
 
 The directory of this attempt: F<root/job/attempt>.
 
+Returns a Mojo::File object.  The directory does not have to exist.
+
+    my $dir = $evidence->dir;
+
 =cut
 
 sub dir ($self) { return Mojo::File->new( $self->root, $self->job, $self->attempt ) }
@@ -62,6 +66,14 @@ in F<01.jsonl>, F<02.jsonl> and on.  The file is mode 0600, and L</root> is
 made mode 0700, because a transcript holds what a tool printed.  The account
 of the agent shares the group of the workspace, and must not read the
 evidence.
+
+Returns CodeRef, which takes one event as a HashRef.  Dies when it cannot
+make L</root> or the directory of the attempt, cannot change the mode of
+L</root>, or cannot create the file of the transcript.  The sub that it
+returns dies when a write to the file fails.
+
+    my $record = $evidence->recorder( prompt => $prompt );
+    $record->($event);
 
 =cut
 
@@ -82,6 +94,12 @@ sub recorder ( $self, %run ) {
 The transcripts of this attempt, oldest first, each the list of its lines as
 L</recorder> wrote them.  Empty when the attempt kept none.
 
+Returns ArrayRef[ArrayRef[HashRef]].
+
+    for my $run ( @{ $evidence->runs } ) {
+        say scalar @$run, ' lines';
+    }
+
 =cut
 
 sub runs ($self) {
@@ -100,6 +118,10 @@ sub runs ($self) {
 The attempts of L</job> that kept evidence, as numbers, lowest first.  This
 ignores L</attempt>.
 
+Returns ArrayRef[Int], empty when the job kept no evidence.
+
+    my $attempts = $evidence->attempts;
+
 =cut
 
 sub attempts ($self) {
@@ -112,6 +134,10 @@ sub attempts ($self) {
 
 Removes the transcripts of this attempt, and the directory of the job when no
 other attempt kept any.
+
+Returns nothing.
+
+    $evidence->discard;
 
 =cut
 
@@ -129,6 +155,10 @@ C<($seconds)>.  Removes the evidence of each job that no run added to for
 C<$seconds>, by the modification time of its directory.  Returns the ids of
 the jobs whose evidence it removed.
 
+Returns ArrayRef[Str], empty when it removed nothing.
+
+    my $removed = $evidence->prune( 14 * 86_400 );
+
 =cut
 
 sub prune ( $self, $seconds ) {
@@ -143,6 +173,8 @@ sub prune ( $self, $seconds ) {
 1;
 
 =head1 SYNOPSIS
+
+=for test_synopsis my ( $config, $job, $prompt, @events, $the_job_turned_out_fine );
 
     use App::Clod::Evidence ();
 

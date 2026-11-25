@@ -1,16 +1,14 @@
-# Troglodyne perlcritic policy, for a distribution that runs on whatever perl is
-# already installed: use 5.014, and never lower.
+# Troglodyne perlcritic policy, for a distribution that declares use 5.040 or
+# later.
 #
-# There are two of these.  perlcriticrc is for code that runs on a perl you
-# control; this one is for code that does not.  The packaging-perl skill asks
-# which you are writing before it copies one, because the answer decides more
-# than this file: it decides the use line in every module and test, and perl: in
-# prereqs.yml.
+# There are two of these.  This one is for code that runs on a perl you control,
+# and perlcriticrc.compat is for code that runs on whatever perl is already
+# installed.  The packaging-perl skill asks which you are writing before it
+# copies one, because the answer decides more than this file: it decides the
+# use line in every module and test, and perl: in prereqs.yml.
 #
-# The difference is the five policies below.  The other profile leaves them out
-# because a modern perl refuses what they report, and none of that reasoning
-# survives down here: without them a bareword filehandle in this distribution is
-# caught by nothing at all.  Each says the version that makes it redundant:
+# The difference between the two is five policies.  A modern perl refuses what
+# they report, so naming them here would buy nothing:
 #
 #   TestingAndDebugging::RequireUseStrict       strict is on from 5.012
 #   Objects::ProhibitIndirectSyntax             no indirect from 5.036
@@ -18,20 +16,14 @@
 #   InputOutput::ProhibitBarewordDirHandles       5.038
 #   Modules::RequireEndWithOne                  module_true from 5.038
 #
-# One policy of the other profile is not here: Subroutines::
-# ProhibitUnderscorePrivateSubs.  It wants a private sub to be my sub, which
-# arrived in 5.026, and below that a closure, my $name = sub.  But Subroutines::
-# ProhibitSingleUseLexicalSubs refuses a closure that one place calls, so on
-# 5.014 the two leave a helper no form but a public package sub, which then
-# needs POD.  A leading underscore is the one form left that is private by
-# name and works here.
+# Two more go the same way at 5.042.  They stay below because this file assumes
+# only 5.040, and at a later floor they report nothing, so they cost nothing:
 #
-# 5.014 is the floor rather than anything lower because RegularExpressions::
-# RequireDefault below wants /aa on every pattern, and /aa arrived in 5.14.  A
-# lower declaration is one the code does not keep.
-#
-# What this profile cannot tell you is whether the perl you are aiming at has
-# the modules you are using.  Ubuntu 24.04 ships 5.38, and 22.04 ships 5.34.
+#   Variables::ProhibitPerl4PackageNames        no apostrophe as a package
+#                                                 separator from 5.042
+#   CodeLayout::RequireASCII                    source::encoding "ascii" from
+#                                                 5.042, which is stricter than
+#                                                 the policy and not skippable
 severity  = 1
 only      = 1
 force     = 0
@@ -39,22 +31,13 @@ verbose   = 1
 criticism-fatal = 1
 color     = 1
 allow-unsafe = 1
-
-# The five the other profile leaves out because use 5.040 makes them
-# unnecessary.  Nothing here declares that, so each of them earns its place.
-[TestingAndDebugging::RequireUseStrict]
-[Objects::ProhibitIndirectSyntax]
-[InputOutput::ProhibitBarewordFileHandles]
-[InputOutput::ProhibitBarewordDirHandles]
-[Modules::RequireEndWithOne]
 # Usability
 [Modules::RequirePerlVersion]
 [Documentation::RequirePod]
 # Security
 [ValuesAndExpressions::PreventSQLInjection]
 # It also applies to POD, where the only thing it tends to catch is a
-# contributor's name in the section Dist::Zilla generates.  Spelling somebody's
-# name wrong is not a code standard, so an exemption there is fair.
+# contributor's name in the section that Dist::Zilla generates.
 [CodeLayout::RequireASCII]
 [RegularExpressions::RequireDefault]
 strict = 1
@@ -105,6 +88,7 @@ formats = #!perl || #!/usr/bin/env perl
 [RegularExpressions::ProhibitRegexToSplitAtDelimiter]
 [BuiltinFunctions::ProhibitChainingSameListSub]
 [RegularExpressions::ProhibitRegexForStringEquality]
+[Subroutines::ProhibitUnderscorePrivateSubs]
 [Subroutines::ProhibitSingleUseLexicalSubs]
 [ValuesAndExpressions::ProhibitLiteralArithmetic]
 [BuiltinFunctions::ProhibitIndirectBooleanGrep]
@@ -179,8 +163,8 @@ exclude_functions = print
 #   ErrorHandling::RequireCarping               die with context, and
 #                                                 Carp::Always for the trace
 #
-# The five that the other profile leaves to the language are named at the top of
-# this one, because down here the language does not enforce them.
+# Nor the five the language enforces under this file's floor.  The header says
+# which they are, and perlcriticrc.compat is where they live.
 #
 # Documentation::RequirePodSections is out as well: the sections it asks for are
 # the ones Pod::Weaver writes at build, and weaver.ini names them AUTHORS and

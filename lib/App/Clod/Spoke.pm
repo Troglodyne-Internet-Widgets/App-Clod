@@ -22,6 +22,44 @@ use App::Clod::Retry  ();
 # git finds no hook under /dev/null, which is not a directory.
 our @NO_HOOKS = ( q{-c}, 'core.hooksPath=/dev/null' );
 
+=func run_git($cmd, $input, @shown)
+
+=over 4
+
+=item cmd - ArrayRef - the command, git and its arguments, or what runs git as another account
+
+=item input - ScalarRef - what git reads on its standard input, or a reference to undef for nothing
+
+=item @shown - Str - the arguments that an error names
+
+=back
+
+Runs C<$cmd> for up to ten minutes.  Dies with C<git @shown:> and what git
+printed on its standard error when it fails or times out.
+
+Returns Str, what git printed on its standard output, without the last
+newline.
+
+    my $head = App::Clod::Spoke::run_git( [qw{git rev-parse HEAD}], \undef, qw{rev-parse HEAD} );
+
+=cut
+
+sub run_git ( $cmd, $input, @shown ) {
+    my ( $out, $err ) = ( q{}, q{} );
+    my $ok = IPC::Run::run( $cmd, '<', $input, '>', \$out, '2>', \$err, IPC::Run::timeout(600) );
+    chomp $err;
+    die "git @shown: $err\n" if !$ok;
+    chomp $out;
+    return $out;
+}
+
+# The real path of the directory that $file names, by its content, relative to $base.
+my sub named ( $base, $file, $re ) {
+    my ($to) = $file->slurp =~ $re or die "$file names no directory\n";
+    my $path = Mojo::File->new($to);
+    return ( $path->is_abs ? $path : $base->child($to) )->realpath;
+}
+
 =attr repo
 
 The spoke, as C<Owner/Name>.
@@ -74,6 +112,10 @@ has 'as_agent';
 
 The bare clone, as a L<Mojo::File>.
 
+Returns Mojo::File, the path of the bare clone, which may not be there yet.
+
+    my $bare = $spoke->mirror;
+
 =cut
 
 sub mirror ($self) { return Mojo::File->new( $self->workspace, 'mirrors', $self->repo . '.git' ) }
@@ -81,6 +123,10 @@ sub mirror ($self) { return Mojo::File->new( $self->workspace, 'mirrors', $self-
 =method reference
 
 The worktree at the default branch, which triage reads.
+
+Returns Mojo::File, the path of that worktree, which may not be there yet.
+
+    my $ref = $spoke->reference;
 
 =cut
 
@@ -93,6 +139,11 @@ error output on failure.  When the arguments start with C<-C $dir>, git trusts
 C<$dir> as L</trust> says, after L</guard> finds that the agent cannot change
 how git there is configured.  git runs no hook, as L</HOOKS> says; L</commit>
 is the one command of the worker that runs them.
+
+Returns Str, what git printed on its standard output, without the last
+newline.
+
+    my $sha = $spoke->git( q{-C}, $spoke->mirror->to_string, qw{rev-parse origin/main} );
 
 =cut
 
@@ -118,6 +169,11 @@ variable that L</as_agent> does not name, so it is for a command that does not
 talk to GitHub.  git runs no hook, as for L</git>, and when the worker runs it,
 L</guard> looks at the directory first, as for L</git>.
 
+Returns Str, what git printed on its standard output, without the last
+newline.  Dies as L</git> does.
+
+    my $status = $spoke->git_as_owner( $dir, \undef, q{-C}, $dir, qw{status --porcelain} );
+
 =cut
 
 sub git_as_owner ( $self, $dir, $input, @args ) {
@@ -132,6 +188,10 @@ sub git_as_owner ( $self, $dir, $input, @args ) {
 C<($dir)>.  True when the account of L</as_agent> runs what concerns C<$dir>,
 as L</git_as_owner> says: when there is such an account, and the worker does
 not own C<$dir>, or C<$dir> is undef.
+
+Returns Bool, true when the account of L</as_agent> runs the command.
+
+    my $theirs = $spoke->by_agent($dir);
 
 =cut
 
@@ -151,6 +211,11 @@ no hook needs them.  It is for a worktree that the worker made and no
 claude run has worked in, because the hooks are the files of its branch.  So
 it dies, as L</guard> does, also when the agent could change F<git-hooks/> of
 the worktree or a file in it.  See L</HOOKS>.
+
+Returns Str, what git printed on its standard output, without the last
+newline.
+
+    my $out = App::Clod::Spoke::commit( $dir, q{-m}, 'Fix the build' );
 
 =cut
 
@@ -172,6 +237,10 @@ sub commit ( $dir, @args ) {
 
 C<($path)>.  True when the worker owns C<$path>, or when it is not there.
 
+Returns Bool, true when the worker owns C<$path> or C<$path> is not there.
+
+    my $mine = App::Clod::Spoke::is_own($dir);
+
 =cut
 
 sub is_own ($path) {
@@ -187,6 +256,10 @@ of C<$dir>, because git compares the real path.  Empty otherwise.  git refuses
 to work in a repository that another account owns, and a clone of the agent,
 or the bare clone, belongs to the other account.  See L</THE AGENT ACCOUNT>.
 
+Returns Str, each of the two arguments, as a list, or an empty list.
+
+    my @git = ( 'git', App::Clod::Spoke::trust( q{-C}, $dir, 'status' ), q{-C}, $dir, 'status' );
+
 =cut
 
 sub trust (@args) {
@@ -200,6 +273,8 @@ sub trust (@args) {
 C<(@args)>.  When C<@args> start with C<-C $dir>, dies with the arguments and
 the reason unless each file of L</control_files> of C<$dir> is safe from the
 agent, as L</exposed> says.  Returns nothing.  See L</THE AGENT ACCOUNT>.
+
+    App::Clod::Spoke::guard( q{-C}, $dir, 'status' );
 
 =cut
 
@@ -225,6 +300,10 @@ directory, because git would then look for a repository above it.
 F<config.worktree> is not among them, because git reads it only when
 C<extensions.worktreeConfig> is on in F<config>.
 
+Returns Mojo::File, each file, as a list.
+
+    my @files = App::Clod::Spoke::control_files($dir);
+
 =cut
 
 sub control_files ($dir) {
@@ -249,13 +328,6 @@ sub control_files ($dir) {
     return ( @files, $gitdir, $common, -e $config ? $config : () );
 }
 
-# The real path of the directory that $file names, by its content, relative to $base.
-sub named ( $base, $file, $re ) {
-    my ($to) = $file->slurp =~ $re or die "$file names no directory\n";
-    my $path = Mojo::File->new($to);
-    return ( $path->is_abs ? $path : $base->child($to) )->realpath;
-}
-
 =func exposed
 
 C<($path)>.  Why an account other than the worker could change C<$path>, the
@@ -271,6 +343,11 @@ remove what the worker owns in it, and the next directory down must be the
 worker's.  C<$path> itself does not get that, because an account that can make
 a file in a git directory can make F<commondir> there.
 
+Returns Str or undef: the reason, or undef when no other account can change
+C<$path>.
+
+    my $why = App::Clod::Spoke::exposed( Mojo::File->new($dir)->realpath );
+
 =cut
 
 sub exposed ($path) {
@@ -285,8 +362,26 @@ sub exposed ($path) {
     return;
 }
 
-# Why the agent could write $path, as exposed says, or undef.  $above is true
-# for a directory above the file that git reads.
+=func writable($path, $above)
+
+=over 4
+
+=item path - Str - the file or the directory to look at
+
+=item above - Bool - true for a directory above the file that git reads
+
+=back
+
+Why the agent could write C<$path>, as L</exposed> says.  A directory above
+the file with the sticky bit is safe.
+
+Returns Str or undef: the reason, or undef when the agent cannot write
+C<$path>.
+
+    my $why = App::Clod::Spoke::writable( $dir, 1 );
+
+=cut
+
 sub writable ( $path, $above ) {
     my ( $mode, $uid, $gid ) = ( stat $path )[ 2, 4, 5 ];
     return "$path is not there"              if !defined $mode;
@@ -307,6 +402,11 @@ C<$dir>.  It does not look at what the files say: L</fetch> seals the bare clone
 before it writes the configuration, and L</worktree> seals a worktree of the
 worker that it has just made.  Returns nothing.
 
+Dies when C<$dir> is not a git repository, as L</control_files> says, or when
+a C<chmod> fails.
+
+    $spoke->seal($dir);
+
 =cut
 
 sub seal ( $self, $dir ) {
@@ -324,21 +424,16 @@ sub seal ( $self, $dir ) {
     return;
 }
 
-# git, with $input on its standard input.  @shown is what an error names.
-sub run_git ( $cmd, $input, @shown ) {
-    my ( $out, $err ) = ( q{}, q{} );
-    my $ok = IPC::Run::run( $cmd, '<', $input, '>', \$out, '2>', \$err, IPC::Run::timeout(600) );
-    chomp $err;
-    die "git @shown: $err\n" if !$ok;
-    chomp $out;
-    return $out;
-}
-
 =method git_remote
 
 Runs git as L</git> does, for a command that talks to GitHub, such as a fetch
 or a push.  A failure that L</transient> calls a moment's trouble at GitHub
 gets more tries, through L<App::Clod::Retry/attempt>.
+
+Returns Str, what git printed on its standard output, as for L</git>.  Dies
+as L</git> does when the last try fails.
+
+    $spoke->git_remote( q{-C}, $spoke->mirror->to_string, qw{fetch --prune origin} );
 
 =cut
 
@@ -351,6 +446,10 @@ sub git_remote ( $self, @args ) {
 C<($error)>.  True if the error of a git command is a server error or a lost
 connection.  A push gets the same tries: C<--force-with-lease> refuses a second
 push over a branch that the first one did move.
+
+Returns Bool, true when another try can succeed.
+
+    my $again = App::Clod::Spoke::transient("fatal: unable to access: The requested URL returned error: 502\n");
 
 =cut
 
@@ -369,6 +468,10 @@ sub transient ($error) {
 Clones the spoke if there is no bare clone yet, then fetches.  Returns the bare
 clone.  It holds L</locked> while it works, so two jobs never clone or fetch
 one bare clone at once.
+
+Returns Mojo::File, the bare clone.
+
+    my $bare = $spoke->fetch;
 
 =cut
 
@@ -389,6 +492,10 @@ A process must not take it twice, because the second lock waits for the first.
 So L</fetch> and L</refresh_reference> take it, and call
 L</fetch_unlocked>, which does not.  The lock is the C<synchronize> of
 L<Mutex::Flock>, which lets go of it when C<$code> returns or dies.
+
+Returns Any, what C<$code> returns.
+
+    $spoke->locked( sub { $spoke->fetch_unlocked } );
 
 =cut
 
@@ -415,6 +522,10 @@ It sets C<core.hooksPath> of the bare clone to C<git-hooks>, as L</HOOKS>
 says.
 
 Before it runs git in the bare clone, it seals it, as L</seal> says.
+
+Returns Mojo::File, the bare clone.
+
+    my $bare = $spoke->locked( sub { $spoke->fetch_unlocked } );
 
 =cut
 
@@ -443,6 +554,10 @@ is gone is made again, after git forgets the worktree that it still has
 registered there, which it would otherwise refuse to add a second time.  It
 seals the reference, as L</seal> says, before it resets it.
 
+Returns Mojo::File, the reference worktree.
+
+    my $ref = $spoke->refresh_reference('main');
+
 =cut
 
 sub refresh_reference ( $self, $branch ) {
@@ -470,6 +585,10 @@ is the file itself, or with a C<$path> that ends in C</>, the files directly in
 that directory.  A symbolic link is a file here, and its blob is its target.
 Empty when there is no such file.  It does not fetch.
 
+Returns HashRef, one for each file, as a list.
+
+    my @files = $spoke->files_at( 'main', '.github/workflows/' );
+
 =cut
 
 sub files_at ( $self, $branch, $path ) {
@@ -486,6 +605,10 @@ sub files_at ( $self, $branch, $path ) {
 
 C<($object)>.  The content of a blob of the bare clone, without the newline at
 its end.
+
+Returns Str, the content.
+
+    my $text = $spoke->blob( $file->{object} );
 
 =cut
 
@@ -521,6 +644,10 @@ A new branch tracks nothing (C<--no-track>), and the worker pushes to a branch
 that it names.  A worktree that the worker makes and runs git in, which is one
 with no C<detach>, is sealed, as L</seal> says.  A C<detach> worktree is not,
 because a claude run may read it, and the worker runs no git in it.
+
+Returns Mojo::File, C<$dir>.
+
+    my $tree = $spoke->worktree( $dir, existing => 'clod/42-fix' );
 
 =cut
 
@@ -565,6 +692,8 @@ L</HOOKS> says.
 See L</THE AGENT ACCOUNT> for how its commits get back to the bare clone, in
 L</head>.
 
+    $spoke->locked( sub { $spoke->clone( $dir, '--detach', 'origin/main' ) } );
+
 =cut
 
 sub clone ( $self, $dir, @checkout ) {
@@ -583,6 +712,10 @@ sub clone ( $self, $dir, @checkout ) {
 C<($dir)>.  True when C<$dir> is a clone that L</clone> made, as its F<.git>
 directory says, and not a worktree, whose F<.git> is a file.
 
+Returns Bool, true for a clone.
+
+    my $cloned = App::Clod::Spoke::is_clone($dir);
+
 =cut
 
 sub is_clone ($dir) { return -d Mojo::File->new( $dir, '.git' ) }
@@ -594,6 +727,10 @@ clone C<$dir> to: F<refs/clod/handback/E<lt>idE<gt>>, where the id is the
 SHA-1 of the absolute path of C<$dir>.  So each clone has its own, which no
 other run and no ref of the worker shares.  A fetch prunes only
 F<refs/remotes>, so it keeps them, and L</remove_worktree> deletes it.
+
+Returns Str, the name of the ref.
+
+    my $ref = App::Clod::Spoke::handback_ref($dir);
 
 =cut
 
@@ -621,6 +758,10 @@ Either way, the worker runs no git in a directory of the agent, whose F<.git>
 the agent can point at a repository of its own, with a configuration of its
 own.
 
+Returns Str, the id of the commit.
+
+    my $sha = $spoke->head($dir);
+
 =cut
 
 sub head ( $self, $dir ) {
@@ -640,6 +781,10 @@ sub head ( $self, $dir ) {
 C<($dir, $base)>.  The number of commits at L</head> of the worktree that
 C<$base> does not have, which the bare clone counts.
 
+Returns Int, the number of commits.
+
+    my $new = $spoke->commits_since( $dir, 'origin/main' );
+
 =cut
 
 sub commits_since ( $self, $dir, $base ) {
@@ -653,6 +798,10 @@ C<($dir, $ref)>.  The number of commits of C<$ref> that L</head> of the
 worktree does not have, which the bare clone counts.  It is not zero when the
 worktree rewrote C<$ref>, as a rebase does, and a push of L</head> to it would
 take those commits away.
+
+Returns Int, the number of commits.
+
+    my $lost = $spoke->commits_dropped( $dir, 'origin/clod/42-fix' );
 
 =cut
 
@@ -668,6 +817,11 @@ C<--force-with-lease>, from the bare clone, and returns the SHA it pushed.  If
 the push fails but the branch on GitHub is at HEAD anyway, the push is done:
 GitHub can answer a server error to a push that it did take, and the lease
 then refuses the next try.
+
+Returns Str, the SHA that it pushed.  Dies with the error of the push when
+the push fails and the branch on GitHub is not at HEAD.
+
+    my $sha = $spoke->push_branch( $dir, 'clod/42-fix' );
 
 =cut
 
@@ -688,6 +842,8 @@ C<($dir, $patch)>.  Applies C<$patch>, the output of C<git diff --cached
 the worktree, as L</git_as_owner> says.  So each file that the patch writes
 belongs to that account too.
 
+    $spoke->apply_patch( $dir, $patch );
+
 =cut
 
 sub apply_patch ( $self, $dir, $patch ) {
@@ -706,6 +862,8 @@ deletes a ref of the bare clone.
 The account of L</as_agent> removes a clone of its own with C<rm -rf>, because
 no git command removes a repository, and a run may have taken the write of
 the group from a directory in it.
+
+    $spoke->remove_worktree($dir);
 
 =cut
 
@@ -730,6 +888,8 @@ sub remove_worktree ( $self, $dir ) {
 Forgets each worktree of the bare clone whose directory is gone.  Such a
 worktree still holds its branch, so no other worktree can check it out.  It
 holds L</locked>, so it never meets L</worktree> as it adds one.
+
+    $spoke->prune_worktrees;
 
 =cut
 

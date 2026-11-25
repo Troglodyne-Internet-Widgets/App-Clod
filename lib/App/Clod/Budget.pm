@@ -21,6 +21,10 @@ our @CLAUDE_TASKS = qw{triage spoke_fix spoke_review spoke_address sort_review r
 
 C<($minion, $until)>, an epoch second.
 
+Returns nothing.  It takes no lock when C<$until> is already past.
+
+    App::Clod::Budget::pause( $minion, time + 3600 );
+
 =cut
 
 sub pause ( $minion, $until ) {
@@ -35,6 +39,10 @@ sub pause ( $minion, $until ) {
 
 C<($minion)>.  True while the pause lock is held.
 
+Returns Bool.
+
+    return $job->retry( { delay => 600 } ) if App::Clod::Budget::paused($minion);
+
 =cut
 
 sub paused ($minion) { return $minion->is_locked($LOCK) }
@@ -44,6 +52,13 @@ sub paused ($minion) { return $minion->is_locked($LOCK) }
 The cost over five hours, a day and a week, the runs in the week, the last
 reported utilization of each window as C<five_hour> and C<seven_day>, and the
 pause.
+
+Returns HashRef, with the keys C<cost_5h>, C<cost_24h>, C<cost_7d>,
+C<runs_7d> and C<paused>, and also C<rate_limit>, C<paused_until>,
+C<five_hour> and C<seven_day> when a recent run reported them.
+
+    my $budget = App::Clod::Budget::summary($minion);
+    say "Spent \$$budget->{cost_24h} today";
 
 =cut
 

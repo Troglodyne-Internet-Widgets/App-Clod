@@ -29,6 +29,8 @@ L<App::Clod::Tasks/agent_tools> and the programs of
 L<App::Clod::Deps/install_programs> into the second.  Dies when F<clod.conf> names
 neither, or C<install> into C<local_lib> runs from no checkout.
 
+    $command->run('outdated');
+
 =cut
 
 sub run ( $self, $what = q{} ) {
@@ -47,7 +49,7 @@ sub run ( $self, $what = q{} ) {
         return;
     }
     if ( $what eq 'outdated' || $what eq 'upgrade' ) {
-        my @found = map { @{ $what eq 'upgrade' ? App::Clod::Deps::upgrade( $config->{$_} ) : App::Clod::Deps::outdated( $config->{$_} ) } } @libs;
+        my @found = map { local ($_) = $_; @{ $what eq 'upgrade' ? App::Clod::Deps::upgrade( $config->{$_} ) : App::Clod::Deps::outdated( $config->{$_} ) } } @libs;
         my $lines = join q{}, map { join( "\t", @$_{qw{module version latest}} ) . "\n" } @found;
         print {*STDOUT} $lines or die "Cannot print: $!\n";
         return;
@@ -58,6 +60,8 @@ sub run ( $self, $what = q{} ) {
 1;
 
 =head1 SYNOPSIS
+
+=for test_synopsis BEGIN { die "SKIP: the synopsis is a shell command\n" }
 
     clod deps install
     clod deps outdated

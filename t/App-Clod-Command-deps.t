@@ -27,6 +27,8 @@ sub app_with (%more) {
 }
 
 my @did;
+my $clod = Test::MockModule->new('App::Clod');
+$clod->redefine( checkout => sub () { return Mojo::File->new("$tmp") } );
 my $deps = Test::MockModule->new('App::Clod::Deps');
 $deps->redefine( listdeps         => sub ($dir) { return qw{Foo Bar} } );
 $deps->redefine( install          => sub ( $lib, @modules ) { push @did, "install $lib @modules"; return } );

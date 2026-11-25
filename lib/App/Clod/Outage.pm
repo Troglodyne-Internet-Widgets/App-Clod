@@ -30,6 +30,10 @@ our $SCAN = 500;
 
 C<($service)>.  The Minion lock that is held while the outage lasts.
 
+Returns Str, the name of the lock.
+
+    my $locked = $minion->is_locked( App::Clod::Outage::lock_name('github') );
+
 =cut
 
 sub lock_name ($service) { return "outage-$service" }
@@ -39,6 +43,10 @@ sub lock_name ($service) { return "outage-$service" }
 C<($job, $service, $error)>.  Starts an outage of C<github> or C<claude>, or
 extends it, so that it lasts C<$SECONDS> from now.  Notes C<outage> on the job,
 which is where L</summary> finds the error.
+
+Returns nothing.
+
+    App::Clod::Outage::begin( $job, 'github', $@ ) if !$ok;
 
 =cut
 
@@ -53,6 +61,11 @@ sub begin ( $job, $service, $error ) {
 =func holding
 
 C<($minion, $task)>.  The service whose outage holds that task, or undef.
+
+Returns Str or undef: C<github> or C<claude>, or undef when no outage holds
+the task.
+
+    return $job->retry( { delay => 600 } ) if App::Clod::Outage::holding( $minion, $job->task );
 
 =cut
 
@@ -71,6 +84,10 @@ C<($minion)>.  One C<{service, name, error, at, job}> for each outage that
 lasts now.  C<error>, C<at> and C<job> come from L</last_note>, and are absent
 when it finds none.
 
+Returns ArrayRef[HashRef], empty when no outage lasts.
+
+    my $outages = App::Clod::Outage::summary($minion);
+
 =cut
 
 sub summary ($minion) {
@@ -86,6 +103,11 @@ sub summary ($minion) {
 C<($minion, $service)>.  C<{error, at, job}> from the newest job that noted an
 outage of the service, among the newest C<$SCAN> jobs of the tasks that it
 holds, or undef.
+
+Returns HashRef or undef, undef when none of those jobs noted an outage of the
+service.
+
+    my $note = App::Clod::Outage::last_note( $minion, 'claude' );
 
 =cut
 

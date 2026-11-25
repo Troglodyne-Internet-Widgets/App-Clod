@@ -32,6 +32,8 @@ C<($job)>.  Prints the evidence of the job C<$job>, as L</lines> gives it, for
 each attempt and each run.  Dies with the usage when C<$job> is not a job
 id, and says so when the job kept no evidence.
 
+    $command->run(15285);
+
 =cut
 
 sub run ( $self, $job = q{} ) {
@@ -60,6 +62,10 @@ or the result of a call, cut to C<$RESULT_LENGTH> characters, marked when it
 is an error.  The result of the run has its error flag and the calls that
 claude refused.  An event of another type is its type.
 
+Returns Str, one value for each line, in list context.
+
+    print map { "$_\n" } lines($run);
+
 =cut
 
 sub lines ($run) {
@@ -77,6 +83,10 @@ sub lines ($run) {
 
 C<(\%event)>.  The parts of one stream-json event, as L</lines> describes
 them, without the time.
+
+Returns Str, one value for each piece, in list context.
+
+    my @pieces = pieces( { type => 'assistant', message => { content => 'Done.' } } );
 
 =cut
 
@@ -96,6 +106,10 @@ sub pieces ($event) {
 
 C<(\%part)>.  One part of the content of a message, as L</pieces> describes
 it.
+
+Returns Str, the line for the part.
+
+    my $line = piece( { type => 'text', text => 'Done.' } );
 
 =cut
 

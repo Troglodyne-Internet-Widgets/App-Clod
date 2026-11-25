@@ -42,6 +42,10 @@ C<title> and its C<body>.  Both kinds have C<asked_by> and C<quote>: the login
 of the person who asked, and their words, as they wrote them.  The schema
 cannot check that those words are theirs: L<App::Clod::Tasks/asked_for> does.
 
+Returns HashRef, the schema.
+
+    my $schema = App::Clod::Triage::schema( \@spokes, orgs => ['Org'], follow_ups => 2 );
+
 =cut
 
 sub schema ( $spokes, %allow ) {
@@ -108,6 +112,10 @@ the way a bare clone does.  The schema says the same with C<^> and C<$>, for
 claude, but in perl C<$> also matches before a newline at the end, so this is
 the check that counts.
 
+Returns Bool.  An undefined name is false.
+
+    die "$name is not a name for a new repository\n" if !App::Clod::Triage::repo_name($name);
+
 =cut
 
 sub repo_name ($name) { return ( $name // q{} ) =~ m{\A$NAME\z} }
@@ -117,6 +125,10 @@ sub repo_name ($name) { return ( $name // q{} ) =~ m{\A$NAME\z} }
 C<($entry)>.  The perl module that an entry of C<new_repos> will hold: its
 C<module>, else its C<name> with C<::> for each C<->, the way a distribution
 name gives a module name.
+
+Returns Str, the name of the module.
+
+    my $module = App::Clod::Triage::module_of( { org => 'Org', name => 'Foo-Bar' } );    # Foo::Bar
 
 =cut
 
@@ -132,6 +144,10 @@ pattern of L</schema> is a perl C<qr//> as a string, which it refuses.  The
 form of every field stays, the spokes that C<repo> may name with it.  The
 triage prompt states the rules and the form of a name, and L</validate> holds
 the answer to them.
+
+Returns HashRef, the schema.
+
+    my $schema = App::Clod::Triage::claude_schema( \@spokes, orgs => ['Org'] );
 
 =cut
 
@@ -166,6 +182,10 @@ spoke already, that C<repos> does not name, or whose name or description does
 not fit, and with an entry of C<repos> or of C<follow_ups> that is neither a
 spoke nor a new repository.  The words can go back to the model as they are.
 
+Returns HashRef, a new hash.  The answer that it takes does not change.
+
+    my $answer = App::Clod::Triage::validate( $outcome->{structured}, \@spokes, orgs => ['Org'] );
+
 =cut
 
 sub validate ( $answer, $spokes, %allow ) {
@@ -196,6 +216,11 @@ sub validate ( $answer, $spokes, %allow ) {
 
 Takes the spokes and a sub that returns a spoke's introduction.
 
+Returns Str, the text of the CLAUDE.md of the hub.  A spoke whose sub returns
+undef gets C<(no CLAUDE.md)>.
+
+    my $text = App::Clod::Triage::hub_claude_md( \@spokes, sub ($repo) { App::Clod::Triage::intro( $claude_md{$repo} ) } );
+
 =cut
 
 # The CLAUDE.md of the hub workspace: what each spoke is, from its own CLAUDE.md.
@@ -216,6 +241,11 @@ sub hub_claude_md ( $spokes, $intro_of ) {
 =func intro
 
 The first paragraph of a CLAUDE.md that is not a heading.
+
+Returns Str or undef, undef when the text is undefined or has no such
+paragraph.
+
+    my $intro = App::Clod::Triage::intro($claude_md);
 
 =cut
 

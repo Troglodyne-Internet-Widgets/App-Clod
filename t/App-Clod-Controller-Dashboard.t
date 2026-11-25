@@ -6,19 +6,26 @@ use re '/aasx';
 use Test2::V0;
 use Test2::Plugin::NoWarnings;
 use FindBin::libs;
-use Digest::SHA ();
-use File::Temp  ();
-use Mojo::File  ();
-use Mojo::Util  ();
-use Test::Mojo  ();
-use Time::HiRes qw{time};
+use Digest::SHA      ();
+use File::Temp       ();
+use Mojo::File       ();
+use Mojo::Util       ();
+use Test::Mojo       ();
+use Test::MockModule ();
+use Time::HiRes      qw{time};
 
+use App::Clod();
 use App::Clod::Outage();
 
 my $tmp  = File::Temp->newdir;
 my $conf = Mojo::File->new( "$tmp", 'clod.conf' );
 $conf->spew( Mojo::Util::dumper( { bot => 'test-bot', workspace => "$tmp/ws", spokes => ['Test-Org/one'], auth => { trusted_header => 'X-Test-User' } } ) );
 local $ENV{CLOD_CONFIG} = "$conf";
+
+# The page runs a commit, also where the tests run from no checkout.
+my $RUNNING = { sha => 'a' x 40, short => 'a' x 7 };
+my $clod    = Test::MockModule->new('App::Clod');
+$clod->redefine( running_commit => sub () { return $RUNNING } );
 
 my $t = Test::Mojo->new('App::Clod');
 $t->app->log->level('fatal');
@@ -147,8 +154,8 @@ subtest 'a harness fix that waits for review' => sub {
 subtest 'an update of the bot' => sub {
     my %act     = ( 'X-Clod-Action' => 'yes' );
     my $running = $t->app->running;
+    is( $running, $RUNNING, 'the page runs the commit that running_commit gave at startup' );
     $t->get_ok('/api/overview')->status_is(200)->json_is( '/running' => $running, 'the overview names the commit that the page runs' );
-    like( $running->{short}, qr/\A[[:xdigit:]]{7}\z/, 'which is the short sha of this checkout' );
 
     job( self_check => { checked_at => time, running => $running, checkout => { head => $running->{sha}, upstream => 'f' x 40, behind => 2, ahead => 0 }, plugins => [ { id => 'kit@m', version => '0.9', latest => '0.10' }, { id => 'ok@m', version => '1', latest => '1' } ] } );
     $minion->perform_jobs;

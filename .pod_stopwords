@@ -21,6 +21,7 @@ api
 arg
 args
 argv
+ArrayRef
 arrayref
 auth
 autodetect
@@ -34,6 +35,7 @@ BackPAN
 backtick
 basename
 Baugh
+Bool
 bugtracker
 checksummed
 checksumming
@@ -55,9 +57,12 @@ CIDR
 CIDRs
 claude
 CLI
+cli
+cmd
 COCOMO
 codename
 CODEOWNERS
+CodeRef
 coderef
 conf
 config
@@ -91,6 +96,7 @@ dryrun
 DSN
 dzil
 ECDSA
+ECMA
 ENV
 env
 filehandle
@@ -105,11 +111,13 @@ gitconfig
 github
 gitignore
 GraphQL
+graphql
 greppable
 hardcode
 hardcoded
 hardcodes
 hardcoding
+HashRef
 hashref
 heredoc
 hostname
@@ -118,6 +126,7 @@ HTTPS
 IMAP
 INI
 init
+Int
 IPs
 IPv
 JSON
@@ -130,8 +139,10 @@ LDAPS
 LDIF
 libgit
 lifecycle
+listdeps
 LLC
 LLOC
+loc
 loccount
 lookups
 loopback
@@ -155,6 +166,7 @@ misconfigured
 misconfigures
 misconfiguring
 mistyped
+Mojo
 Mojolicious
 mtime
 MX
@@ -164,6 +176,7 @@ namespace
 NIC
 NONINFRINGEMENT
 NTP
+Num
 OAuth
 ok
 OOM
@@ -197,6 +210,7 @@ recurses
 recursing
 refspec
 regenerable
+RegexpRef
 renderer
 repo
 repos
@@ -208,8 +222,10 @@ rsyncing
 rsyncs
 rtk
 ruleset
+runnable
 runtime
 scaffolded
+ScalarRef
 scp
 servicesudo
 setgid
@@ -224,6 +240,7 @@ SSL
 stderr
 stdin
 stdout
+Str
 Subclasses
 subdir
 subdirectory
@@ -263,6 +280,7 @@ umask
 unassign
 uncached
 unconfigured
+Undef
 undef
 undefine
 undefines
@@ -271,6 +289,7 @@ unlink
 unlinked
 unlinking
 unlinks
+unpushable
 URI
 URIs
 UUID

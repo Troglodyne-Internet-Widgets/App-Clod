@@ -105,6 +105,8 @@ my $HISTORY           = 10;
 
 C<($app, $config)>.  Adds every task in C<%TASKS> to the Minion of the app.
 
+    App::Clod::Tasks::register( $app, $config );
+
 =cut
 
 sub register ( $app, $config ) {
@@ -122,6 +124,12 @@ If GitHub refuses the token, it starts a GitHub outage, and the job waits
 through C<hold> in place of failing.  When the task returns and the job
 L</turned_out_fine>, it discards the transcripts that the claude runs of this
 attempt wrote, as L</run_claude> says.
+
+Returns Bool: 1 when the task returned, else what L</hold> returns.  Dies
+with the error of the task when the task dies for any reason but a token that
+GitHub refused.
+
+    my $ok = App::Clod::Tasks::perform( $job, $config, \&App::Clod::Tasks::triage, $item );
 
 =cut
 
@@ -141,6 +149,10 @@ sub perform ( $job, $config, $code, @args ) {
 
 C<($job, $config)>.  The L<App::Clod::Evidence> of this attempt of the job.
 
+Returns an App::Clod::Evidence object.
+
+    my $evidence = App::Clod::Tasks::evidence( $job, $config );
+
 =cut
 
 sub evidence ( $job, $config ) {
@@ -159,6 +171,10 @@ L<App::Clod::Evidence/prune> removes those after C<$EVIDENCE_SECONDS>.
 
 A job that failed, or that will retry, did not turn out fine, and a task
 that died never gets here.
+
+Returns Bool, 1 when the job turned out fine, else 0.
+
+    my $fine = App::Clod::Tasks::turned_out_fine($job);
 
 =cut
 
@@ -180,6 +196,10 @@ C<clod.repo> and C<clod.origin> from the notes of the job when it has them.
 Each value is percent-encoded, because the variable takes the W3C Baggage
 format, where a comma, an equals sign or a space would end the value.
 
+Returns Str, the value for C<OTEL_RESOURCE_ATTRIBUTES>.
+
+    my $attributes = App::Clod::Tasks::telemetry_attributes( $job, $config->{otel} );
+
 =cut
 
 sub telemetry_attributes ( $job, $otel ) {
@@ -196,6 +216,11 @@ task finishes with the result of the last one and C<held>, because the schedule
 starts the next one anyway.  Any other job retries after the outage lock
 expires.
 
+Returns Bool, what C<finish> of L<Minion::Job> returns, for a scheduled task.
+Returns nothing for any other task, because it retries the job.
+
+    return App::Clod::Tasks::hold($job) if $held;
+
 =cut
 
 sub hold ($job) {
@@ -211,6 +236,8 @@ C<($minion)>.  Creates or updates the Minion schedules of C<inbox_poll>,
 C<harness_scan>, C<assigned_sweep>, C<activity_sweep>, C<spoke_sweep>,
 C<upstream_sweep>, C<release_sweep>, C<loc_sweep> and C<self_check>.
 
+    App::Clod::Tasks::schedule( $app->minion );
+
 =cut
 
 sub schedule ($minion) {
@@ -222,6 +249,10 @@ sub schedule ($minion) {
 
 C<($config)>.  An L<App::Clod::GitHub> for that configuration.
 
+Returns an App::Clod::GitHub object.
+
+    my $gh = App::Clod::Tasks::github($config);
+
 =cut
 
 sub github ($config) { return App::Clod::GitHub->new( api => $config->{github_api}, timeout => $config->{http_timeout} ) }
@@ -231,6 +262,10 @@ sub github ($config) { return App::Clod::GitHub->new( api => $config->{github_ap
 C<($config, $repo)>.  An L<App::Clod::Spoke> for that repository.  With
 C<run_as>, its C<as_agent> is L<App::Clod::Claude/as_account> of L</claude>, so
 that the clone of a claude run belongs to the account that claude runs as.
+
+Returns an App::Clod::Spoke object.
+
+    my $spoke = App::Clod::Tasks::spoke( $config, 'Owner/Name' );
 
 =cut
 
@@ -255,6 +290,10 @@ L</change_tools> after them, which include what the repositories of the run
 declare in F<clod.json>.  A read-only run passes
 C<read_tools> as C<tools>, so C<extra_tools> never reaches it.
 
+Returns an App::Clod::Claude object.
+
+    my $claude = App::Clod::Tasks::claude($config);
+
 =cut
 
 sub claude ($config) {
@@ -277,6 +316,11 @@ sub claude ($config) {
 
 Reads F<share/prompts/$name.md> and fills its C<{{name}}> placeholders.
 
+Returns Str, the text of the prompt with each placeholder filled.  A
+placeholder with no value in C<%vars> becomes the empty string.
+
+    my $text = App::Clod::Tasks::prompt( 'fix', repo => 'Owner/Name', branch => 'clod/1-title' );
+
 =cut
 
 sub prompt ( $name, %vars ) {
@@ -290,6 +334,11 @@ sub prompt ( $name, %vars ) {
 C<($minion, $task)>.  The result of the newest finished job of that task, or
 undef.
 
+Returns HashRef or undef: the result of the job, or undef when no job of the
+task finished.  Each task that this module schedules finishes with a hash.
+
+    my $cursor = App::Clod::Tasks::last_result( $minion, 'inbox_poll' ) // {};
+
 =cut
 
 sub last_result ( $minion, $task ) {
@@ -301,6 +350,8 @@ sub last_result ( $minion, $task ) {
 
 Removes all but the last few finished jobs, and the last few failed jobs, of a
 scheduled task.
+
+    App::Clod::Tasks::prune_history( $minion, 'harness_scan' );
 
 =cut
 
@@ -321,6 +372,8 @@ sub prune_history ( $minion, $task, $keep = $HISTORY ) {
 
 Appends to the job's C<log> note and to the application log.
 
+    App::Clod::Tasks::log_note( $job, 'opened the pull request' );
+
 =cut
 
 sub log_note ( $job, $message ) {
@@ -340,6 +393,10 @@ spoke task, and with an C<agent_own_lib> F<share/prompts/install.md>, which
 says how to install a module; then the C<system_prompts> text of the task.
 A blank line goes between them.
 
+Returns Str, the parts joined by blank lines.
+
+    my $system = App::Clod::Tasks::system_text( $config, 'spoke_fix' );
+
 =cut
 
 sub system_text ( $config, $task ) {
@@ -355,6 +412,11 @@ With C<@programs>, from L</declared_programs>, it also names the programs
 that the run may run, as F<share/prompts/package-programs.md> says.  Empty
 without C<system_packages>, because then the hub installs nothing.
 
+Returns Str, the text for the prompt, or the empty string without
+C<system_packages>.
+
+    my $text = App::Clod::Tasks::packages_prompt( $config, 'ffmpeg' );
+
 =cut
 
 sub packages_prompt ( $config, @programs ) {
@@ -369,6 +431,10 @@ the default tools of L</claude>, then C<@rules>, from L</declared_rules>, and
 then the rule C<Bash(PROGRAM:*)> for each of C<@programs>, from
 L</declared_programs>.
 
+Returns ArrayRef[Str], the rules of the tools, in that order.
+
+    my $tools = App::Clod::Tasks::change_tools( $config, \@rules, 'ffmpeg' );
+
 =cut
 
 sub change_tools ( $config, $rules, @programs ) {
@@ -379,6 +445,8 @@ sub change_tools ( $config, $rules, @programs ) {
 
 C<($job, $delay)>.  Retries the job in C<$delay> seconds, and returns nothing,
 which is how L</run_claude> tells its callers that the job will retry.
+
+    return App::Clod::Tasks::retry_after( $job, 120 ) if !$guard;
 
 =cut
 
@@ -398,6 +466,11 @@ configured, the run gets the L</telemetry_attributes> of the job.  Returns
 the outcome of L<App::Clod::Claude/run>, a hash reference.  If the quota is paused or runs out, or Claude refuses the token, it
 retries the job and returns undef instead, so the caller returns at once.  A
 refused token starts a Claude outage, see L<App::Clod::Outage>.
+
+Returns HashRef or undef: the outcome of the run, or undef when the job will
+retry.
+
+    my $outcome = App::Clod::Tasks::run_claude( $job, $config, dir => $tree, prompt => $text ) // return;
 
 =cut
 
@@ -437,6 +510,11 @@ sub run_claude ( $job, $config, %run ) {
 C<(@outcomes)>.  The C<cost>, the last C<rate_limit>, and any C<quota_reset> of
 the runs, as a list for a job result.
 
+Returns a list of key and value pairs, for a hash: C<cost>, a Num, and
+C<rate_limit> and C<quota_reset> when a run had them.
+
+    my %usage = App::Clod::Tasks::usage_of(@outcomes);
+
 =cut
 
 sub usage_of (@outcomes) {
@@ -452,6 +530,10 @@ sub usage_of (@outcomes) {
 
 C<($item)>.  C<Owner/Name#number>.
 
+Returns Str, such as C<Owner/Name#12>.
+
+    my $origin = App::Clod::Tasks::origin_of($item);
+
 =cut
 
 sub origin_of ($item) { return "$item->{repo}#$item->{number}" }
@@ -459,6 +541,10 @@ sub origin_of ($item) { return "$item->{repo}#$item->{number}" }
 =func origin_url
 
 C<($config, $item)>.  The web URL of the issue or pull request.
+
+Returns Str, the URL under C<github_web>.
+
+    my $url = App::Clod::Tasks::origin_url( $config, $item );
 
 =cut
 
@@ -473,6 +559,10 @@ those that the last C<spoke_sweep> dropped because they are not public, the
 repositories that the sweep found in C<spoke_orgs>, and the L</made_repos>,
 sorted and each once.  Before the first sweep finishes, only the configured
 ones and the made ones.
+
+Returns ArrayRef[Str], the C<Owner/Name> of each spoke.
+
+    my $spokes = App::Clod::Tasks::spokes( $minion, $config );
 
 =cut
 
@@ -491,6 +581,10 @@ From then on that sweep alone says whether it is a spoke, so a repository
 that was archived later stops being one.  Until then, a notification about the
 new repository, such as a review of its first pull request, is not lost as
 "not a spoke".
+
+Returns a list of Str, the C<Owner/Name> of each repository.
+
+    my @made = App::Clod::Tasks::made_repos( $minion, $swept );
 
 =cut
 
@@ -511,6 +605,10 @@ sub made_repos ( $minion, $swept ) {
 
 C<($minion, $config, $repo)>.
 
+Returns Bool, true when C<$repo> is one of the L</spokes>.
+
+    my $known = App::Clod::Tasks::is_spoke( $minion, $config, 'Owner/Name' );
+
 =cut
 
 sub is_spoke ( $minion, $config, $repo ) {
@@ -520,6 +618,10 @@ sub is_spoke ( $minion, $config, $repo ) {
 =func authorized
 
 C<($config, $login)>.  True when the login is in C<authorized_users>.
+
+Returns Bool.  An undefined login is not authorized.
+
+    my $may = App::Clod::Tasks::authorized( $config, $login );
 
 =cut
 
@@ -542,6 +644,10 @@ with C<no_spokes_since>, the time that it first found no spoke.  If
 C<spoke_orgs> names any organization, it also queues a C<spoke_sweep>, unless one
 already waits or runs, so the first start does not wait for the sweep of the
 next quarter hour.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::inbox_poll( $job, $config );
 
 =cut
 
@@ -586,6 +692,11 @@ sub inbox_poll ( $job, $config ) {
 
 C<($job, $config, $gh, $thread)>.  Turns one notification into a job.  Returns
 the job id, or the reason it made none.
+
+Returns Str: the id of the job that it queued, which is all digits, or the
+reason that it queued none.
+
+    my $outcome = App::Clod::Tasks::inbox_thread( $job, $config, $gh, $thread );
 
 =cut
 
@@ -662,6 +773,10 @@ of it that waits.  Undef if there is none.  A C<sort_review> or
 C<spoke_address> that runs does not count: it read what was pending when it
 started, so it does not answer a later comment.
 
+Returns Int or undef: the id of the job, or undef when there is none.
+
+    my $queued = App::Clod::Tasks::queued_address( $minion, 'Owner/Name#12' );
+
 =cut
 
 sub queued_address ( $minion, $origin ) {
@@ -685,6 +800,10 @@ asked for a review is in C<review_requester>.
 If C<latest_comment_url> names no comment, or names the pull request itself, the
 author of the latest review or line comment on the pull request caused it.  A
 review of an authorized user came with such a notification.
+
+Returns Str or undef: the login, or undef when nobody is known.
+
+    my $who = App::Clod::Tasks::requester( $config, $gh, $repo, $number, $reason, $subject );
 
 =cut
 
@@ -714,6 +833,10 @@ sub requester ( $config, $gh, $repo, $number, $reason, $subject ) {
 C<($config, $gh, $item)>.  The issue or pull request and the last twenty
 entries of its L</conversation>, as Markdown for a prompt.
 
+Returns Str, the Markdown.
+
+    my $markdown = App::Clod::Tasks::context( $config, $gh, $item );
+
 =cut
 
 sub context ( $config, $gh, $item ) {
@@ -732,6 +855,10 @@ a pull request, the body of each review that has one is an entry too, with
 C<review> set and C<created_at> from its C<submitted_at>.  Line comments are
 not entries: they belong to their threads.
 
+Returns ArrayRef[HashRef], each a comment as GitHub gives it, or a review.
+
+    my $said = App::Clod::Tasks::conversation( $gh, $item );
+
 =cut
 
 sub conversation ( $gh, $item ) {
@@ -746,6 +873,10 @@ sub conversation ( $gh, $item ) {
 =func default_branch
 
 C<($gh, $repo)>.
+
+Returns Str, the name of the default branch of C<$repo> on GitHub.
+
+    my $base = App::Clod::Tasks::default_branch( $gh, 'Owner/Name' );
 
 =cut
 
@@ -763,6 +894,11 @@ sweep old.
 Triage reads every spoke to judge which ones a request needs, and does not
 change any of them, so a reference a quarter of an hour old is good enough.  A
 spoke run fetches its own worktree, so no change starts from it.
+
+Returns Mojo::File and HashRef: the hub directory, then a hash of each
+repository to its reference worktree, a Mojo::File.
+
+    my ( $hub, $ref ) = App::Clod::Tasks::prepare_hub( $config, $gh, $spokes, $item->{repo} );
 
 =cut
 
@@ -791,6 +927,10 @@ C<($config)>.  The section of the triage prompt that says what every spoke run
 is told by C<spoke_prompt>, and which tool spokes it gets a checkout of.  Each
 part is there when its setting is, and the section is empty when neither is.
 
+Returns Str, the section, or the empty string.
+
+    my $briefing = App::Clod::Tasks::spoke_briefing($config);
+
 =cut
 
 sub spoke_briefing ($config) {
@@ -813,6 +953,12 @@ issues, C<follow_ups>, how many this request may still file, which
 is C<follow_up_max> less L</filed_for> the origin; it is not there when none
 are left.  Empty for a review, which changes nothing.
 
+Returns a list of key and value pairs, for a hash: C<orgs>, an ArrayRef[Str],
+and C<follow_ups>, an Int, each when it is there.  The list is empty when
+neither is.
+
+    my %create = App::Clod::Tasks::creation( $minion, $config, $item );
+
 =cut
 
 sub creation ( $minion, $config, $item ) {
@@ -829,6 +975,10 @@ C<($minion, $origin, $except)>.  How many repositories the C<create_repo>
 jobs for the origin have made, whatever their state now, leaving out the job
 C<$except>.  A job counts from the moment that it notes C<created>, so a job
 that made its repository and then failed still counts.
+
+Returns Int, the count of the repositories.
+
+    my $made = App::Clod::Tasks::made_for( $minion, 'Owner/Name#12', $job->id );
 
 =cut
 
@@ -848,6 +998,10 @@ C<file_issues> jobs for the origin have filed, whatever their state now,
 leaving out the job C<$except>.  Each issue counts from the moment that its
 job notes it in C<filed>.
 
+Returns Int, the count of the issues.
+
+    my $filed = App::Clod::Tasks::filed_for( $minion, 'Owner/Name#12', $job->id );
+
 =cut
 
 sub filed_for ( $minion, $origin, $except = 0 ) {
@@ -866,6 +1020,10 @@ C<($info)>.  The L</origin_of> the C<item> in the arguments of a job, from its
 Minion info, or the empty string for a job without one.  The arguments say it
 for every job that a change made, whether triage enqueued it or a person did.
 
+Returns Str, the origin, or the empty string.
+
+    my $origin = App::Clod::Tasks::item_origin( $minion->job($id)->info );
+
 =cut
 
 sub item_origin ($info) {
@@ -878,6 +1036,10 @@ sub item_origin ($info) {
 C<($gh, $item)>.  What each person wrote on the issue or pull request: its
 body, every entry of its L</conversation>, and on a pull request every line
 comment of its review threads, each a C<{by, body}>.
+
+Returns ArrayRef[HashRef], each a C<{by, body}>.
+
+    my $written = App::Clod::Tasks::written( $gh, $item );
 
 =cut
 
@@ -897,6 +1059,10 @@ every run of white space as one space and none at either end.  So the hub
 makes a repository or files an issue only when a person who may ask for one
 did, in their own words.  The model cannot make that up from a task that
 seems to want one, nor take it from the words of somebody else.
+
+Returns 1 when an authorized user asked for the entry.
+
+    App::Clod::Tasks::asked_for( $config, $written, $entry, $entry->{repo} );
 
 =cut
 
@@ -928,6 +1094,10 @@ schema.  Then a C<create_repo> job for each new repository comes before the
 chain, as the parents of its first job, and one C<file_issues> job files the
 follow-up issues after the new repositories are made.  An answer of scope
 C<follow_up> has no chain and no C<report>: filing the issues settles it.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.  Returns nothing when the job retries instead, because claude was out of quota or another job held the lock.
+
+    my $ok = App::Clod::Tasks::triage( $job, $config, $item );
 
 =cut
 
@@ -985,6 +1155,11 @@ sub triage ( $job, $config, $item ) {
 C<($job, $item, $answer)>.  Enqueues the jobs that the triage answer calls for,
 and returns their ids.
 
+Returns a list of Int, the ids of the jobs that it queued: the C<create_repo>
+jobs, the C<file_issues> job, then the chain and the C<report>.
+
+    my @children = App::Clod::Tasks::plan_children( $job, $item, $answer );
+
 =cut
 
 sub plan_children ( $job, $item, $answer ) {
@@ -1038,6 +1213,10 @@ sub plan_children ( $job, $item, $answer ) {
 
 C<($job)>.  The results of the parents of the job, where they are hashes.
 
+Returns a list of HashRef, one result for each parent that has a hash.
+
+    my @prior = App::Clod::Tasks::parent_results($job);
+
 =cut
 
 sub parent_results ($job) {
@@ -1054,6 +1233,10 @@ sub parent_results ($job) {
 
 C<($job)>.  The results of the parents of the job, of their parents, and so
 on, where they are hashes: the nearest first, each job once.
+
+Returns a list of HashRef, the results.
+
+    my @earlier = App::Clod::Tasks::ancestor_results($job);
 
 =cut
 
@@ -1080,6 +1263,10 @@ default branch.  A C<spoke_fix> result names a branch only when it pushed one,
 and a C<spoke_address> result names the branch of the pull request that it
 answers.
 
+Returns Str, the name of the branch.
+
+    my $branch = App::Clod::Tasks::tool_branch( $job, $gh, 'Owner/Tools' );
+
 =cut
 
 sub tool_branch ( $job, $gh, $tool ) {
@@ -1091,6 +1278,10 @@ sub tool_branch ( $job, $gh, $tool ) {
 
 C<(\@checkouts)>.  The paragraph of a spoke prompt that names where each tool
 spoke is checked out, or empty when there is none.
+
+Returns Str, the paragraph, or the empty string.
+
+    my $note = App::Clod::Tasks::tools_note( \@checkouts );
 
 =cut
 
@@ -1150,6 +1341,12 @@ A tool worktree is made without a lock.  It is detached, so it holds no
 branch, and nothing is pushed from it, and taking a lock would hold every run
 on that branch back while any job works in a tool spoke, for up to four hours.
 
+Returns Any: the list that C<$work> returns, or nothing when another job holds
+the lock and the job will retry.  Dies with the error of C<$work>, or of a
+tool worktree that could not be made, after it removed the work.
+
+    return App::Clod::Tasks::in_worktree( $job, $config, $repo, { branch => $branch, base => $base, agent => 1 }, $work );
+
 =cut
 
 our $SCRATCH = '.scratch';
@@ -1199,6 +1396,10 @@ command under a directory that another account owns, and the tests of a
 spoke that run that code run as the account of the run, under its
 C<TMPDIR>.
 
+Returns Str, the absolute path of the scratch directory.
+
+    my $scratch = App::Clod::Tasks::make_scratch( $config, $root );
+
 =cut
 
 our $SCRATCH_BASE = '/tmp';
@@ -1219,6 +1420,10 @@ directory of the job C<$root>, or undef when there is no link, or when the
 link names a path that L</make_scratch> does not make.  The account of the
 run can write C<$root>, so the link is checked before anything removes what
 it names.
+
+Returns Str or undef: the path, or undef when there is none.
+
+    my $scratch = App::Clod::Tasks::scratch_of($root);
 
 =cut
 
@@ -1241,6 +1446,10 @@ its head can be in another repository.  Dies when C<%how> names neither.
 A detached worktree holds no branch for git, but its job still works on one.
 L</sort_review> reads the branch of the bot's own pull request and replies to
 its reviews, and a L</spoke_address> on that branch replies to the same ones.
+
+Returns Str, the name of the lock.
+
+    my $lock = App::Clod::Tasks::work_lock( 'Owner/Name', { branch => 'clod/1-title' } );
 
 =cut
 
@@ -1271,6 +1480,8 @@ the run itself could.  A checkout that is no longer a directory is skipped.
 Each program gets C<$CLEANUP_SECONDS>.  A program that fails, or a
 F<clod.json> that cannot be read, is noted on C<$job> with the first line of
 why, and the rest still run.
+
+    App::Clod::Tasks::clean_up( $job, $config, $root, @checkouts );
 
 =cut
 
@@ -1318,6 +1529,8 @@ not a link.  A job of an older release has such a directory, and Claude Code
 made a directory in it, for its own temporary files, that only that account
 can enter.  A failure is a warning, and the rest is still removed.
 
+    App::Clod::Tasks::remove_work( $config, $root, @checkouts );
+
 =cut
 
 sub remove_work ( $config, $root, @checkouts ) {
@@ -1344,6 +1557,10 @@ L</in_worktree> removed it, runs L</sweep_root>.  A job that Minion no longer
 has counts as one that no longer runs.  Returns the ids of the directories that
 it removed.
 
+Returns a list of Str, the ids, or nothing when there is no F<work/>.
+
+    my @swept = App::Clod::Tasks::sweep_work( $job, $config );
+
 =cut
 
 our %STILL_RUNS = map { $_ => 1 } qw{inactive active};
@@ -1369,6 +1586,8 @@ directory of a job that a run left behind.  A checkout is a directory under
 C<$root>, one or two levels down, that holds a F<.git>, and its repository is
 its path under C<$root>, as L</in_worktree> makes them.
 
+    App::Clod::Tasks::sweep_root( $job, $config, $root );
+
 =cut
 
 sub sweep_root ( $job, $config, $root ) {
@@ -1389,6 +1608,10 @@ with a dash for each run of anything else, and at most forty characters, so
 that the branch reads well in the lists of GitHub.  Empty when the title has no
 such letter or digit, or there is no title.
 
+Returns Str, the slug, or the empty string.
+
+    my $slug = App::Clod::Tasks::slug('Fix the login page');
+
 =cut
 
 sub slug ($text) {
@@ -1404,6 +1627,10 @@ that it reaches somebody's notifications: C<$who>, the person who asked for
 it, if that login is in C<authorized_users>, else every one of them.  The
 login of the dashboard need not be one of GitHub.
 
+Returns a list of Str, the logins.
+
+    my @logins = App::Clod::Tasks::reviewers( $config, $item->{requester} );
+
 =cut
 
 sub reviewers ( $config, $who ) {
@@ -1415,6 +1642,8 @@ sub reviewers ( $config, $who ) {
 C<($job, $gh, $repo, $number, @logins)>.  Assigns the issue or pull request to
 C<@logins>.  A failure goes to the log of the job and does not fail it,
 because what it assigns is open by then.
+
+    App::Clod::Tasks::assign_to( $job, $gh, 'Owner/Name', 12, @logins );
 
 =cut
 
@@ -1430,6 +1659,10 @@ C<($job)>.  The ref in the bare clone that holds the commits of the job while
 its push waits for a retry: F<refs/clod/kept/E<lt>idE<gt>>.  A fetch prunes
 only F<refs/remotes>, so it keeps them.
 
+Returns Str, the name of the ref.
+
+    my $ref = App::Clod::Tasks::kept_ref($job);
+
 =cut
 
 sub kept_ref ($job) { return 'refs/clod/kept/' . $job->id }
@@ -1439,6 +1672,10 @@ sub kept_ref ($job) { return 'refs/clod/kept/' . $job->id }
 C<($job, $spoke)>.  The work that an earlier try of the job kept when its push
 failed, as L</push_or_keep> noted it.  Undef if there is none, or if its commit
 is gone from the bare clone.
+
+Returns HashRef or undef: the note C<kept>, or undef.
+
+    my $kept = App::Clod::Tasks::kept( $job, $spoke );
 
 =cut
 
@@ -1459,6 +1696,8 @@ after the push: the C<answer> of the run, C<commits> and C<usage>.  The work
 of an answer to a review also has C<onto>, the head of the branch on GitHub
 that the work started from.  After a push that works, it drops what an earlier
 try kept.
+
+    App::Clod::Tasks::push_or_keep( $job, $spoke, $tree, $branch, $work );
 
 =cut
 
@@ -1487,6 +1726,10 @@ branch merges.  Undef when C<system_packages> is not configured, and when
 the host has every package and archive that the branch declares.  A
 declaration that cannot be read or resolved is not a missing package: the job
 notes why, and this returns undef.  Otherwise its C<missing> is not empty.
+
+Returns HashRef or undef: what L</lacks_of> returns, or undef.
+
+    my $lacks = App::Clod::Tasks::branch_packages( $job, $config, $tree );
 
 =cut
 
@@ -1558,6 +1801,10 @@ For each program that fails a condition, the job notes which.  None without
 C<system_packages>.  A declaration that cannot be read or resolved gives none,
 and the job notes why.
 
+Returns a list of Str, the names of the programs, or nothing.
+
+    my @programs = App::Clod::Tasks::declared_programs( $job, $config, $tree );
+
 =cut
 
 our $BARE_NAME = qr{\A \w [\w.+-]* \z};
@@ -1594,6 +1841,10 @@ C<($packager, $claude, $need, $program)>.  Why C<$program>, the first word of
 the C<test> of C<$need>, a need as L</resolved> gives it, gets no rule, as
 L</declared_programs> lists the conditions.  Undef when it gets one.  Dies
 when the packager cannot say.
+
+Returns Str or undef: the reason, or undef when the program gets a rule.
+
+    my $why = App::Clod::Tasks::program_refusal( $config->{system_packages}{packager}, $claude, $need, 'ffmpeg' );
 
 =cut
 
@@ -1650,6 +1901,10 @@ What a rule allows is what is at that path in the worktree, which the run can
 change, so a rule lets the run do no more than C<Bash(perl:*)> of the default
 C<allowed_tools> already does.  It spares the run a refusal.
 
+Returns a list of Str, the rules, each once.
+
+    my @rules = App::Clod::Tasks::declared_rules( $job, $gh, $tools->{checkouts} );
+
 =cut
 
 our $DECLARED_NAME = qr{ (?! \.\.? (?! [^/] ) ) [\w.+] [\w.+-]* };
@@ -1666,6 +1921,10 @@ sub declared_rules ( $job, $gh, $checkouts ) {
 
 C<($job, $gh, \%checkout, $own)>.  The rules of L</declared_rules> for one
 checkout of L</in_worktree>.  C<$own> is true for the spoke of the run.
+
+Returns a list of Str, the rules, or nothing.
+
+    my @rules = App::Clod::Tasks::checkout_rules( $job, $gh, $checkout, 1 );
 
 =cut
 
@@ -1696,6 +1955,10 @@ C<($job, $spoke, $branch, $key)>.  The paths of the files that F<clod.json> on
 C<origin/$branch> of the spoke declares under C<$key>, C<run> or C<cleanup>, as
 L</declared_rules> says.  The job notes each path that it leaves out, and why.
 Empty when there is no F<clod.json>.  Dies when it cannot be read.
+
+Returns a list of Str, the paths relative to the top of the repository.
+
+    my @paths = App::Clod::Tasks::declared_paths( $job, $spoke, 'main', 'run' );
 
 =cut
 
@@ -1729,6 +1992,10 @@ C<($spoke, \%file)>, a file of L<App::Clod::Spoke/files_at>.  True if it is an
 executable file, or a symbolic link whose target is the name of another file in
 its directory.
 
+Returns Bool.
+
+    my @found = grep { App::Clod::Tasks::runnable( $spoke, $_ ) } @files;
+
 =cut
 
 sub runnable ( $spoke, $file ) {
@@ -1745,6 +2012,11 @@ branch needs packages that the host lacks: C<needs_packages>, and
 C<packages>, C<sources> and C<needs>, as L</packages_install> and the
 dashboard take them.
 
+Returns a list of key and value pairs, for a hash: C<needs_packages> is 1,
+and the others are an ArrayRef each.
+
+    my %waits = App::Clod::Tasks::waits_for_packages($lacks);
+
 =cut
 
 sub waits_for_packages ($lacks) {
@@ -1755,6 +2027,10 @@ sub waits_for_packages ($lacks) {
 
 C<($lacks)>, from L</branch_packages>.  The paragraph for the pull request
 that says what the host lacks, and what a person does next.
+
+Returns Str, the paragraph.
+
+    my $note = App::Clod::Tasks::packages_note($lacks);
 
 =cut
 
@@ -1795,6 +2071,10 @@ that patch in the clone and its index before the run, as
 L<App::Clod::Spoke/apply_patch> does, so the run commits it with its own
 changes, through the hooks that the patched clone has.  With C<title>, the
 pull request has that title, in place of the one that the run gives.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.  Returns nothing when the job retries instead, because claude was out of quota or another job held the lock.
+
+    my $ok = App::Clod::Tasks::spoke_fix( $job, $config, { item => $item, repo => 'Owner/Name', instructions => $text } );
 
 =cut
 
@@ -1844,6 +2124,10 @@ says.  That is a run that says in C<blocked> what kept it from finishing,
 whether or not claude refused calls.  A run that made no commit, and says in
 C<blocked> that it finished, finishes as C<no_change>, also when claude
 refused some of its calls.  Its result keeps them in C<denied>.
+
+Returns HashRef or undef: the work, or undef.
+
+    my $work = App::Clod::Tasks::fix_run( $job, $config, $gh, $args, $spoke, $tree, $tools, branch => $branch, base => 'main', prior => q{} ) // return;
 
 =cut
 
@@ -1910,6 +2194,10 @@ our %REVIEW_SCHEMA = (
 
 Reviews the pull request head with read-only tools and posts one review.
 
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.  Returns nothing when the job retries instead, because claude was out of quota or another job held the lock.
+
+    my $ok = App::Clod::Tasks::spoke_review( $job, $config, { item => $item, repo => 'Owner/Name', instructions => $text } );
+
 =cut
 
 sub spoke_review ( $job, $config, $args ) {
@@ -1957,6 +2245,10 @@ sub spoke_review ( $job, $config, $args ) {
 C<($config, \@comments)>.  The review threads whose last message is from an
 authorized user, each with C<id>, C<path>, C<line> and C<messages>.
 
+Returns ArrayRef[HashRef], the threads, oldest first.
+
+    my $threads = App::Clod::Tasks::pending_threads( $config, $gh->review_comments( 'Owner/Name', 12 ) );
+
 =cut
 
 # The review threads whose last word is not the bot's.
@@ -1983,6 +2275,10 @@ C<($config, \@conversation)>.  The entries of a L</conversation> since the last
 one of the bot, from authorized users, each with C<id>, C<by> and C<body>, and
 C<review> for the body of a review.
 
+Returns ArrayRef[HashRef], the entries, oldest first.
+
+    my $comments = App::Clod::Tasks::pending_comments( $config, App::Clod::Tasks::conversation( $gh, $item ) );
+
 =cut
 
 sub pending_comments ( $config, $conversation ) {
@@ -2000,6 +2296,10 @@ sub pending_comments ( $config, $conversation ) {
 C<($config, $pull, $repo)>.  True if the pull request C<$pull> is the bot's
 own, from a branch of C<$repo>, so that the bot can push to it.
 
+Returns Bool.
+
+    my $own = App::Clod::Tasks::own_pull( $config, $gh->pull( 'Owner/Name', 12 ), 'Owner/Name' );
+
 =cut
 
 sub own_pull ( $config, $pull, $repo ) {
@@ -2012,10 +2312,20 @@ C<($config, $gh, $item)>.  What waits for an answer on the pull request
 C<$item>: the L</pending_threads> and the L</pending_comments>, as two array
 references.
 
+Returns ArrayRef[HashRef] and ArrayRef[HashRef]: the threads, then the
+comments.
+
+    my ( $threads, $comments ) = App::Clod::Tasks::pending( $config, $gh, $item );
+
 =cut
 
 sub pending ( $config, $gh, $item ) {
     return ( pending_threads( $config, $gh->review_comments( $item->@{qw(repo number)} ) ), pending_comments( $config, conversation( $gh, $item ) ) );
+}
+
+# True if a verdict of sort_review answers, with something to post.
+my sub answers ($said) {
+    return ( $said->{verdict} // q{} ) eq 'answer' && ( $said->{body} // q{} ) ne q{};
 }
 
 =func sort_review
@@ -2051,6 +2361,10 @@ Its result has C<answered>, the ids of the threads it answered, C<comment_url>
 when it answered the comments, and C<next>, the task and id of the job after
 it, if there is one.
 
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.  Returns nothing when the job retries instead, because claude was out of quota or another job held the lock.
+
+    my $ok = App::Clod::Tasks::sort_review( $job, $config, $item );
+
 =cut
 
 my %VERDICT = ( type => 'string', enum => [qw{answer change elsewhere}] );
@@ -2081,7 +2395,7 @@ sub sort_review ( $job, $config, $item ) {
     return in_worktree(
         $job, $config, $repo,
         { detach => $branch, agent => 1 },
-        sub ( $spoke, $tree, $tools ) {
+        sub ( $, $tree, $tools ) {
             my $outcome = run_claude(
                 $job, $config,
                 dir    => $tree,
@@ -2128,11 +2442,6 @@ sub sort_review ( $job, $config, $item ) {
             return $job->finish( { %result, next => { task => $task, id => $id } } );
         }
     );
-}
-
-# True if a verdict of sort_review answers, with something to post.
-sub answers ($said) {
-    return ( $said->{verdict} // q{} ) eq 'answer' && ( $said->{body} // q{} ) ne q{};
 }
 
 =func spoke_address
@@ -2187,6 +2496,10 @@ the standards left for a person.  Then the job runs even when nothing waits for 
 answer, posts the C<summary> of the run as its comment when there is no
 comment to answer, and makes the pull request ready for review when the host
 lacks nothing more.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.  Returns nothing when the job retries instead, because claude was out of quota or another job held the lock.
+
+    my $ok = App::Clod::Tasks::spoke_address( $job, $config, { item => $item, repo => 'Owner/Name', instructions => $text } );
 
 =cut
 
@@ -2252,6 +2565,10 @@ The run cannot change the description itself, because it cannot act as the
 bot on GitHub.  A failure goes to the log of the job and does not fail it, as
 in L</draft_state>.
 
+Returns nothing.
+
+    App::Clod::Tasks::describe( $job, $config, $gh, $item, $pull, $answer->{description} );
+
 =cut
 
 sub describe ( $job, $config, $gh, $item, $pull, $description ) {
@@ -2270,6 +2587,10 @@ C<($job, $gh, $pull, $draft)>.  Makes the pull request C<$pull> a draft when
 C<$draft> is true, and ready for review when it is false, if it is not that
 already.  A failure goes to the log of the job and does not fail it, because
 the work is pushed by then, and the comment of the job says what is missing.
+
+Returns nothing.
+
+    App::Clod::Tasks::draft_state( $job, $gh, $pull, 1 );
 
 =cut
 
@@ -2305,6 +2626,10 @@ host lacks nothing, and the run was L</stopped>, it fails the job, as
 L</refused> says, and returns undef.  If the run says that it finished, the
 work goes on as if claude had refused nothing.  A run that made no commit,
 with nothing refused and nothing in C<blocked>, does not ask here.
+
+Returns HashRef or undef: the work, or undef.
+
+    my $work = App::Clod::Tasks::address_run( $job, $config, $gh, $args, $spoke, $tree, $tools, pull => $pull, pending => $pending, comments => $comments ) // return;
 
 =cut
 
@@ -2381,6 +2706,10 @@ that the run did not finish, and the push would take the rest of the pull
 request away.  A rewrite that the run finished, and new commits on a run that
 was stopped, may be pushed.
 
+Returns Str or undef: the reason, or undef.
+
+    my $wrong = App::Clod::Tasks::unpushable( $spoke, $tree, $pull, $outcome );
+
 =cut
 
 sub unpushable ( $spoke, $tree, $pull, $outcome ) {
@@ -2402,6 +2731,10 @@ what it kept the run from doing.  An empty string when C<blocked> is empty, whic
 means that the run finished its work, also when claude refused some of its
 calls.  Undef when the answer has no C<blocked>, because claude did not keep
 to the schema.
+
+Returns Str or undef.
+
+    my $why = App::Clod::Tasks::blocked($outcome) // q{};
 
 =cut
 
@@ -2425,6 +2758,10 @@ a call, and as not stopped when claude refused nothing.  Before C<blocked>
 existed, each refused call stopped a run that made no commit, and this keeps
 that for a claude that does not keep to the schema.
 
+Returns Bool.
+
+    my $stopped = App::Clod::Tasks::stopped($outcome);
+
 =cut
 
 sub stopped ($outcome) {
@@ -2444,6 +2781,10 @@ counts as a refusal elsewhere: C<retried> points to a race, a fault of the
 host or a hook, and not to the permissions.  See
 L<App::Clod::Claude/retried>.
 
+Returns HashRef, with only the keys that have something.
+
+    my $refusals = App::Clod::Tasks::refusals($outcome);
+
 =cut
 
 sub refusals ($outcome) {
@@ -2457,6 +2798,10 @@ C<($outcome)>.  The error of a run that made no commit and was L</stopped>.
 It names each refused call, when claude refused some, and what the run says
 in C<blocked>, when it says something.  A run that made no commit and was not
 stopped changed nothing on purpose, and is not an error.
+
+Returns Str, the error.
+
+    my $error = App::Clod::Tasks::refused($outcome);
 
 =cut
 
@@ -2475,6 +2820,10 @@ says what the run said.  When claude refused calls, it counts them by tool and
 names the job, whose result and evidence hold the calls; the calls themselves
 stay off the forge, because a command can name a host or a path.  An empty
 list when the run says that nothing kept it from finishing.
+
+Returns Str, the paragraph, or an empty list.
+
+    my @notes = App::Clod::Tasks::unfinished_note( $work, $job->id );
 
 =cut
 
@@ -2497,6 +2846,10 @@ Answers a mention on an issue, or on a pull request that is not the bot's own.
 If the person asked for a change, it also enqueues triage for a fix.  The bot
 cannot push to the branch of that pull request, so the fix is a pull request of
 its own.  A mention on the bot's own pull request goes to L</sort_review>.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.  Returns nothing when the job retries instead, because claude was out of quota or another job held the lock.
+
+    my $ok = App::Clod::Tasks::reply( $job, $config, $item );
 
 =cut
 
@@ -2533,6 +2886,10 @@ a question and none opened a pull request, the question is the last word, and
 it posts nothing.  An answer on the bot's own pull request that touched no
 other spoke posts nothing either, because that pull request is the origin and
 the answer is already on it.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::report( $job, $config, { item => $item } );
 
 =cut
 
@@ -2577,6 +2934,8 @@ Returns C<{person, assigned, teams}>.  C<assigned> is false when GitHub dropped
 the assignment.  It drops it without an error for a user who cannot be
 assigned, and the mention still reaches that user.
 
+    my $asked = App::Clod::Tasks::hand_back( $job, $config, $gh, $item, 'lib/Foo.pm', 'I changed nothing.', $question );
+
 =cut
 
 sub hand_back ( $job, $config, $gh, $item, $path, @paragraphs ) {
@@ -2611,6 +2970,10 @@ sub hand_back ( $job, $config, $gh, $item, $path, @paragraphs ) {
 C<($config)>.  The paragraph that tells a person how to give the work back to
 the bot.
 
+Returns Str, the paragraph.
+
+    my $how = App::Clod::Tasks::how_to_resume($config);
+
 =cut
 
 sub how_to_resume ($config) {
@@ -2623,6 +2986,10 @@ Gives the origin back to a person, through C<hand_back>, when triage answered
 C<upstream> or C<clarify>.  For C<upstream> it explains why the fix is
 upstream, and how to fix it there by hand.  For C<clarify> it asks the
 question.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::kickback( $job, $config, { item => $item, triage => $answer } );
 
 =cut
 
@@ -2673,6 +3040,10 @@ If GitHub refuses to make the repository, for example because a private
 repository that the bot cannot see has the name, the job fails with GitHub's
 reason, and the spoke jobs after it wait for a person.
 
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::create_repo( $job, $config, { item => $item, org => 'Owner', name => 'Foo-Bar', description => 'Does foo', asked_by => 'someone' } );
+
 =cut
 
 sub create_repo ( $job, $config, $args ) {
@@ -2722,6 +3093,10 @@ exist.  The bot never takes over a repository that it did
 not make, even one of the same organization: it was not asked to change that
 one.  Why it makes no private repository is in L<App::Clod/CAVEATS>.
 
+Returns Str or undef: the reason, or undef.
+
+    my $why = App::Clod::Tasks::refusal( $job, $config, $gh, $args );
+
 =cut
 
 sub refusal ( $job, $config, $gh, $args ) {
@@ -2748,6 +3123,10 @@ The module is the one that triage named, else the one that the name of the
 repository gives.  The issue is opened before the spoke run, so a module name
 that the run settles on later does not change it.
 
+Returns HashRef, as above.
+
+    my $release = App::Clod::Tasks::release_issue( $config, $gh, $args );
+
 =cut
 
 sub release_issue ( $config, $gh, $args ) {
@@ -2767,6 +3146,10 @@ sub release_issue ( $config, $gh, $args ) {
 C<($issue, $login)>.  True when the issue, as GitHub returned it, is assigned
 to the login.  GitHub drops an assignee who cannot be assigned without an
 error, so this is how to tell.
+
+Returns Bool.
+
+    my $assigned = App::Clod::Tasks::assigned( $issue, 'someone' );
 
 =cut
 
@@ -2789,6 +3172,10 @@ comments on the origin with a link to each.  It notes each issue in C<filed>
 as soon as it is open, so a retry after a failure later on files none twice.
 Its result has C<filed>, each a C<{repo, title, url, number, assignee,
 assigned}>, and C<issues>, their URLs.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::file_issues( $job, $config, { item => $item, issues => \@issues } );
 
 =cut
 
@@ -2828,6 +3215,10 @@ said: the origin must have filed no more than C<follow_up_max> follow-up
 issues with these, counted by L</filed_for>, and each repository must be a
 spoke, which a repository that this change made is by now.
 
+Returns Str or undef: the reason, or undef.
+
+    my $why = App::Clod::Tasks::filing_refusal( $job, $config, $item, \@issues );
+
 =cut
 
 sub filing_refusal ( $job, $config, $item, $issues ) {
@@ -2860,6 +3251,10 @@ button installs is what a person merged.  It is read before the checks, so a
 spoke whose checks fail to run still has it.  A branch of the bot can declare
 packages too: see L</branch_packages>.  What it declares is installed only
 when a person confirms it for that pull request.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::harness_scan( $job, $config );
 
 =cut
 
@@ -2969,6 +3364,13 @@ worktree as the worker, and L<App::Clod::Spoke/commit> refuses hooks that the
 agent could change.  The hooks, perltidy and perlcritic get no C<PERL5LIB> and
 no C<PATH> that the agent can write, as L</prerequisites_env> says.
 
+Returns Bool, what C<finish> of L<Minion::Job> returns.  Returns nothing when
+another job holds the lock of the branch, and the job retries.  Dies with the
+error of the work in the worktree, such as a push or a call to GitHub that
+failed, after it set the umask back.
+
+    my $ok = App::Clod::Tasks::harness_fix( $job, $config, { repo => 'Owner/Name', checks => \@failing, by => 'someone' } );
+
 =cut
 
 my $HARNESS_TITLE  = 'Meet the harness standards';
@@ -2991,6 +3393,11 @@ makes C<harness_lib> with the umask of the caller, and dies before it installs
 anything when the agent could change either lib, as
 L<App::Clod::Spoke/exposed> says.  It never gives the worker C<agent_own_lib>,
 because every claude run can change what is in it.
+
+Returns a list of key and value pairs, for C<%ENV>: C<PERL5LIB> and C<PATH>,
+each a Str.  The list is empty with neither lib.
+
+    my %env = App::Clod::Tasks::prerequisites_env( $job, $config, $tree );
 
 =cut
 
@@ -3019,6 +3426,10 @@ sub prerequisites_env ( $job, $config, $tree ) {
 C<($config, $gh, $repo)>.  The open pull request of the bot in C<$repo> that a
 L</harness_fix> opened, or undef.
 
+Returns HashRef or undef: the pull request as GitHub gives it, or undef.
+
+    my $open = App::Clod::Tasks::open_harness_pull( $config, $gh, 'Owner/Name' );
+
 =cut
 
 sub open_harness_pull ( $config, $gh, $repo ) {
@@ -3030,6 +3441,10 @@ sub open_harness_pull ( $config, $gh, $repo ) {
 
 C<($config, $gh, $repo)>.  The open issue of the bot in C<$repo> that a
 L</harness_fix> filed, or undef.
+
+Returns HashRef or undef: the issue as GitHub gives it, or undef.
+
+    my $found = App::Clod::Tasks::open_harness_issue( $config, $gh, 'Owner/Name' );
 
 =cut
 
@@ -3062,7 +3477,7 @@ sub harness_fix ( $job, $config, $args ) {
         in_worktree(
             $job, $config, $repo,
             { branch => $branch, base => $base },
-            sub ( $spoke, $tree, $tools ) {
+            sub ( $spoke, $tree, $ ) {
                 my $results = App::Clod::Harness::update( $tree, $config->{harness}, cache => $config->{conformance_cache} );
                 my @changes = map {
                     my $check = $_->{check};
@@ -3128,6 +3543,10 @@ C<(@left)>, the lines of what is left for a person.  The paragraph of a comment
 or a pull request of L</harness_fix> that lists them, or says that nothing is
 left.
 
+Returns Str, the paragraph.
+
+    my $left = App::Clod::Tasks::harness_left(@manual);
+
 =cut
 
 sub harness_left (@left) {
@@ -3147,6 +3566,10 @@ not change the profile, or the code breaks nothing new.  It runs perlcritic
 with the C<PERL5LIB> and C<PATH> of the caller, which L</harness_fix> sets
 from L</prerequisites_env>, as for the hooks.  When perlcritic fails, the job
 notes why, and there is nothing.
+
+Returns a list of Str, the lines, or nothing.
+
+    my @flagged = App::Clod::Tasks::critic_flagged( $job, $spoke, $tree, $results );
 
 =cut
 
@@ -3173,6 +3596,10 @@ C<(@files)>.  The files, each quoted as code and joined by commas, for a line of
 a comment or a pull request of L</harness_fix>.  Past C<$CRITIC_FILES> of
 them, it says how many more there are.
 
+Returns Str.
+
+    my $named = App::Clod::Tasks::files_named(@files);
+
 =cut
 
 sub files_named (@files) {
@@ -3193,6 +3620,11 @@ then holds a reformat around its change.  So the update tidies them all at
 once.  It runs perltidy with the C<PATH> of the caller, which L</harness_fix>
 sets from L</prerequisites_env>, as for the hooks.  When perltidy fails, the
 job notes why, and there is nothing.
+
+Returns a list of Str: the profile, then the files.  The list is empty when
+there is no new profile, or perltidy changed nothing.
+
+    my ( $profile, @tidied ) = App::Clod::Tasks::tidied( $job, $tree, $results );
 
 =cut
 
@@ -3221,6 +3653,11 @@ C<harness>, the repository, so the dashboard offers no second fix while it
 waits or runs.  Returns C<next> for the result of the job, the task and id of
 that run.  The caller queues it last, after every call to GitHub, so that a
 retry of a job that failed does not queue a second run.
+
+Returns a list of one key and value pair: C<next>, and a HashRef of C<task>
+and C<id>.
+
+    my %next = App::Clod::Tasks::harness_run( $job, $item, spoke_fix => { title => 'Meet the harness standards' }, $left, 'It changed no file.' );
 
 =cut
 
@@ -3251,6 +3688,10 @@ C<plugin_error>, C<deps_error> or C<agent_deps_error>.  With no checkout, there 
 With C<system_packages>, C<system_packages> from L</host_packages>, and
 C<system_host>, the distribution of the host that it resolved for, from
 L<App::Clod::Packages/os_release>, or C<system_packages_error>.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::self_check( $job, $config );
 
 =cut
 
@@ -3302,6 +3743,10 @@ this check finds what the host has, because it is cheap, and runs again after
 L</packages_install>, as L</recheck> queues it.  So an install clears its item
 without a new scan of every spoke.
 
+Returns HashRef, empty when no spoke lacks anything.
+
+    my $lacks = App::Clod::Tasks::host_packages( $config, $scan, App::Clod::Packages::os_release() );
+
 =cut
 
 sub host_packages ( $config, $scan, %host ) {
@@ -3321,6 +3766,10 @@ L<Dist::Conformance::Check::SystemPackages/declared> reads it, resolved for the
 C<packager> of C<system_packages> and C<%host>, as
 L<Dist::Conformance::Check::SystemPackages/resolve> resolves it.  Dies when
 C<resolve> dies.
+
+Returns HashRef, what C<resolve> returns.
+
+    my $resolved = App::Clod::Tasks::resolved( $config, $declared, \%host );
 
 =cut
 
@@ -3369,19 +3818,24 @@ because a test of a package that is not installed fails anyway.
 A declaration that does not resolve for this host has only C<error>, why, and
 empty lists.
 
+Returns HashRef or undef, as above.
+
+    my $lacks = App::Clod::Tasks::lacks_of( $config, $declared, \%host, \%has );
+
 =cut
 
 sub lacks_of ( $config, $declared, $host, $has = {} ) {
     my $packager = $config->{system_packages}{packager};
     my $resolved = eval { resolved( $config, $declared, $host ) };
     return { needs => [], missing => [], sources => [], unresolved => [], failing => [], error => $@ =~ s{\s+\z}{}r } if !$resolved;
-    my %source = map { $_->{name} => $_ } grep { !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} };
+    my %source = map { $_->{name} => $_ } grep { local ($_) = $_; !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} };
     my @needs  = map {
         my $archive = defined $_->{source} ? $source{ $_->{source} } : undef;
         +{ name => $_->{name}, package => $_->{package}, archive => $archive };
-    } grep { defined $_->{package} && !( $has->{ $_->{package} } //= App::Clod::Packages::installed( $packager, $_->{package} ) ? 1 : 0 ) } @{ $resolved->{needs} };
+    } grep { local ($_) = $_; defined $_->{package} && !( $has->{ $_->{package} } //= App::Clod::Packages::installed( $packager, $_->{package} ) ? 1 : 0 ) } @{ $resolved->{needs} };
     my $claude  = claude($config);
     my @failing = @needs ? () : map {
+        local ($_) = $_;
         my $error = App::Clod::Packages::program_error( $claude, $_->{test} );
         defined $error ? { program => $_->{test}, dependency => $_->{name}, error => $error } : ();
     } grep { defined $_->{test} } @{ $resolved->{needs} };
@@ -3412,6 +3866,11 @@ L<App::Clod::Deps/install_programs>.  It queues a L</recheck>.  Its result has
 C<from> and C<to>, the head before and after the pull, and C<restarted>, the
 units.
 
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns.  Returns
+nothing when it restarts the units, as L</restart_and_finish> does.
+
+    my $ok = App::Clod::Tasks::self_update( $job, $config );
+
 =cut
 
 our $CGROUP = '/proc/self/cgroup';
@@ -3422,6 +3881,8 @@ C<($job)>.  Queues a L</self_check>, so that the action items of the dashboard
 show what the button of C<$job> changed.  It waits C<$RECHECK_DELAY> seconds,
 so that it does not start in the worker that the job then restarts.  No second
 one, while one waits.
+
+    App::Clod::Tasks::recheck($job);
 
 =cut
 
@@ -3457,6 +3918,11 @@ its own unit, the one that its process runs in, last, after it finishes,
 because the restart stops it.  With no C<restart_units>, it restarts nothing,
 and C<restart> in the result says that a person must.
 
+Returns Bool, what C<finish> of L<Minion::Job> returns, when there is no unit
+to restart.  Returns nothing when it restarts units.
+
+    return App::Clod::Tasks::restart_and_finish( $job, $config, \%result );
+
 =cut
 
 sub restart_and_finish ( $job, $config, $result ) {
@@ -3479,6 +3945,10 @@ standards, as L<App::Clod::Harness/critic_profiles> finds them.  So a policy
 that the standards add reaches the agent with the next install, and no
 provision.
 
+Returns a list of Str, the names of the modules.
+
+    my @tools = App::Clod::Tasks::agent_tools($config);
+
 =cut
 
 sub agent_tools ($config) {
@@ -3495,6 +3965,11 @@ also installs the tools of L</agent_tools> that it lacks, and upgrades those
 there with a newer release.  The next claude run loads them, so they restart
 nothing.  It queues a L</recheck>.  Its result has C<upgraded> and
 C<agent_upgraded>, what it found outdated, and C<agent_installed>.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns.  Returns
+nothing when it restarts the units, as L</restart_and_finish> does.
+
+    my $ok = App::Clod::Tasks::deps_upgrade( $job, $config );
 
 =cut
 
@@ -3519,6 +3994,10 @@ sub deps_upgrade ( $job, $config ) {
 The systemd unit that this process runs in, from F</proc/self/cgroup>, such as
 C<clod-worker-example.test.service>.  Undef outside a unit.
 
+Returns Str or undef.
+
+    my $unit = App::Clod::Tasks::own_unit() // 'not in a unit';
+
 =cut
 
 sub own_unit {
@@ -3536,6 +4015,8 @@ written.  It returns once systemd has queued the restart.  A restart that
 waited could not return for the unit of the worker, because the stop of the
 worker waits for its jobs, and this one among them.  Dies with what sudo or
 systemctl said if it fails.
+
+    App::Clod::Tasks::restart_unit('clod-worker-test.test.service');
 
 =cut
 
@@ -3555,11 +4036,15 @@ worker.  The next run of claude loads the new version, so
 nothing restarts.  It queues a L</recheck>.  Its result has C<updated>, the
 ids.
 
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::plugin_update( $job, $config );
+
 =cut
 
 sub plugin_update ( $job, $config ) {
     my $claude  = claude($config);
-    my @updated = map { local ($_) = $_; $claude->cli( qw{plugin update --scope}, @{$_}{qw{scope id}} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
+    my @updated = map { local ($_) = $_; $claude->cli( qw{plugin update --scope}, @{$_}{qw{scope id}} ); $_->{id} } grep { local ($_) = $_; App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
     recheck($job);
     return $job->finish( { updated => \@updated } );
 }
@@ -3582,6 +4067,10 @@ With C<resume>, the id of a job whose branch needs these packages, as
 L</waits_for_packages> says, an install that works also L</resume>s the work
 of that job.  Then the result has C<resumed>, the id of the job that goes on
 with it.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::packages_install( $job, $config, { repo => 'Owner/Name', packages => ['ffmpeg'], sources => [] } );
 
 =cut
 
@@ -3610,6 +4099,10 @@ C<($minion, $task, $repo, $note)>.  The id of a job of C<$task> that waits or
 runs, or undef.  With C<$repo>, only a job with that value in its notes counts:
 in the note C<$note>, which is C<repo> unless it is given.
 
+Returns Int or undef: the id, or undef.
+
+    my $id = App::Clod::Tasks::pending_job( $minion, 'packages_install', 'Owner/Name' );
+
 =cut
 
 sub pending_job ( $minion, $task, $repo = undef, $note = 'repo' ) {
@@ -3626,6 +4119,10 @@ C<($minion, $repo, $lacks)>, with C<$lacks> what L</lacks_of> returns for the
 spoke C<$repo>.  Queues a L</packages_install> of its C<missing> packages and
 its C<sources>, noted with C<repo>, and returns the id.  If one waits or runs
 for C<$repo> already, it returns the id of that one, and queues none.
+
+Returns Int, the id of the job.
+
+    my $id = App::Clod::Tasks::queue_install( $minion, 'Owner/Name', $lacks );
 
 =cut
 
@@ -3644,6 +4141,10 @@ spoke declares on its default branch, as the button does.  Its result has
 C<queued>, a hash of each spoke to the id of its install.  Without
 C<system_packages>, it queues nothing.  When the host cannot be read, the job
 fails, and the dashboard still has the buttons.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::packages_restore( $job, $config );
 
 =cut
 
@@ -3667,6 +4168,10 @@ Returns that id.
 A Minion lock named after C<$from> lets the work of one job resume once, so a
 second install for it resumes nothing, and returns undef.  So does a job
 C<$from> that is gone, or whose result needs no packages.
+
+Returns Int, the id of the new job, or nothing.
+
+    my $resumed = App::Clod::Tasks::resume( $job, $args->{resume} );
 
 =cut
 
@@ -3693,6 +4198,10 @@ one after another, which L</prepare_hub> reads.  A spoke that fails does not
 stop the rest.  Its result has C<refreshed>, the count, and C<errors>, a hash of
 repository to error.
 
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::refresh_references( $job, $config );
+
 =cut
 
 sub refresh_references ( $job, $config ) {
@@ -3712,6 +4221,10 @@ sub refresh_references ( $job, $config ) {
 
 Every fifteen minutes.  Lists the open issues and pull requests assigned to the
 bot in every spoke.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::assigned_sweep( $job, $config );
 
 =cut
 
@@ -3737,6 +4250,10 @@ items of the spokes, because GitHub allows 30 searches a minute, and a search
 for each spoke went over that.  Its result has C<checked_at>, C<unassigned>,
 C<opened_7d>, C<merged_7d>, and C<errors>, a hash of owner to error.  An owner
 that fails adds nothing to any of the three counts.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::activity_sweep( $job, $config );
 
 =cut
 
@@ -3788,6 +4305,8 @@ verdict of the sweep before stands.  That includes a 404, which GitHub also
 answers for a private repository that the token cannot see: such a repository
 stays a spoke, because treating every failed lookup as private would drop each
 spoke during an outage.
+
+    App::Clod::Tasks::spoke_sweep( $job, $config );
 
 =cut
 
@@ -3845,6 +4364,10 @@ before recorded for the same URL, if it recorded anything.  If the search of a
 user fails, the pull requests that the sweep before found for that user stay,
 so that one failed request does not hide a conflict.
 
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::upstream_sweep( $job, $config );
+
 =cut
 
 sub upstream_sweep ( $job, $config ) {
@@ -3899,6 +4422,10 @@ F<dist.ini>, C<dists>, the result of L</release_state> for each of them that
 is not C<released>, and C<errors>, a hash of repository to error.  If the
 check of a spoke fails, what the sweep before found for that spoke stays, so
 that one failed request does not hide a distribution that is due.
+
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::release_sweep( $job, $config );
 
 =cut
 
@@ -3969,6 +4496,10 @@ The default branch has nothing after the tag of this version.
 It dies when a request to GitHub or MetaCPAN fails, or when the F<dist.ini>
 does not parse or names no distribution.
 
+Returns HashRef or undef, as above.
+
+    my $dist = App::Clod::Tasks::release_state( $gh, $cpan, 'Owner/Name' );
+
 =cut
 
 sub release_state ( $gh, $cpan, $repo ) {
@@ -4013,6 +4544,10 @@ repository that is no longer a spoke loses its history.  If the count of a
 spoke fails, or it has no reference worktree yet, the count and the history
 that the sweep before had for it stay.
 
+Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Minion stored the new state of the job.
+
+    my $ok = App::Clod::Tasks::loc_sweep( $job, $config );
+
 =cut
 
 sub loc_sweep ( $job, $config ) {
@@ -4051,6 +4586,10 @@ L</refresh_references> keeps at the default branch, and C<commit>, the commit
 that it counted, with C<url>, its tree on C<github_web>.  It holds
 L<App::Clod::Spoke/locked> while it counts, so that a refresh does not move
 the worktree in the middle of the count.  It dies when loccount fails.
+
+Returns HashRef or undef, as above.
+
+    my $count = App::Clod::Tasks::loc_count( $config, $counter, 'Owner/Name' );
 
 =cut
 
