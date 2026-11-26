@@ -3828,14 +3828,13 @@ sub lacks_of ( $config, $declared, $host, $has = {} ) {
     my $packager = $config->{system_packages}{packager};
     my $resolved = eval { resolved( $config, $declared, $host ) };
     return { needs => [], missing => [], sources => [], unresolved => [], failing => [], error => $@ =~ s{\s+\z}{}r } if !$resolved;
-    my %source = map { $_->{name} => $_ } grep { local ($_) = $_; !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} };
+    my %source = map { $_->{name} => $_ } grep { !App::Clod::Packages::has_source( $packager, $_ ) } @{ $resolved->{sources} };
     my @needs  = map {
         my $archive = defined $_->{source} ? $source{ $_->{source} } : undef;
         +{ name => $_->{name}, package => $_->{package}, archive => $archive };
-    } grep { local ($_) = $_; defined $_->{package} && !( $has->{ $_->{package} } //= App::Clod::Packages::installed( $packager, $_->{package} ) ? 1 : 0 ) } @{ $resolved->{needs} };
+    } grep { defined $_->{package} && !( $has->{ $_->{package} } //= App::Clod::Packages::installed( $packager, $_->{package} ) ? 1 : 0 ) } @{ $resolved->{needs} };
     my $claude  = claude($config);
     my @failing = @needs ? () : map {
-        local ($_) = $_;
         my $error = App::Clod::Packages::program_error( $claude, $_->{test} );
         defined $error ? { program => $_->{test}, dependency => $_->{name}, error => $error } : ();
     } grep { defined $_->{test} } @{ $resolved->{needs} };
@@ -4044,7 +4043,7 @@ Returns Bool, what C<finish> or C<fail> of L<Minion::Job> returns: true when Min
 
 sub plugin_update ( $job, $config ) {
     my $claude  = claude($config);
-    my @updated = map { local ($_) = $_; $claude->cli( qw{plugin update --scope}, @{$_}{qw{scope id}} ); $_->{id} } grep { local ($_) = $_; App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
+    my @updated = map { local ($_) = $_; $claude->cli( qw{plugin update --scope}, @{$_}{qw{scope id}} ); $_->{id} } grep { App::Clod::Claude::is_behind($_) } @{ $claude->plugins };
     recheck($job);
     return $job->finish( { updated => \@updated } );
 }

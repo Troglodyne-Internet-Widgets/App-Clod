@@ -17,3 +17,12 @@ checks:
       # #!perl until an install rewrites it.  Everything else keeps #!perl.
       logicLAB::RequireSheBang:
         formats: '#!perl || #!/usr/bin/env perl'
+  DistIni:
+    overrides:
+      # The programs of App-Clod are in script/, not in bin/.
+      ExecDir:
+        dir: script
+    authordeps:
+      # 0.003 places blib/lib in lib/, so ProhibitCallsWithAliasedTopic in the
+      # author test of critic knows a call to a sub of App-Clod.
+      Perl::Critic::Distribution: '0.003'
