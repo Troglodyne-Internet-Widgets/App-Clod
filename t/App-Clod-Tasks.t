@@ -1817,6 +1817,24 @@ subtest harness_fix => sub {
     is( $minion->jobs( { tasks => [qw{spoke_fix spoke_address}] } )->total, 1, 'so the one claude run is the one for the update that changed nothing' );
     is( $swept,                                                             0, 'and with no change of the critic profile, it runs no perlcritic' );
 
+    # What the files that the update replaced chose otherwise is shown, for a person to keep.
+    $harness->redefine( dropped => sub (@) { return { Readme => { settings => { license => 'Perl_5' } }, Unchanged => { settings => { x => 1 } } } } );
+    @calls = ();
+    my $dropping = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( $dropping->{result}{dropped}, { Readme => { settings => { license => 'Perl_5' } } }, 'a harness fix keeps what the update drops of the checks that changed a file' ) or diag Mojo::Util::dumper $dropping->{result};
+    my $body = calls_of('pull')->[0][2]{body};
+    like( $body, qr/drops\ them .* Nothing\ is\ left\ for\ a\ person/s, 'and its pull request says so, and leaves no claude run to choose' );
+    my $readme = qr/checks:\n\ {2}Readme:\n/;
+    my $kept   = qr/\ {4}settings:\n\ {6}license:\ Perl_5\n/;
+    like( $body, qr/```yaml\n---\n$readme$kept```/, 'in YAML for .conformance.yml' );
+    unlike( calls_of('pull')->[0][2]{body}, qr/Unchanged/, 'and not that of a check whose files it did not change' );
+    $harness->redefine( dropped => sub (@) { die "no adopt here\n" } );
+    @calls = ();
+    my $unadopted = run_job( harness_fix => { %$args, repo => 'Test-Org/one' } );
+    is( $unadopted->{state}, 'finished', 'a fix whose adopt dies still finishes' ) or diag Mojo::Util::dumper $unadopted->{result};
+    like( $unadopted->{notes}{log}, [ { message => qr/could\ not\ find\ what\ the\ update\ drops:\ no\ adopt\ here/ } ], 'and says so in its log' );
+    $harness->unmock('dropped');
+
     # Something left for a person after the commit goes to a claude run on the pull request.
     my $policy = "[Test::Policy]\n";
     $harness->redefine(

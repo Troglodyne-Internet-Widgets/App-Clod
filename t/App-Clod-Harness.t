@@ -134,6 +134,25 @@ subtest update => sub {
     is( [ map { @{ $_->{changes} } } @$again ], [], 'and a second update changes nothing' );
 };
 
+subtest dropped => sub {
+    my $tmp  = File::Temp->newdir;
+    my $tree = Mojo::File->new( $tmp->dirname )->child('spoke')->make_path;
+    my $yml  = "flavor: test-ini\nsource:\n  directory: $STANDARDS\n";
+    $tree->child('dist.ini')->spew("name = Foo-Bar\nlicense = Perl_5\n\n[Bootstrap::lib]\n\n[GatherDir]\nexclude_filename = LICENSE\n\n[MetaJSON]\n");
+    $tree->child('.conformance.yml')->spew($yml);
+    is(
+        App::Clod::Harness::dropped( $tree, \%settings ),
+        { DistIni => { overrides => { 'Bootstrap::lib' => {}, GatherDir => { exclude_filename => 'LICENSE' } }, positions => { 'Bootstrap::lib' => undef }, settings => { license => 'Perl_5' } } },
+        'what the file chose otherwise than its template, in the form of .conformance.yml'
+    );
+
+    $tree->child('.conformance.yml')->spew("${yml}checks:\n  DistIni:\n    overrides:\n      GatherDir:\n        exclude_filename: LICENSE\n    settings:\n      license: Perl_5\n");
+    is( App::Clod::Harness::dropped( $tree, \%settings ), { DistIni => { overrides => { 'Bootstrap::lib' => {} }, positions => { 'Bootstrap::lib' => undef } } }, 'less what the configuration of the check already keeps' );
+
+    $tree->child('dist.ini')->spew( $STANDARDS->child(qw{templates dist.ini})->slurp );
+    is( App::Clod::Harness::dropped( $tree, \%settings ), {}, 'and nothing for the file of the template' );
+};
+
 subtest critic_profiles => sub {
     my @profiles = App::Clod::Harness::critic_profiles( \%settings );
     is( scalar @profiles, 1, 'the standards have one critic profile' );

@@ -15,6 +15,7 @@ use Mojo::Util       ();
 use POSIX            ();
 use Text::ParseWords ();
 use Time::HiRes      qw{time};
+use YAML::XS         ();
 
 use App::Clod::Budget();
 use App::Clod::Claude();
@@ -3311,6 +3312,15 @@ as L</prerequisites_env> does.  Then it pushes, and opens a pull request that
 closes the issue.  The pull request and the issue say what is left for a
 person.  If the update changes nothing, it says so on the issue.
 
+Before the update, it asks L<App::Clod::Harness/dropped> what the files of the
+checks chose otherwise than the standards.  For each check whose files the
+update then changed, the pull request, or the comment when the hooks refuse
+the commit, shows that as YAML for F<.conformance.yml>, as
+L</harness_dropped> writes it, and the result has it in C<dropped>.  A check
+that writes a whole file, such as C<DistIni>, leaves nothing for a person, so
+without this a choice of the repository would go with the drift, and only the
+diff would show it.  When that adopt dies, the job notes why and goes on.
+
 The update itself needs no claude run.  What it leaves for a person, its
 C<manual> results, are mostly critic and tidy standards that the code does
 not meet yet, and a claude run does them, with instructions from
@@ -3478,7 +3488,12 @@ sub harness_fix ( $job, $config, $args ) {
             $job, $config, $repo,
             { branch => $branch, base => $base },
             sub ( $spoke, $tree, $ ) {
+                my $dropped = eval { App::Clod::Harness::dropped( $tree, $config->{harness}, cache => $config->{conformance_cache} ) };
+                log_note( $job, 'could not find what the update drops: ' . ( split m{\n}, $@ )[0] ) if !$dropped;
                 my $results = App::Clod::Harness::update( $tree, $config->{harness}, cache => $config->{conformance_cache} );
+                my %changed = map { $_->{check} => 1 } grep              { @{ $_->{changes} } } @$results;
+                my %kept    = map { $_          => $dropped->{$_} } grep { $changed{$_} } keys %{ $dropped // {} };
+                my @dropped = harness_dropped( \%kept );
                 my @changes = map {
                     my $check = $_->{check};
                     map { "- `$check`: $_->{action} `$_->{path}`" } @{ $_->{changes} }
@@ -3489,7 +3504,7 @@ sub harness_fix ( $job, $config, $args ) {
                 } @$results;
 
                 $spoke->git( q{-C}, "$tree", qw{add -A} );
-                my %done = ( repo => $repo, issue_url => $issue->{url}, changes => \@changes, manual => \@manual );
+                my %done = ( repo => $repo, issue_url => $issue->{url}, changes => \@changes, manual => \@manual, ( %kept ? ( dropped => \%kept ) : () ) );
                 if ( $spoke->git( q{-C}, "$tree", qw{status --porcelain} ) eq q{} ) {
                     my $todo = join "\n", @manual;
                     $gh->comment( $repo, $issue->{number}, join "\n\n", 'The update of the harness changes no file here.', harness_left(@manual), @manual ? $LEFT_TO_CLAUDE : () );
@@ -3517,12 +3532,12 @@ sub harness_fix ( $job, $config, $args ) {
                     my $hook  = substr( $@, index( $@, $said ) == 0 ? length $said : 0 ) =~ s{\s+\z}{}r;
                     my $patch = $spoke->git( q{-C}, "$tree", qw{diff --cached --binary} );
                     log_note( $job, 'the hooks of the spoke refused the commit of the update' );
-                    $gh->comment( $repo, $issue->{number}, join "\n\n", "The hooks of this repository refused the commit of the update of the harness:\n\n```\n$hook\n```", $left, 'A claude run of the bot takes the update on, makes the code pass the hooks, and opens a pull request.' );
+                    $gh->comment( $repo, $issue->{number}, join "\n\n", "The hooks of this repository refused the commit of the update of the harness:\n\n```\n$hook\n```", @dropped, $left, 'A claude run of the bot takes the update on, makes the code pass the hooks, and opens a pull request.' );
                     my %next = harness_run( $job, $issue_item, spoke_fix => { title => $HARNESS_TITLE, patch => "$patch\n" }, @todo ? $todo : 'Nothing more than what the hook refused.', prompt( 'harness-refused', hook => $hook ) );
                     return $job->finish( { %done, refused => $hook, %next } );
                 }
                 $spoke->push_branch( $tree, $branch );
-                my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, $left, @todo ? $LEFT_TO_CLAUDE : (), "Closes #$issue->{number}" ) } );
+                my $pull = $gh->create_pull( $repo, { title => $HARNESS_TITLE, head => $branch, base => $base, body => join( "\n\n", $what, @dropped, $left, @todo ? $LEFT_TO_CLAUDE : (), "Closes #$issue->{number}" ) } );
                 log_note( $job, "opened $pull->{html_url}" );
                 assign_to( $job, $gh, $repo, $pull->{number}, reviewers( $config, $args->{by} ) );
                 my %pr   = ( branch => $branch, pr => $pull->{number}, pr_url => $pull->{html_url} );
@@ -3535,6 +3550,26 @@ sub harness_fix ( $job, $config, $args ) {
     umask $umask;
     die $error if $error;
     return @out;
+}
+
+=func harness_dropped
+
+C<(\%dropped)>, what L<App::Clod::Harness/dropped> found for the checks whose
+files the update changed.  The paragraph of a pull request or a comment of
+L</harness_fix> that shows it as YAML for F<.conformance.yml>, so that a
+person decides what of it to keep.  Nothing goes into the instructions of a
+claude run: what the repository chose and what is only drift look the same to
+the update.
+
+Returns the paragraph as Str, or nothing when C<%dropped> is empty.
+
+    my @dropped = App::Clod::Tasks::harness_dropped( { DistIni => { settings => { license => 'Perl_5' } } } );
+
+=cut
+
+sub harness_dropped ($dropped) {
+    return if !%$dropped;
+    return join "\n", 'The update replaced files that chose these settings otherwise than the standards, and drops them.  To keep one, add it under `checks` in `.conformance.yml`, and the update keeps it from then on:', q{}, '```yaml', YAML::XS::Dump( { checks => $dropped } ) . '```';
 }
 
 =func harness_left
