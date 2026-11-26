@@ -228,7 +228,7 @@ sub self_items ( $self, $minion, $check ) {
         push @why,   'its checkout is at ' . substr( $at->{head}, 0, 7 ) . ', which it does not run yet'                                                             if !$at->{behind} && $at->{head} ne ( $running->{sha} // q{} );
         push @items, button_item( $minion, 'self_update', 'The bot is out of date: ' . join( q{, and }, @why ) . q{.}, { label => 'Update', act => 'self/update' } ) if @why;
     }
-    my @behind = grep { local ($_) = $_; App::Clod::Claude::is_behind($_) } @{ $check->{plugins} // [] };
+    my @behind = grep { App::Clod::Claude::is_behind($_) } @{ $check->{plugins} // [] };
     push @items, button_item( $minion, 'plugin_update', 'Plugins have a newer version: ' . join( q{, }, map { "$_->{id} $_->{version} to $_->{latest}" } @behind ) . q{.}, { label => 'Update plugins', act => 'plugins/update' } ) if @behind;
     push @items, { level => 'warning', text => "The bot cannot tell whether its plugins are up to date: $check->{plugin_error}" } if $check->{plugin_error};
     my @old = @{ $check->{deps} // [] };

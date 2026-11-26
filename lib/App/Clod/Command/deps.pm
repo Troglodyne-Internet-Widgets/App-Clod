@@ -49,7 +49,7 @@ sub run ( $self, $what = q{} ) {
         return;
     }
     if ( $what eq 'outdated' || $what eq 'upgrade' ) {
-        my @found = map { local ($_) = $_; @{ $what eq 'upgrade' ? App::Clod::Deps::upgrade( $config->{$_} ) : App::Clod::Deps::outdated( $config->{$_} ) } } @libs;
+        my @found = map { @{ $what eq 'upgrade' ? App::Clod::Deps::upgrade( $config->{$_} ) : App::Clod::Deps::outdated( $config->{$_} ) } } @libs;
         my $lines = join q{}, map { join( "\t", @$_{qw{module version latest}} ) . "\n" } @found;
         print {*STDOUT} $lines or die "Cannot print: $!\n";
         return;
