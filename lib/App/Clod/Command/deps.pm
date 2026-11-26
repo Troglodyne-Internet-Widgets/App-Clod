@@ -40,7 +40,7 @@ sub run ( $self, $what = q{} ) {
     if ( $what eq 'install' ) {
         if ( $config->{local_lib} ) {
             my $checkout = App::Clod::checkout() // die "the bot runs from no checkout, so there is nothing to list the modules of\n";
-            App::Clod::Deps::install( $config->{local_lib}, App::Clod::Deps::listdeps($checkout) );
+            App::Clod::Deps::install_deps( $config->{local_lib}, $checkout );
         }
         if ( $config->{agent_lib} ) {
             App::Clod::Deps::install( $config->{agent_lib}, App::Clod::Tasks::agent_tools($config) );

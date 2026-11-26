@@ -2043,7 +2043,8 @@ subtest 'self_check and self_update' => sub {
     # it restarts, and an upgrade of the modules restarts too.
     my @deps;
     my $deps = Test::MockModule->new('App::Clod::Deps');
-    $deps->redefine( listdeps         => sub ($dir) { push @deps, "listdeps $dir";                     return qw{Foo Bar} } );
+    $deps->redefine( listdeps         => sub ($dir) { push @deps, "listdeps $dir";   return qw{Foo Bar} } );
+    $deps->redefine( authordeps       => sub ($dir) { push @deps, "authordeps $dir"; return qw{Dzil::Plugin} } );
     $deps->redefine( install          => sub ( $lib, @modules ) { push @deps, "install $lib @modules"; return } );
     $deps->redefine( outdated         => sub ($lib) { return [ { module => 'Foo', version => '1', latest => '2' } ] } );
     $deps->redefine( upgrade          => sub ($lib) { push @deps, "upgrade $lib";  return [ { module => 'Foo', version => '1', latest => '2' } ] } );
@@ -2055,8 +2056,8 @@ subtest 'self_check and self_update' => sub {
     @restarted = ();
     my $with_lib = run_job('self_update');
     delete $app->clod_config->{agent_lib};
-    is( [ $with_lib->{state}, \@deps ], [ 'finished', [ "listdeps $checkout", 'install /bogus/perl5 Foo Bar', 'programs /bogus/agent-perl5' ] ], 'with a local lib, the update installs what the checkout needs, and the programs of the agent lib' ) or diag Mojo::Util::dumper $with_lib->{result};
-    is( scalar @restarted,              2,                                                                                                       'and then restarts' );
+    is( [ $with_lib->{state}, \@deps ], [ 'finished', [ "authordeps $checkout", 'install /bogus/perl5 Dzil::Plugin', "listdeps $checkout", 'install /bogus/perl5 Foo Bar', 'programs /bogus/agent-perl5' ] ], 'with a local lib, the update installs what the checkout needs to build before it asks what it needs to run, and the programs of the agent lib' ) or diag Mojo::Util::dumper $with_lib->{result};
+    is( scalar @restarted,              2,                                                                                                                                                                    'and then restarts' );
 
     is( run_job('self_check')->{result}{deps}, [ { module => 'Foo', version => '1', latest => '2' } ], 'the check lists the modules with a newer release' );
     @deps      = ();
