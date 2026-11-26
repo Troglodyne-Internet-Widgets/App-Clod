@@ -24,40 +24,57 @@ our @OUTDATED = ('cpan-outdated');
 # critic profiles of the standards.  App::Clod::Config lets a run use them.
 our @TOOLS = qw{Perl::Critic Perl::Tidy Devel::NYTProf Dist::Zilla::App::Command::podchecker};
 
+# The environment of this process, with the modules of the local lib $lib on
+# PERL5LIB, so that a dzil that runs with it loads the plugins installed there.
+my sub with_lib ($lib) {
+    return { %ENV, PERL5LIB => join q{:}, "$lib/lib/perl5", grep { defined && $_ ne q{} } $ENV{PERL5LIB} };
+}
+
 =func listdeps
 
-C<($checkout)>.  The modules that the distribution in C<$checkout> needs, as
-C<dzil listdeps> names them, without C<perl>.
+C<($checkout, $lib)>.  The modules that the distribution in C<$checkout>
+needs, as C<dzil listdeps> names them, without C<perl>.  C<$lib> is optional.
+With it, C<dzil> runs with the modules of that local lib on C<PERL5LIB>, so
+it finds the plugins that were installed there.
 
 Returns a list of Str, the names of the modules.  Dies as L</run> does when
-C<dzil listdeps> fails.
+C<dzil listdeps> fails, which it does when a plugin of F<dist.ini> is not
+installed.
 
     my @modules = App::Clod::Deps::listdeps($checkout);
+    my @modules = App::Clod::Deps::listdeps( $checkout, $lib );
 
 =cut
 
-sub listdeps ($checkout) {
-    return grep { $_ ne q{} && $_ ne 'perl' } split m{\n}, run( { dir => "$checkout" }, @DZIL, 'listdeps' );
+sub listdeps ( $checkout, $lib = undef ) {
+    return grep { $_ ne q{} && $_ ne 'perl' } split m{\n}, run( { dir => "$checkout", ( defined $lib ? ( env => with_lib($lib) ) : () ) }, @DZIL, 'listdeps' );
 }
 
 =func authordeps
 
-C<($checkout)>.  What C<dzil> needs to build the distribution in C<$checkout>:
+C<($checkout, $lib)>.  What C<dzil> needs to build the distribution in C<$checkout>:
 the plugins of its F<dist.ini>, and the modules of its C<; authordep> lines,
 as C<dzil authordeps> names them.  Each comes with its version in the syntax of
 cpm, such as C<Foo~1.2>, when F<dist.ini> asks for one.  C<dzil authordeps>
 reads F<dist.ini> and loads no plugin, so it works when the plugins are
 missing, and L</listdeps> does not.
 
+C<$lib> is optional.  With it, the list has only what C<dzil> cannot load at
+the version that F<dist.ini> asks for, when it runs with the modules of that
+local lib on C<PERL5LIB>, as C<dzil authordeps --missing> finds it.
+
 Returns a list of Str, the modules.  Dies as L</run> does when C<dzil
 authordeps> fails.
 
     my @modules = App::Clod::Deps::authordeps($checkout);
+    my @missing = App::Clod::Deps::authordeps( $checkout, $lib );
 
 =cut
 
-sub authordeps ($checkout) {
-    return map { my ( $module, $version ) = split m{ \h* = \h* }x; $version ? "$module~$version" : $module } grep { $_ ne q{} } split m{\n}, run( { dir => "$checkout" }, @DZIL, qw{authordeps --versions} );
+sub authordeps ( $checkout, $lib = undef ) {
+    my @with = defined $lib ? ( env => with_lib($lib) ) : ();
+    my @only = defined $lib ? ('--missing')             : ();
+    return map { my ( $module, $version ) = split m{ \h* = \h* }x; $version ? "$module~$version" : $module } grep { $_ ne q{} } split m{\n}, run( { dir => "$checkout", @with }, @DZIL, qw{authordeps --versions}, @only );
 }
 
 =func install_deps
@@ -106,15 +123,21 @@ sub install ( $lib, @modules ) {
 
 =func install_needed
 
-C<($lib, $checkout)>.  Installs into the local lib C<$lib> each module that
-the distribution in C<$checkout> needs, as L</listdeps> names them, and that
-neither C<$lib> nor the C<@INC> of this process has.  Returns those modules.
+C<($lib, $checkout)>.  Installs into the local lib C<$lib> what the
+distribution in C<$checkout> needs.  First it installs what C<dzil> needs to
+build it, as L</authordeps> finds it missing with C<$lib>.  Then it installs
+each module that L</listdeps> names, with C<$lib>, and that neither C<$lib> nor
+the C<@INC> of this process has.  The first install comes first because
+C<dzil listdeps> loads every plugin of F<dist.ini>, so a plugin that is not
+installed stops it.
+
 A checkout with no F<dist.ini> needs none.  It installs as L</install> does,
 with a lock on F<.lock> in C<$lib>, because every worker shares the lib.  The
 lock is inside the lib, because the directory above it can be one that the
 agent can write too, such as the workspace.  Dies as L</run> does.
 
-Returns a list of Str, the modules that it installed.  The list is empty when
+Returns a list of Str, the modules that it installed, each with its version
+in the syntax of cpm when F<dist.ini> asks for one.  The list is empty when
 nothing was missing.
 
     my @installed = App::Clod::Deps::install_needed( $lib, $checkout );
@@ -123,11 +146,13 @@ nothing was missing.
 
 sub install_needed ( $lib, $checkout ) {
     return if !-e "$checkout/dist.ini";
-    my @needed = grep { local ($_) = $_; !Module::Metadata->find_module_by_name($_) } missing( $lib, listdeps($checkout) );
-    return if !@needed;
-    my $dir = Mojo::File->new("$lib")->make_path;
-    Mutex::Flock->new( path => $dir->child('.lock')->to_string )->synchronize( sub { install( $lib, @needed ) } );
-    return @needed;
+    my $dir   = Mojo::File->new("$lib")->make_path;
+    my $lock  = Mutex::Flock->new( path => $dir->child('.lock')->to_string );
+    my @build = authordeps( $checkout, $lib );
+    $lock->synchronize( sub { install( $lib, @build ) } ) if @build;
+    my @run = grep { local ($_) = $_; !Module::Metadata->find_module_by_name($_) } missing( $lib, listdeps( $checkout, $lib ) );
+    $lock->synchronize( sub { install( $lib, @run ) } ) if @run;
+    return ( @build, @run );
 }
 
 =func install_programs
