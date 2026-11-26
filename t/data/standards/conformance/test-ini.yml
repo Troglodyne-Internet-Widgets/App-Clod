@@ -1,0 +1,8 @@
+# A flavor with a check that writes a whole file from a template, whose
+# overrides conformance adopt can find in the file.
+name: test-ini
+description: What the harness tests hold a spoke to when its dist.ini has a template
+checks:
+  DistIni:
+    file: dist.ini
+    template: templates/dist.ini

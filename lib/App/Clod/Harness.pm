@@ -218,6 +218,46 @@ sub update ( $tree, $settings, %options ) {
     return $conformance->update;
 }
 
+=func dropped
+
+C<($tree, $settings, %options)>, with C<%options> as L</conformance> takes them.
+What the update would drop of the checkout C<$tree>, as it is before the
+update: what L<Dist::Conformance/adopt> finds in the files of each check, and
+the configuration of that check does not already say.  A check that writes a
+whole file, such as C<DistIni>, replaces whatever the file chose otherwise
+than its template, and its update leaves nothing for a person.  This is how a
+person sees what that was.  Each entry is in the form that the check takes
+under C<checks> in F<.conformance.yml>, so a person keeps one by adding it
+there.
+
+Returns HashRef, from the name of each check to the keys of its configuration
+that differ, such as C<overrides>, each to the entries that differ.  It is
+empty when adopt finds nothing that the configuration lacks.  Dies as
+L</conformance> does, and when the adopt of a check dies.
+
+    my $dropped = App::Clod::Harness::dropped( $tree, $settings, cache => $cache );
+
+=cut
+
+sub dropped ( $tree, $settings, %options ) {
+    my $conformance = conformance( Dist::Conformance::Snapshot::Directory->new( root => "$tree" ), $settings, %options );
+    my $adopted     = $conformance->adopt;
+    my %config      = map { local ($_) = $_; $_->name => $_->config } @{ $conformance->checks };
+    my %dropped;
+    for my $check ( keys %$adopted ) {
+        for my $key ( keys %{ $adopted->{$check} } ) {
+            my ( $want, $have ) = ( $adopted->{$check}{$key}, $config{$check}{$key} );
+            my %differ;
+            for my $name ( keys %$want ) {
+                next if ref $have eq 'HASH' && exists $have->{$name} && Mojo::JSON::encode_json( [ $have->{$name} ] ) eq Mojo::JSON::encode_json( [ $want->{$name} ] );
+                $differ{$name} = $want->{$name};
+            }
+            $dropped{$check}{$key} = \%differ if %differ;
+        }
+    }
+    return \%dropped;
+}
+
 =func new_violations
 
 C<($tree, $profile, $old)>: a checkout, the path in it of the critic profile
