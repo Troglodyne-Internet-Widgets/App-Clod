@@ -31,6 +31,7 @@ my $clod = Test::MockModule->new('App::Clod');
 $clod->redefine( checkout => sub () { return Mojo::File->new("$tmp") } );
 my $deps = Test::MockModule->new('App::Clod::Deps');
 $deps->redefine( listdeps         => sub ($dir) { return qw{Foo Bar} } );
+$deps->redefine( authordeps       => sub ($dir) { return qw{Dzil::Plugin} } );
 $deps->redefine( install          => sub ( $lib, @modules ) { push @did, "install $lib @modules"; return } );
 $deps->redefine( install_programs => sub ($lib) { push @did, "programs $lib";                     return } );
 $deps->redefine( outdated         => sub ($lib) { return [ { module => 'Foo', version => '1', latest => '2' } ] } );
@@ -39,7 +40,7 @@ $deps->redefine( upgrade          => sub ($lib) { push @did, "upgrade $lib"; ret
 subtest 'clod deps' => sub {
     my $app = app_with( local_lib => '/bogus/perl5' );
     $app->commands->run(qw{deps install});
-    is( \@did, ['install /bogus/perl5 Foo Bar'], 'install installs what the checkout needs into the local lib' );
+    is( \@did, [ 'install /bogus/perl5 Dzil::Plugin', 'install /bogus/perl5 Foo Bar' ], 'install installs what the checkout needs to build, and then to run, into the local lib' );
 
     is( capture_stdout { $app->commands->run(qw{deps outdated}) }, "Foo\t1\t2\n", 'outdated prints each module with a newer release, and its versions' );
     @did = ();
@@ -50,7 +51,7 @@ subtest 'clod deps' => sub {
     $tasks->redefine( agent_tools => sub ($config) { return qw{Perl::Critic Perl::Tidy} } );
     @did = ();
     app_with( local_lib => '/bogus/perl5', agent_lib => '/bogus/agent-perl5' )->commands->run(qw{deps install});
-    is( \@did, [ 'install /bogus/perl5 Foo Bar', 'install /bogus/agent-perl5 Perl::Critic Perl::Tidy', 'programs /bogus/agent-perl5' ], 'with an agent lib, install fills it with the tools and the programs of the agent too' );
+    is( \@did, [ 'install /bogus/perl5 Dzil::Plugin', 'install /bogus/perl5 Foo Bar', 'install /bogus/agent-perl5 Perl::Critic Perl::Tidy', 'programs /bogus/agent-perl5' ], 'with an agent lib, install fills it with the tools and the programs of the agent too' );
     @did = ();
     app_with( agent_lib => '/bogus/agent-perl5' )->commands->run(qw{deps install});
     is( \@did, [ 'install /bogus/agent-perl5 Perl::Critic Perl::Tidy', 'programs /bogus/agent-perl5' ], 'and with an agent lib alone, only it' );

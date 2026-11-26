@@ -43,6 +43,20 @@ subtest listdeps => sub {
     is( logged('dzil'),                           ["$checkout listdeps"],      'which it asks in the checkout' );
 };
 
+subtest authordeps => sub {
+    local @App::Clod::Deps::DZIL = fake( 'dzil-authordeps', "Pod::Weaver::Section::Blurbs = 0.004\nDist::Zilla::Plugin::Git = 0\n" );
+    is( [ App::Clod::Deps::authordeps($checkout) ], [qw{Pod::Weaver::Section::Blurbs~0.004 Dist::Zilla::Plugin::Git}], 'what dzil needs to build, with the version that dist.ini asks for, in the syntax of cpm' );
+    is( logged('dzil-authordeps'),                  ["$checkout authordeps --versions"],                               'which it asks in the checkout' );
+};
+
+subtest install_deps => sub {
+    App::Clod::Deps::install_deps( '/bogus/lib', $checkout );
+    is( logged('dzil'), [ "$checkout authordeps --versions", "$checkout listdeps" ], 'it asks what dzil needs before it asks dzil to list the prerequisites' );
+    my $cpm = logged('cpm');
+    is( scalar @$cpm, 2, 'and installs each list, with a cpm each' );
+    like( $cpm->[1], qr{\ -L\ /bogus/lib\ Mojolicious\ Try::Tiny\z}, 'the prerequisites last' );
+};
+
 subtest install => sub {
     App::Clod::Deps::install( '/bogus/lib', qw{Mojolicious Try::Tiny} );
     my $cpm = logged('cpm');

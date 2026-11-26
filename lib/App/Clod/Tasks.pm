@@ -3904,8 +3904,8 @@ sub self_update ( $job, $config ) {
     recheck($job);
     return $job->finish( { %result, restarted => [] } ) if $result{to} eq ( ( $job->app->running // {} )->{sha} // q{} );
 
-    App::Clod::Deps::install( $config->{local_lib}, App::Clod::Deps::listdeps($dir) ) if $config->{local_lib};
-    App::Clod::Deps::install_programs( $config->{agent_lib} )                         if $config->{agent_lib};
+    App::Clod::Deps::install_deps( $config->{local_lib}, $dir ) if $config->{local_lib};
+    App::Clod::Deps::install_programs( $config->{agent_lib} )   if $config->{agent_lib};
     return restart_and_finish( $job, $config, \%result );
 }
 

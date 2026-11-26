@@ -40,6 +40,46 @@ sub listdeps ($checkout) {
     return grep { $_ ne q{} && $_ ne 'perl' } split m{\n}, run( { dir => "$checkout" }, @DZIL, 'listdeps' );
 }
 
+=func authordeps
+
+C<($checkout)>.  What C<dzil> needs to build the distribution in C<$checkout>:
+the plugins of its F<dist.ini>, and the modules of its C<; authordep> lines,
+as C<dzil authordeps> names them.  Each comes with its version in the syntax of
+cpm, such as C<Foo~1.2>, when F<dist.ini> asks for one.  C<dzil authordeps>
+reads F<dist.ini> and loads no plugin, so it works when the plugins are
+missing, and L</listdeps> does not.
+
+Returns a list of Str, the modules.  Dies as L</run> does when C<dzil
+authordeps> fails.
+
+    my @modules = App::Clod::Deps::authordeps($checkout);
+
+=cut
+
+sub authordeps ($checkout) {
+    return map { my ( $module, $version ) = split m{ \h* = \h* }x; $version ? "$module~$version" : $module } grep { $_ ne q{} } split m{\n}, run( { dir => "$checkout" }, @DZIL, qw{authordeps --versions} );
+}
+
+=func install_deps
+
+C<($lib, $checkout)>.  Installs into the local lib C<$lib> what the
+distribution in C<$checkout> needs to build, as L</authordeps> names it, and
+then what it needs to run, as L</listdeps> names it.  The first install comes
+first because C<dzil listdeps> loads every plugin of F<dist.ini>, so a new
+plugin that is not installed stops it.
+
+Returns nothing.  Dies as L</install> and L</run> do.
+
+    App::Clod::Deps::install_deps( $lib, $checkout );
+
+=cut
+
+sub install_deps ( $lib, $checkout ) {
+    install( $lib, authordeps($checkout) );
+    install( $lib, listdeps($checkout) );
+    return;
+}
+
 =func install
 
 C<($lib, @modules)>.  Installs each module of C<@modules> into the local lib
@@ -280,7 +320,7 @@ sub run ( $how, @cmd ) {
 
     use App::Clod::Deps ();
 
-    App::Clod::Deps::install( $lib, App::Clod::Deps::listdeps($checkout) );
+    App::Clod::Deps::install_deps( $lib, $checkout );
     my $outdated = App::Clod::Deps::outdated($lib);
     App::Clod::Deps::upgrade($lib);
 
