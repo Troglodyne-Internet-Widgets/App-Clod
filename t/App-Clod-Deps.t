@@ -67,25 +67,43 @@ subtest install => sub {
     is( logged('cpm'), [], 'and no module runs no cpm' );
 };
 
+# A stand-in for dzil that answers authordeps and listdeps each with its own
+# text, and logs the PERL5LIB that it ran with after its arguments.
+sub fake_dzil ( $authordeps, $listdeps ) {
+    my $bin = $tmp->child('dzil-both');
+    $bin->spew(qq{#!/bin/sh\necho "\$(pwd) \$* PERL5LIB=\$PERL5LIB" >> '$tmp/dzil-both.log'\nif [ "\$1" = authordeps ]; then printf '%s' '$authordeps'; else printf '%s' '$listdeps'; fi\n});
+    chmod 0755, "$bin" or die "chmod $bin: $!";
+    return "$bin";
+}
+
 subtest install_needed => sub {
     my $lib     = $tmp->child('harness-lib');
     my $already = $lib->child(qw{lib perl5 Already})->make_path;
     $already->child('There.pm')->spew("package Already::There;\n1;\n");
-    local @App::Clod::Deps::DZIL = fake( 'dzil', "Mojolicious\nAlready::There\nNot::Installed::Anywhere\nperl\n" );
+    local @App::Clod::Deps::DZIL = fake_dzil( "Some::Plugin = 0.004\n", "Mojolicious\nAlready::There\nNot::Installed::Anywhere\nperl\n" );
+    local $ENV{PERL5LIB} = '/bogus/worker-lib';
 
     is( [ App::Clod::Deps::install_needed( $lib, $checkout ) ], [], 'a checkout with no dist.ini needs nothing' );
-    is( logged('dzil'),                                         [], 'and asks dzil nothing' );
+    is( logged('dzil-both'),                                    [], 'and asks dzil nothing' );
 
     $checkout->child('dist.ini')->spew("name = Bogus\n");
-    is( [ App::Clod::Deps::install_needed( $lib, $checkout ) ], ['Not::Installed::Anywhere'], 'with one, a module that neither the lib nor @INC has is installed' );
-    like( logged('cpm'), [qr{\ -L\ \Q$lib\E\ Not::Installed::Anywhere\z}], 'into the lib, alone' );
+    is(
+        [ App::Clod::Deps::install_needed( $lib, $checkout ) ],
+        [ 'Some::Plugin~0.004', 'Not::Installed::Anywhere' ],
+        'with one, what dzil cannot load to build is installed, and then each module that neither the lib nor @INC has'
+    );
+    is(
+        logged('dzil-both'),
+        [ "$checkout authordeps --versions --missing PERL5LIB=$lib/lib/perl5:/bogus/worker-lib", "$checkout listdeps PERL5LIB=$lib/lib/perl5:/bogus/worker-lib" ],
+        'dzil asks what is missing to build before it lists the prerequisites, each time with the lib before the PERL5LIB of the worker, so that it loads what the lib has'
+    );
+    like( logged('cpm'), [ qr{\ -L\ \Q$lib\E\ Some::Plugin~0[.]004\z}, qr{\ -L\ \Q$lib\E\ Not::Installed::Anywhere\z} ], 'into the lib, the plugins first' );
     ok( -e $lib->child('.lock'), 'under a lock inside the lib, which every worker shares' );
-    logged('dzil');
 
-    local @App::Clod::Deps::DZIL = fake( 'dzil', "Mojolicious\nAlready::There\n" );
+    local @App::Clod::Deps::DZIL = fake_dzil( q{}, "Mojolicious\nAlready::There\n" );
     is( [ App::Clod::Deps::install_needed( $lib, $checkout ) ], [], 'and with everything there, nothing is' );
     is( logged('cpm'),                                          [], 'and cpm does not run' );
-    logged('dzil');
+    logged('dzil-both');
     $checkout->child('dist.ini')->remove;
 };
 
